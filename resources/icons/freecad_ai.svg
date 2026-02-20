@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Chat bubble -->
+  <rect x="4" y="8" width="56" height="40" rx="8" ry="8" fill="#3daee9" stroke="#1d6fa5" stroke-width="2"/>
+  <!-- Bubble tail -->
+  <polygon points="16,48 24,48 12,58" fill="#3daee9" stroke="#1d6fa5" stroke-width="2" stroke-linejoin="round"/>
+  <!-- Patch tail-body seam -->
+  <rect x="14" y="46" width="12" height="4" fill="#3daee9"/>
+  <!-- 3D cube inside bubble -->
+  <g transform="translate(32,28)">
+    <!-- Top face -->
+    <polygon points="0,-12 14,-5 0,2 -14,-5" fill="#ffffff" stroke="#1d6fa5" stroke-width="1.5" opacity="0.95"/>
+    <!-- Left face -->
+    <polygon points="-14,-5 0,2 0,16 -14,9" fill="#d4e8f7" stroke="#1d6fa5" stroke-width="1.5" opacity="0.95"/>
+    <!-- Right face -->
+    <polygon points="14,-5 0,2 0,16 14,9" fill="#a8d1ef" stroke="#1d6fa5" stroke-width="1.5" opacity="0.95"/>
+  </g>
+</svg>
