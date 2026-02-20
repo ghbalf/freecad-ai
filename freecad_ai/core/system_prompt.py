@@ -198,7 +198,33 @@ CODE_CONVENTIONS = """\
 - Prefer PartDesign workflow (Body → Sketch → Pad/Pocket) for parametric parts
 - Use Part module for quick prototyping or boolean operations between separate shapes
 - When referencing edges/faces for fillets etc., use string references like "Edge1", "Face2"
-- Always set units consistently (FreeCAD default is mm)"""
+- Always set units consistently (FreeCAD default is mm)
+
+## CRITICAL — Common FreeCAD Pitfalls (can cause crashes!)
+
+**Revolution / Revolve:**
+- Revolution REQUIRES an OPEN profile (e.g. a half-circle + straight line), NOT a closed shape
+- To make a sphere via revolution: sketch a HALF-CIRCLE (semicircular arc + closing straight line along the axis), then revolve 360 degrees around the straight edge
+- Revolving a full circle WILL CRASH FreeCAD — the geometry kernel cannot handle it
+- The revolution axis must be a straight edge of the sketch profile, or an explicit axis line
+- The sketch profile must NOT cross the revolution axis
+
+**Booleans:**
+- Boolean operations (fuse/cut/common) can crash if shapes are coplanar or share edges exactly
+- Add a tiny offset (0.01mm) to avoid coincident faces between boolean operands
+- Always check that both shapes are valid before performing booleans: `shape.isValid()`
+
+**Sketcher:**
+- Over-constraining a sketch causes errors — check `sketch.FullyConstrained` after adding constraints
+- Don't add redundant constraints (e.g. Horizontal + angle=0 on the same line)
+- Close sketch profiles properly — unclosed sketches cannot be padded/pocketed
+
+**General:**
+- Prefer `Part.makeSphere(radius)` for a simple sphere instead of revolving a profile
+- Prefer `Part.makeCylinder(r, h)` for a simple cylinder instead of revolving a rectangle
+- Use the simplest primitive available rather than constructing shapes from sketches when possible
+- After recompute, check `obj.Shape.isValid()` to verify geometry is correct
+- If an operation might fail, always wrap it in try/except to prevent crashes"""
 
 RESPONSE_FORMAT = """\
 ## Response Format
