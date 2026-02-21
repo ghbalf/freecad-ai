@@ -131,6 +131,9 @@ class LLMClient:
         }
         if tools:
             body["tools"] = tools
+        # Ollama needs num_ctx to use more than its default 2048 context
+        if self.provider_name == "ollama":
+            body["options"] = {"num_ctx": 32768}
         return body
 
     def _send_openai(self, messages: list[dict], system: str, stream: bool = False) -> str:

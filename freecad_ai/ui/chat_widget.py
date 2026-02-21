@@ -54,6 +54,7 @@ class _LLMWorker(QThread):
     error_occurred = Signal(str)           # Error message
     tool_call_started = Signal(str, str)   # (tool_name, call_id)
     tool_call_finished = Signal(str, str, bool, str)  # (tool_name, call_id, success, output)
+    tool_exec_requested = Signal(str, str) # (tool_name, arguments_json) — dispatches to main thread
 
     def __init__(self, messages, system_prompt, tools=None, registry=None,
                  api_style="openai", parent=None):
@@ -211,22 +212,21 @@ class _LLMWorker(QThread):
     def _execute_tool_on_main_thread(self, tool_name: str, arguments: dict) -> dict:
         """Dispatch tool execution to the main thread and wait for the result.
 
-        Uses a mutex + wait condition since FreeCAD objects are not thread-safe.
+        Emits tool_exec_requested signal (runs slot on main thread via
+        Qt.QueuedConnection), then blocks on a mutex until the main thread
+        calls set_tool_result().
         """
         self._pending_result = None
+        self.tool_exec_requested.emit(tool_name, json.dumps(arguments))
 
-        # Use a single-shot timer to dispatch to the main thread
-        QtCore.QMetaObject.invokeMethod(
-            self.parent(), "_execute_tool_call",
-            Qt.QueuedConnection,
-            QtCore.Q_ARG(str, tool_name),
-            QtCore.Q_ARG(str, json.dumps(arguments)),
-        )
-
-        # Wait for result
+        # Wait for result with timeout (30s) to avoid deadlock
         self._tool_result_ready.lock()
+        deadline = 30000  # ms
         while self._pending_result is None:
-            self._tool_result_wait.wait(self._tool_result_ready)
+            if not self._tool_result_wait.wait(self._tool_result_ready, deadline):
+                # Timed out
+                self._tool_result_ready.unlock()
+                return {"success": False, "output": "", "error": "Tool execution timed out (main thread did not respond)"}
         self._tool_result_ready.unlock()
 
         return self._pending_result
@@ -420,6 +420,7 @@ class ChatDockWidget(QDockWidget):
         self._worker.error_occurred.connect(self._on_error)
         self._worker.tool_call_started.connect(self._on_tool_call_started)
         self._worker.tool_call_finished.connect(self._on_tool_call_finished)
+        self._worker.tool_exec_requested.connect(self._execute_tool_call)
         self._worker.start()
 
     def _on_mode_changed(self, index):
@@ -535,7 +536,7 @@ class ChatDockWidget(QDockWidget):
 
     @Slot(str, str)
     def _execute_tool_call(self, tool_name, arguments_json):
-        """Execute a tool call on the main thread. Called via QMetaObject.invokeMethod."""
+        """Execute a tool call on the main thread. Connected to worker's tool_exec_requested signal."""
         if not self._tool_registry:
             result = {"success": False, "output": "", "error": "No tool registry"}
         else:

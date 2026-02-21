@@ -49,11 +49,13 @@ that perform FreeCAD operations safely. Prefer using tools over generating raw c
 
 **Tool calling strategy:**
 - For simple primitives: use `create_primitive`
-- For parametric parts: use `create_sketch` + `pad_sketch` / `pocket_sketch`
+- For parametric parts: first `create_body`, then `create_sketch` (with body_name) + `pad_sketch` / `pocket_sketch`
 - For booleans: use `boolean_operation`
 - For transformations: use `transform_object`
 - For edge operations: use `fillet_edges` or `chamfer_edges`
-- For complex operations not covered by tools: use `execute_code`"""
+- For complex operations not covered by tools: use `execute_code`
+
+**Important:** Always create a PartDesign Body with `create_body` before using sketch/pad/pocket workflows."""
 
 FREECAD_API_REFERENCE = """\
 ## FreeCAD Python API Reference (condensed)

@@ -115,6 +115,37 @@ CREATE_PRIMITIVE = ToolDefinition(
 )
 
 
+# ── create_body ─────────────────────────────────────────────
+
+def _handle_create_body(
+    label: str = "Body",
+) -> ToolResult:
+    """Create a PartDesign Body for parametric modeling."""
+    import FreeCAD as App
+
+    def do(doc):
+        body = doc.addObject("PartDesign::Body", label)
+        body.Label = label
+        return ToolResult(
+            success=True,
+            output=f"Created PartDesign body '{body.Label}' ({body.Name})",
+            data={"name": body.Name, "label": body.Label},
+        )
+
+    return _with_undo("Create Body", do)
+
+
+CREATE_BODY = ToolDefinition(
+    name="create_body",
+    description="Create a PartDesign Body. Bodies are containers for parametric features (sketches, pads, pockets, fillets, etc). Create a body first, then add sketches to it using body_name parameter.",
+    category="modeling",
+    parameters=[
+        ToolParam("label", "string", "Display label for the body", required=False, default="Body"),
+    ],
+    handler=_handle_create_body,
+)
+
+
 # ── create_sketch ───────────────────────────────────────────
 
 def _handle_create_sketch(
@@ -177,8 +208,15 @@ def _handle_create_sketch(
                         start_angle, end_angle))
                     geo_count += 1
                 elif geo_type == "rectangle":
-                    x1, y1 = geo.get("x1", 0), geo.get("y1", 0)
-                    x2, y2 = geo.get("x2", 10), geo.get("y2", 10)
+                    # Accept both (x1,y1,x2,y2) and (x,y,width,height) formats
+                    if "width" in geo and "height" in geo:
+                        x1 = geo.get("x", 0)
+                        y1 = geo.get("y", 0)
+                        x2 = x1 + geo["width"]
+                        y2 = y1 + geo["height"]
+                    else:
+                        x1, y1 = geo.get("x1", 0), geo.get("y1", 0)
+                        x2, y2 = geo.get("x2", 10), geo.get("y2", 10)
                     # 4 lines forming a rectangle
                     sketch.addGeometry(Part.LineSegment(App.Vector(x1, y1, 0), App.Vector(x2, y1, 0)))
                     sketch.addGeometry(Part.LineSegment(App.Vector(x2, y1, 0), App.Vector(x2, y2, 0)))
@@ -860,6 +898,7 @@ def _find_body_for(doc, obj):
 
 ALL_TOOLS = [
     CREATE_PRIMITIVE,
+    CREATE_BODY,
     CREATE_SKETCH,
     PAD_SKETCH,
     POCKET_SKETCH,
