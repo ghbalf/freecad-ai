@@ -1,5 +1,7 @@
 # FreeCAD AI
 
+> **Alpha software** — this project is in early development. Expect rough edges, breaking changes, and the occasional FreeCAD crash from LLM-generated code. Use with caution and save your work frequently.
+
 An AI-powered assistant workbench for FreeCAD that generates and executes Python code to create 3D models from natural language descriptions.
 
 ## Features
