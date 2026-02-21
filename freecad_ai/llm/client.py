@@ -4,19 +4,45 @@ Supports two API styles:
   - OpenAI-compatible: /chat/completions (OpenAI, Ollama, Gemini, OpenRouter, custom)
   - Anthropic: /v1/messages (Anthropic's native API)
 
-Both streaming and non-streaming modes are supported.
+Both streaming and non-streaming modes are supported, with optional tool calling.
 """
 
 import json
 import ssl
 import urllib.request
 import urllib.error
+from dataclasses import dataclass, field
 from typing import Generator
 
 from .providers import get_api_style
 
 # Anthropic API version header
 ANTHROPIC_API_VERSION = "2023-06-01"
+
+
+@dataclass
+class ToolCall:
+    """A tool call requested by the LLM."""
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass
+class LLMResponse:
+    """Response from a non-streaming LLM call."""
+    text: str
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    stop_reason: str = "end_turn"
+
+
+@dataclass
+class LLMStreamEvent:
+    """A single event from a streaming LLM response."""
+    type: str  # "text_delta", "tool_call_start", "tool_call_delta", "tool_call_end", "done"
+    text: str = ""
+    tool_call: ToolCall | None = None
+    argument_delta: str = ""
 
 
 class LLMError(Exception):
@@ -56,6 +82,22 @@ class LLMClient:
         else:
             yield from self._stream_openai(messages, system)
 
+    def send_with_tools(self, messages: list[dict], system: str = "",
+                        tools: list[dict] | None = None) -> LLMResponse:
+        """Send a non-streaming request with tool definitions. Returns full response."""
+        if self.api_style == "anthropic":
+            return self._send_anthropic_tools(messages, system, tools)
+        else:
+            return self._send_openai_tools(messages, system, tools)
+
+    def stream_with_tools(self, messages: list[dict], system: str = "",
+                          tools: list[dict] | None = None) -> Generator[LLMStreamEvent, None, None]:
+        """Send a streaming request with tool definitions. Yields LLMStreamEvents."""
+        if self.api_style == "anthropic":
+            yield from self._stream_anthropic_tools(messages, system, tools)
+        else:
+            yield from self._stream_openai_tools(messages, system, tools)
+
     def test_connection(self) -> str:
         """Send a minimal test message. Returns the response or raises LLMError."""
         test_messages = [{"role": "user", "content": "Say 'hello' in one word."}]
@@ -74,18 +116,22 @@ class LLMClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    def _openai_body(self, messages: list[dict], system: str, stream: bool) -> dict:
+    def _openai_body(self, messages: list[dict], system: str, stream: bool,
+                     tools: list[dict] | None = None) -> dict:
         msgs = []
         if system:
             msgs.append({"role": "system", "content": system})
         msgs.extend(messages)
-        return {
+        body = {
             "model": self.model,
             "messages": msgs,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
             "stream": stream,
         }
+        if tools:
+            body["tools"] = tools
+        return body
 
     def _send_openai(self, messages: list[dict], system: str, stream: bool = False) -> str:
         body = self._openai_body(messages, system, stream=False)
@@ -93,6 +139,32 @@ class LLMClient:
         try:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError) as e:
+            raise LLMError(f"Unexpected response format: {e}\n{json.dumps(data, indent=2)}")
+
+    def _send_openai_tools(self, messages: list[dict], system: str,
+                           tools: list[dict] | None) -> LLMResponse:
+        body = self._openai_body(messages, system, stream=False, tools=tools)
+        data = self._http_post(self._openai_url(), self._openai_headers(), body)
+        try:
+            choice = data["choices"][0]
+            msg = choice["message"]
+            text = msg.get("content") or ""
+            finish = choice.get("finish_reason", "stop")
+
+            tool_calls = []
+            for tc in msg.get("tool_calls", []):
+                args = tc["function"].get("arguments", "{}")
+                if isinstance(args, str):
+                    args = json.loads(args)
+                tool_calls.append(ToolCall(
+                    id=tc["id"],
+                    name=tc["function"]["name"],
+                    arguments=args,
+                ))
+
+            stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
+            return LLMResponse(text=text, tool_calls=tool_calls, stop_reason=stop_reason)
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
             raise LLMError(f"Unexpected response format: {e}\n{json.dumps(data, indent=2)}")
 
     def _stream_openai(self, messages: list[dict], system: str) -> Generator[str, None, None]:
@@ -109,6 +181,75 @@ class LLMClient:
             except (KeyError, IndexError):
                 continue
 
+    def _stream_openai_tools(self, messages: list[dict], system: str,
+                             tools: list[dict] | None) -> Generator[LLMStreamEvent, None, None]:
+        body = self._openai_body(messages, system, stream=True, tools=tools)
+        # Track in-progress tool calls: {index: {"id": ..., "name": ..., "arguments_json": ...}}
+        pending_tools: dict[int, dict] = {}
+
+        for chunk in self._http_stream(self._openai_url(), self._openai_headers(), body):
+            try:
+                choices = chunk.get("choices", [])
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = choice.get("delta", {})
+                finish = choice.get("finish_reason")
+
+                # Text content
+                content = delta.get("content")
+                if content:
+                    yield LLMStreamEvent(type="text_delta", text=content)
+
+                # Tool calls
+                for tc_delta in delta.get("tool_calls", []):
+                    idx = tc_delta.get("index", 0)
+                    if idx not in pending_tools:
+                        pending_tools[idx] = {
+                            "id": tc_delta.get("id", ""),
+                            "name": "",
+                            "arguments_json": "",
+                        }
+
+                    pt = pending_tools[idx]
+                    if tc_delta.get("id"):
+                        pt["id"] = tc_delta["id"]
+
+                    func = tc_delta.get("function", {})
+                    if func.get("name"):
+                        pt["name"] = func["name"]
+                        yield LLMStreamEvent(
+                            type="tool_call_start",
+                            tool_call=ToolCall(id=pt["id"], name=pt["name"], arguments={}),
+                        )
+
+                    arg_chunk = func.get("arguments", "")
+                    if arg_chunk:
+                        pt["arguments_json"] += arg_chunk
+                        yield LLMStreamEvent(type="tool_call_delta", argument_delta=arg_chunk)
+
+                # Finish
+                if finish == "tool_calls":
+                    for idx, pt in sorted(pending_tools.items()):
+                        try:
+                            args = json.loads(pt["arguments_json"]) if pt["arguments_json"] else {}
+                        except json.JSONDecodeError:
+                            args = {}
+                        yield LLMStreamEvent(
+                            type="tool_call_end",
+                            tool_call=ToolCall(id=pt["id"], name=pt["name"], arguments=args),
+                        )
+                    yield LLMStreamEvent(type="done")
+                    return
+                elif finish == "stop":
+                    yield LLMStreamEvent(type="done")
+                    return
+
+            except (KeyError, IndexError):
+                continue
+
+        yield LLMStreamEvent(type="done")
+
     # ── Anthropic ───────────────────────────────────────────────
 
     def _anthropic_url(self) -> str:
@@ -121,7 +262,8 @@ class LLMClient:
             "anthropic-version": ANTHROPIC_API_VERSION,
         }
 
-    def _anthropic_body(self, messages: list[dict], system: str, stream: bool) -> dict:
+    def _anthropic_body(self, messages: list[dict], system: str, stream: bool,
+                        tools: list[dict] | None = None) -> dict:
         body = {
             "model": self.model,
             "messages": messages,
@@ -131,6 +273,8 @@ class LLMClient:
         }
         if system:
             body["system"] = system
+        if tools:
+            body["tools"] = tools
         return body
 
     def _send_anthropic(self, messages: list[dict], system: str, stream: bool = False) -> str:
@@ -138,6 +282,27 @@ class LLMClient:
         data = self._http_post(self._anthropic_url(), self._anthropic_headers(), body)
         try:
             return data["content"][0]["text"]
+        except (KeyError, IndexError) as e:
+            raise LLMError(f"Unexpected response format: {e}\n{json.dumps(data, indent=2)}")
+
+    def _send_anthropic_tools(self, messages: list[dict], system: str,
+                              tools: list[dict] | None) -> LLMResponse:
+        body = self._anthropic_body(messages, system, stream=False, tools=tools)
+        data = self._http_post(self._anthropic_url(), self._anthropic_headers(), body)
+        try:
+            text = ""
+            tool_calls = []
+            for block in data.get("content", []):
+                if block["type"] == "text":
+                    text += block["text"]
+                elif block["type"] == "tool_use":
+                    tool_calls.append(ToolCall(
+                        id=block["id"],
+                        name=block["name"],
+                        arguments=block.get("input", {}),
+                    ))
+            stop_reason = data.get("stop_reason", "end_turn")
+            return LLMResponse(text=text, tool_calls=tool_calls, stop_reason=stop_reason)
         except (KeyError, IndexError) as e:
             raise LLMError(f"Unexpected response format: {e}\n{json.dumps(data, indent=2)}")
 
@@ -151,6 +316,66 @@ class LLMClient:
                 text = delta.get("text")
                 if text:
                     yield text
+
+    def _stream_anthropic_tools(self, messages: list[dict], system: str,
+                                tools: list[dict] | None) -> Generator[LLMStreamEvent, None, None]:
+        body = self._anthropic_body(messages, system, stream=True, tools=tools)
+        # Track current tool call being streamed
+        current_tool_id = ""
+        current_tool_name = ""
+        current_tool_json = ""
+
+        for chunk in self._http_stream(self._anthropic_url(), self._anthropic_headers(), body):
+            event_type = chunk.get("type", "")
+
+            if event_type == "content_block_start":
+                block = chunk.get("content_block", {})
+                if block.get("type") == "tool_use":
+                    current_tool_id = block.get("id", "")
+                    current_tool_name = block.get("name", "")
+                    current_tool_json = ""
+                    yield LLMStreamEvent(
+                        type="tool_call_start",
+                        tool_call=ToolCall(id=current_tool_id, name=current_tool_name, arguments={}),
+                    )
+
+            elif event_type == "content_block_delta":
+                delta = chunk.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    text = delta.get("text", "")
+                    if text:
+                        yield LLMStreamEvent(type="text_delta", text=text)
+                elif delta.get("type") == "input_json_delta":
+                    json_chunk = delta.get("partial_json", "")
+                    if json_chunk:
+                        current_tool_json += json_chunk
+                        yield LLMStreamEvent(type="tool_call_delta", argument_delta=json_chunk)
+
+            elif event_type == "content_block_stop":
+                if current_tool_name:
+                    try:
+                        args = json.loads(current_tool_json) if current_tool_json else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                    yield LLMStreamEvent(
+                        type="tool_call_end",
+                        tool_call=ToolCall(id=current_tool_id, name=current_tool_name, arguments=args),
+                    )
+                    current_tool_name = ""
+                    current_tool_id = ""
+                    current_tool_json = ""
+
+            elif event_type == "message_stop":
+                yield LLMStreamEvent(type="done")
+                return
+
+            elif event_type == "message_delta":
+                # Check stop_reason
+                delta = chunk.get("delta", {})
+                if delta.get("stop_reason") == "tool_use":
+                    pass  # tool_call_end already emitted from content_block_stop
+
+        yield LLMStreamEvent(type="done")
 
     # ── HTTP helpers ────────────────────────────────────────────
 

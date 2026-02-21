@@ -2,6 +2,14 @@
 
 Stores chat messages, persists them to disk, and handles context
 window management by truncating old messages when needed.
+
+Message types in internal (provider-neutral) format:
+  - User:       {"role": "user", "content": "..."}
+  - Assistant:   {"role": "assistant", "content": "...", "tool_calls": [...]}
+  - Tool result: {"role": "tool_result", "tool_call_id": "...", "content": "..."}
+  - System:      {"role": "user", "content": "[System] ..."}
+
+The get_messages_for_api() method converts to provider-specific format.
 """
 
 import json
@@ -31,9 +39,20 @@ class Conversation:
         """Add a user message."""
         self.messages.append({"role": "user", "content": content})
 
-    def add_assistant_message(self, content: str):
-        """Add an assistant message."""
-        self.messages.append({"role": "assistant", "content": content})
+    def add_assistant_message(self, content: str, tool_calls: list[dict] | None = None):
+        """Add an assistant message, optionally with tool calls."""
+        msg = {"role": "assistant", "content": content}
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
+        self.messages.append(msg)
+
+    def add_tool_result(self, tool_call_id: str, content: str):
+        """Add a tool result message."""
+        self.messages.append({
+            "role": "tool_result",
+            "tool_call_id": tool_call_id,
+            "content": content,
+        })
 
     def add_system_message(self, content: str):
         """Add a system-level message (execution results, errors, etc.)."""
@@ -44,32 +63,125 @@ class Conversation:
             "content": f"[System] {content}",
         })
 
-    def get_messages_for_api(self, max_chars: int = 100000) -> list[dict]:
+    def get_messages_for_api(self, max_chars: int = 100000,
+                             api_style: str = "openai") -> list[dict]:
         """Get messages formatted for the LLM API.
 
-        Truncates older messages if the total content exceeds max_chars
-        (rough token estimate: chars / 4).
+        Truncates older messages if the total content exceeds max_chars.
+        Converts from internal format to provider-specific format.
+        Never splits a tool_call/tool_result pair during truncation.
         """
-        # Always keep at least the last message
         if not self.messages:
             return []
 
-        # Walk backwards, accumulating messages until we hit the limit
+        # Walk backwards, collecting messages while respecting max_chars
+        # and never splitting tool_call/tool_result pairs
         result = []
         total_chars = 0
-        for msg in reversed(self.messages):
-            msg_chars = len(msg["content"])
+
+        i = len(self.messages) - 1
+        while i >= 0:
+            msg = self.messages[i]
+            msg_chars = len(msg.get("content", ""))
+
+            # If this is a tool_result, we must also include the preceding assistant
+            # message that contains the tool_call. Walk back to find the pair.
+            if msg["role"] == "tool_result":
+                # Collect all consecutive tool_results
+                tool_group = [msg]
+                j = i - 1
+                while j >= 0 and self.messages[j]["role"] == "tool_result":
+                    tool_group.insert(0, self.messages[j])
+                    j -= 1
+                # The message before should be the assistant with tool_calls
+                if j >= 0 and self.messages[j]["role"] == "assistant":
+                    tool_group.insert(0, self.messages[j])
+                    j -= 1
+
+                group_chars = sum(len(m.get("content", "")) for m in tool_group)
+                if total_chars + group_chars > max_chars and result:
+                    break
+                result = tool_group + result
+                total_chars += group_chars
+                i = j
+                continue
+
             if total_chars + msg_chars > max_chars and result:
                 break
-            result.append(msg)
+            result.insert(0, msg)
             total_chars += msg_chars
+            i -= 1
 
-        result.reverse()
-
-        # Ensure the first message is a user message (API requirement for most providers)
-        while result and result[0]["role"] == "assistant":
+        # Ensure the first message is a user message (API requirement)
+        while result and result[0]["role"] not in ("user",):
             result.pop(0)
 
+        # Convert to provider format
+        if api_style == "anthropic":
+            return self._to_anthropic_format(result)
+        else:
+            return self._to_openai_format(result)
+
+    def _to_openai_format(self, messages: list[dict]) -> list[dict]:
+        """Convert internal messages to OpenAI API format."""
+        result = []
+        for msg in messages:
+            if msg["role"] == "tool_result":
+                result.append({
+                    "role": "tool",
+                    "tool_call_id": msg["tool_call_id"],
+                    "content": msg["content"],
+                })
+            elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                oai_msg = {
+                    "role": "assistant",
+                    "content": msg.get("content") or None,
+                    "tool_calls": [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": json.dumps(tc["arguments"]),
+                            },
+                        }
+                        for tc in msg["tool_calls"]
+                    ],
+                }
+                result.append(oai_msg)
+            else:
+                result.append({"role": msg["role"], "content": msg["content"]})
+        return result
+
+    def _to_anthropic_format(self, messages: list[dict]) -> list[dict]:
+        """Convert internal messages to Anthropic API format."""
+        result = []
+        for msg in messages:
+            if msg["role"] == "tool_result":
+                result.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": msg["tool_call_id"],
+                            "content": msg["content"],
+                        }
+                    ],
+                })
+            elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                content_blocks = []
+                if msg.get("content"):
+                    content_blocks.append({"type": "text", "text": msg["content"]})
+                for tc in msg["tool_calls"]:
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "input": tc["arguments"],
+                    })
+                result.append({"role": "assistant", "content": content_blocks})
+            else:
+                result.append({"role": msg["role"], "content": msg["content"]})
         return result
 
     def clear(self):
@@ -78,7 +190,7 @@ class Conversation:
 
     def estimated_tokens(self) -> int:
         """Rough token estimate (chars / 4)."""
-        total_chars = sum(len(m["content"]) for m in self.messages)
+        total_chars = sum(len(m.get("content", "")) for m in self.messages)
         return total_chars // 4
 
     # ── Persistence ──────────────────────────────────────────

@@ -107,6 +107,59 @@ def render_execution_result(success: bool, stdout: str, stderr: str) -> str:
     return "".join(parts)
 
 
+def render_tool_call(tool_name: str, call_id: str, started: bool = True,
+                     success: bool = True, output: str = "") -> str:
+    """Render a tool call indicator in the chat.
+
+    Args:
+        tool_name: Name of the tool being called
+        call_id: Unique ID of the tool call
+        started: True for "calling..." state, False for completed
+        success: Whether the tool call succeeded (only used when started=False)
+        output: Tool result output (only used when started=False)
+    """
+    if started:
+        return (
+            f'<div style="margin: 4px 0; padding: 6px 10px; '
+            f'background-color: #e8f5e9; border-left: 3px solid #4caf50; '
+            f'border-radius: 0 4px 4px 0; font-size: 12px;">'
+            f'<span style="color: #2e7d32;">&#9881; Calling <b>{html.escape(tool_name)}</b>...</span>'
+            f'</div>'
+        )
+    else:
+        if success:
+            icon = "&#10003;"
+            color = "#2e7d32"
+            bg = "#e8f5e9"
+            border_color = "#4caf50"
+        else:
+            icon = "&#10007;"
+            color = "#c62828"
+            bg = "#fce4ec"
+            border_color = "#ef5350"
+
+        parts = [
+            f'<div style="margin: 4px 0; padding: 6px 10px; '
+            f'background-color: {bg}; border-left: 3px solid {border_color}; '
+            f'border-radius: 0 4px 4px 0; font-size: 12px;">'
+            f'<span style="color: {color};">{icon} <b>{html.escape(tool_name)}</b></span>'
+        ]
+
+        if output:
+            escaped_output = html.escape(output.strip())
+            # Truncate very long output
+            if len(escaped_output) > 500:
+                escaped_output = escaped_output[:500] + "..."
+            parts.append(
+                f'<pre style="margin: 4px 0 0 0; padding: 4px 8px; '
+                f'background-color: rgba(0,0,0,0.05); font-size: 11px; '
+                f'font-family: monospace; color: #333;">{escaped_output}</pre>'
+            )
+
+        parts.append('</div>')
+        return "".join(parts)
+
+
 def _format_content(text: str) -> str:
     """Convert markdown-ish text to HTML, handling code blocks specially."""
     parts = []

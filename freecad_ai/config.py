@@ -65,6 +65,7 @@ class AppConfig:
     temperature: float = 0.3
     auto_execute: bool = False
     max_retries: int = 3
+    enable_tools: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)

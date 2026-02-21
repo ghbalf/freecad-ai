@@ -4,8 +4,12 @@ Provides the primary user interface: a scrollable chat history,
 input field, mode toggle (Plan/Act), and settings access.
 
 LLM calls run in a QThread to keep the UI responsive, with
-streaming text pushed via signals.
+streaming text pushed via signals. When tools are enabled,
+the worker implements an agentic loop: stream response, execute
+tool calls on the main thread, feed results back to the LLM.
 """
+
+import json
 
 from .compat import QtWidgets, QtCore, QtGui
 
@@ -29,37 +33,210 @@ QTextCursor = QtGui.QTextCursor
 from ..config import get_config, save_current_config
 from ..core.conversation import Conversation
 from ..core.executor import extract_code_blocks, execute_code
-from .message_view import render_message, render_code_block, render_execution_result
+from .message_view import render_message, render_code_block, render_execution_result, render_tool_call
 from .code_review_dialog import CodeReviewDialog
 
 
 # ── LLM Worker Thread ───────────────────────────────────────
 
 class _LLMWorker(QThread):
-    """Background thread that streams LLM responses."""
+    """Background thread that streams LLM responses with optional tool loop.
 
-    token_received = Signal(str)       # Single token/chunk
-    response_finished = Signal(str)    # Full response text
-    error_occurred = Signal(str)       # Error message
+    When tools are provided, implements an agentic loop:
+      1. Stream LLM response, collecting text + tool calls
+      2. If no tool calls -> done
+      3. For each tool call, dispatch to main thread and wait for result
+      4. Append results to messages, loop back to step 1
+    """
 
-    def __init__(self, messages, system_prompt, parent=None):
+    token_received = Signal(str)           # Text delta
+    response_finished = Signal(str)        # Full response text (final turn only)
+    error_occurred = Signal(str)           # Error message
+    tool_call_started = Signal(str, str)   # (tool_name, call_id)
+    tool_call_finished = Signal(str, str, bool, str)  # (tool_name, call_id, success, output)
+
+    def __init__(self, messages, system_prompt, tools=None, registry=None,
+                 api_style="openai", parent=None):
         super().__init__(parent)
-        self.messages = messages
+        self.messages = list(messages)
         self.system_prompt = system_prompt
+        self.tools = tools
+        self.registry = registry
+        self.api_style = api_style
         self._full_response = ""
+        self._tool_results = []
+        self._tool_result_ready = QtCore.QMutex()
+        self._tool_result_wait = QtCore.QWaitCondition()
+        self._pending_result = None
+        self._max_tool_turns = 10  # Safety limit
 
     def run(self):
         try:
             from ..llm.client import create_client_from_config
             client = create_client_from_config()
 
-            for chunk in client.stream(self.messages, system=self.system_prompt):
-                self._full_response += chunk
-                self.token_received.emit(chunk)
+            if not self.tools:
+                # Simple non-tool streaming (backward compat)
+                self._simple_stream(client)
+                return
 
-            self.response_finished.emit(self._full_response)
+            # Agentic tool loop
+            self._tool_loop(client)
+
         except Exception as e:
             self.error_occurred.emit(str(e))
+
+    def _simple_stream(self, client):
+        """Stream without tools (original behavior)."""
+        for chunk in client.stream(self.messages, system=self.system_prompt):
+            self._full_response += chunk
+            self.token_received.emit(chunk)
+        self.response_finished.emit(self._full_response)
+
+    def _tool_loop(self, client):
+        """Agentic loop: stream -> execute tools -> feed results -> repeat."""
+        messages = list(self.messages)
+
+        for turn in range(self._max_tool_turns):
+            text_parts = []
+            tool_calls = []
+
+            # Stream with tools
+            for event in client.stream_with_tools(
+                messages, system=self.system_prompt, tools=self.tools
+            ):
+                if event.type == "text_delta":
+                    text_parts.append(event.text)
+                    self._full_response += event.text
+                    self.token_received.emit(event.text)
+                elif event.type == "tool_call_start":
+                    if event.tool_call:
+                        self.tool_call_started.emit(event.tool_call.name, event.tool_call.id)
+                elif event.type == "tool_call_end":
+                    if event.tool_call:
+                        tool_calls.append(event.tool_call)
+                elif event.type == "done":
+                    break
+
+            turn_text = "".join(text_parts)
+
+            if not tool_calls:
+                # No tool calls — we're done
+                self.response_finished.emit(self._full_response)
+                return
+
+            # Store the assistant message with tool calls in the conversation
+            tc_dicts = [
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                for tc in tool_calls
+            ]
+
+            # Add assistant message to local messages for next turn
+            if self.api_style == "anthropic":
+                content_blocks = []
+                if turn_text:
+                    content_blocks.append({"type": "text", "text": turn_text})
+                for tc in tool_calls:
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.arguments,
+                    })
+                messages.append({"role": "assistant", "content": content_blocks})
+            else:
+                oai_tcs = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        },
+                    }
+                    for tc in tool_calls
+                ]
+                messages.append({
+                    "role": "assistant",
+                    "content": turn_text or None,
+                    "tool_calls": oai_tcs,
+                })
+
+            # Execute each tool call on the main thread
+            tool_result_messages = []
+            for tc in tool_calls:
+                result = self._execute_tool_on_main_thread(tc.name, tc.arguments)
+                success = result.get("success", False)
+                output = result.get("output", "")
+                error = result.get("error", "")
+                result_text = output if success else f"Error: {error}"
+
+                self.tool_call_finished.emit(tc.name, tc.id, success, result_text)
+
+                if self.api_style == "anthropic":
+                    tool_result_messages.append({
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tc.id,
+                                "content": result_text,
+                            }
+                        ],
+                    })
+                else:
+                    tool_result_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result_text,
+                    })
+
+            messages.extend(tool_result_messages)
+
+            # Store tool call info so the parent can update the conversation
+            self._tool_results.append({
+                "assistant_text": turn_text,
+                "tool_calls": tc_dicts,
+                "results": [
+                    {"tool_call_id": tc.id, "content": r["content"] if self.api_style != "anthropic" else r["content"][0]["content"]}
+                    for tc, r in zip(tool_calls, tool_result_messages)
+                ],
+            })
+
+        # If we reach here, we hit the max turns limit
+        self._full_response += "\n\n[Reached maximum tool call iterations]"
+        self.token_received.emit("\n\n[Reached maximum tool call iterations]")
+        self.response_finished.emit(self._full_response)
+
+    def _execute_tool_on_main_thread(self, tool_name: str, arguments: dict) -> dict:
+        """Dispatch tool execution to the main thread and wait for the result.
+
+        Uses a mutex + wait condition since FreeCAD objects are not thread-safe.
+        """
+        self._pending_result = None
+
+        # Use a single-shot timer to dispatch to the main thread
+        QtCore.QMetaObject.invokeMethod(
+            self.parent(), "_execute_tool_call",
+            Qt.QueuedConnection,
+            QtCore.Q_ARG(str, tool_name),
+            QtCore.Q_ARG(str, json.dumps(arguments)),
+        )
+
+        # Wait for result
+        self._tool_result_ready.lock()
+        while self._pending_result is None:
+            self._tool_result_wait.wait(self._tool_result_ready)
+        self._tool_result_ready.unlock()
+
+        return self._pending_result
+
+    def set_tool_result(self, result: dict):
+        """Called from the main thread to provide a tool execution result."""
+        self._tool_result_ready.lock()
+        self._pending_result = result
+        self._tool_result_wait.wakeAll()
+        self._tool_result_ready.unlock()
 
 
 # ── Chat Dock Widget ────────────────────────────────────────
@@ -77,6 +254,7 @@ class ChatDockWidget(QDockWidget):
         self._streaming_html = ""
         self._retry_count = 0
         self._anchor_connected = False
+        self._tool_registry = None
 
         self._build_ui()
 
@@ -185,6 +363,12 @@ class ChatDockWidget(QDockWidget):
         self.input_edit.clear()
         self._retry_count = 0  # Reset retries for new user message
 
+        # Check for skill commands
+        if text.startswith("/"):
+            handled = self._handle_skill_command(text)
+            if handled:
+                return
+
         # Add to conversation and display
         self.conversation.add_user_message(text)
         self._append_html(render_message("user", text))
@@ -192,10 +376,29 @@ class ChatDockWidget(QDockWidget):
         # Build system prompt
         from ..core.system_prompt import build_system_prompt
         mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
-        system_prompt = build_system_prompt(mode=mode)
+        cfg = get_config()
+
+        # Determine if we should use tools
+        use_tools = cfg.enable_tools and mode == "act"
+        tools_schema = None
+        api_style = "openai"
+
+        if use_tools:
+            from ..tools.setup import create_default_registry
+            from ..llm.providers import get_api_style
+            self._tool_registry = create_default_registry()
+            api_style = get_api_style(cfg.provider.name)
+            if api_style == "anthropic":
+                tools_schema = self._tool_registry.to_anthropic_schema()
+            else:
+                tools_schema = self._tool_registry.to_openai_schema()
+            system_prompt = build_system_prompt(mode=mode, tools_enabled=True)
+        else:
+            self._tool_registry = None
+            system_prompt = build_system_prompt(mode=mode)
 
         # Get messages for API
-        messages = self.conversation.get_messages_for_api()
+        messages = self.conversation.get_messages_for_api(api_style=api_style)
 
         # Start streaming
         self._set_loading(True)
@@ -207,10 +410,16 @@ class ChatDockWidget(QDockWidget):
             '<div style="white-space: pre-wrap;">'
         )
 
-        self._worker = _LLMWorker(messages, system_prompt, parent=self)
+        self._worker = _LLMWorker(
+            messages, system_prompt,
+            tools=tools_schema, registry=self._tool_registry,
+            api_style=api_style, parent=self,
+        )
         self._worker.token_received.connect(self._on_token)
         self._worker.response_finished.connect(self._on_response_finished)
         self._worker.error_occurred.connect(self._on_error)
+        self._worker.tool_call_started.connect(self._on_tool_call_started)
+        self._worker.tool_call_finished.connect(self._on_tool_call_finished)
         self._worker.start()
 
     def _on_mode_changed(self, index):
@@ -265,19 +474,37 @@ class ChatDockWidget(QDockWidget):
         cursor.movePosition(QTextCursor.End)
         cursor.insertHtml("</div></div>")
 
-        # Store in conversation
-        self.conversation.add_assistant_message(full_response)
+        # Store in conversation - include any tool call info from the worker
+        if self._worker and self._worker._tool_results:
+            # Store each intermediate tool turn
+            for turn_info in self._worker._tool_results:
+                tc_dicts = turn_info["tool_calls"]
+                self.conversation.add_assistant_message(
+                    turn_info["assistant_text"], tool_calls=tc_dicts
+                )
+                for r in turn_info["results"]:
+                    self.conversation.add_tool_result(r["tool_call_id"], r["content"])
+            # Store the final text-only response
+            # Extract just the final part (after last tool round)
+            last_tool_end = sum(
+                len(t["assistant_text"]) for t in self._worker._tool_results
+            )
+            final_text = full_response[last_tool_end:] if last_tool_end < len(full_response) else full_response
+            if final_text.strip():
+                self.conversation.add_assistant_message(final_text)
+        else:
+            self.conversation.add_assistant_message(full_response)
+
         self._update_token_count()
 
         # Re-render the full chat to get proper code block formatting
         self._rerender_chat()
 
-        # Handle code execution based on mode
+        # Handle code execution based on mode (only if tools were NOT used)
         mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
-        code_blocks = extract_code_blocks(full_response)
-
-        if code_blocks:
-            if mode == "act":
+        if not (self._worker and self._worker._tool_results):
+            code_blocks = extract_code_blocks(full_response)
+            if code_blocks and mode == "act":
                 self._handle_act_mode(code_blocks)
 
     @Slot(str)
@@ -291,6 +518,41 @@ class ChatDockWidget(QDockWidget):
 
         self._append_html(render_message("system", "Error: " + error_msg))
         self._rerender_chat()
+
+    # ── Tool call handlers ──────────────────────────────────
+
+    @Slot(str, str)
+    def _on_tool_call_started(self, tool_name, call_id):
+        """Render tool call start in the chat."""
+        self._append_html(render_tool_call(tool_name, call_id, started=True))
+
+    @Slot(str, str, bool, str)
+    def _on_tool_call_finished(self, tool_name, call_id, success, output):
+        """Render tool call result in the chat."""
+        self._append_html(render_tool_call(
+            tool_name, call_id, started=False, success=success, output=output
+        ))
+
+    @Slot(str, str)
+    def _execute_tool_call(self, tool_name, arguments_json):
+        """Execute a tool call on the main thread. Called via QMetaObject.invokeMethod."""
+        if not self._tool_registry:
+            result = {"success": False, "output": "", "error": "No tool registry"}
+        else:
+            try:
+                arguments = json.loads(arguments_json)
+            except json.JSONDecodeError:
+                arguments = {}
+            tool_result = self._tool_registry.execute(tool_name, arguments)
+            result = {
+                "success": tool_result.success,
+                "output": tool_result.output,
+                "error": tool_result.error,
+            }
+
+        # Signal the worker thread that the result is ready
+        if self._worker:
+            self._worker.set_tool_result(result)
 
     # ── Code execution ──────────────────────────────────────
 
@@ -391,6 +653,63 @@ class ChatDockWidget(QDockWidget):
                     "Code execution failed:\n" + result.stderr
                 )
 
+    # ── Skill commands ──────────────────────────────────────
+
+    def _handle_skill_command(self, text):
+        """Handle /command-style skill invocations. Returns True if handled."""
+        from ..extensions.skills import SkillsRegistry
+        registry = SkillsRegistry()
+        result = registry.match_command(text)
+        if not result:
+            return False
+
+        skill_name, args = result
+        skill = registry.get_skill(skill_name)
+        if not skill:
+            return False
+
+        # Display the command
+        self.conversation.add_user_message(text)
+        self._append_html(render_message("user", text))
+
+        # Execute the skill
+        exec_result = registry.execute_skill(skill_name, args)
+        if exec_result.get("inject_prompt"):
+            # Inject skill prompt and send to LLM
+            prompt_text = exec_result["inject_prompt"]
+            if args:
+                prompt_text += f"\n\nUser request: {args}"
+            self.conversation.add_user_message(prompt_text)
+            # Trigger LLM with the injected prompt
+            self._send_with_injected_prompt()
+        elif exec_result.get("output"):
+            self._append_html(render_message("system", exec_result["output"]))
+            self.conversation.add_system_message(exec_result["output"])
+
+        return True
+
+    def _send_with_injected_prompt(self):
+        """Send the current conversation to the LLM (used after skill injection)."""
+        from ..core.system_prompt import build_system_prompt
+        mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
+        system_prompt = build_system_prompt(mode=mode)
+        messages = self.conversation.get_messages_for_api()
+
+        self._set_loading(True)
+        self._streaming_html = ""
+        self._append_html(
+            '<div style="margin: 8px 0; padding: 8px 12px; '
+            'background-color: #f5f5f5; border-radius: 6px;">'
+            '<div style="font-weight: bold; color: #2e7d32; margin-bottom: 4px;">AI</div>'
+            '<div style="white-space: pre-wrap;">'
+        )
+
+        self._worker = _LLMWorker(messages, system_prompt, parent=self)
+        self._worker.token_received.connect(self._on_token)
+        self._worker.response_finished.connect(self._on_response_finished)
+        self._worker.error_occurred.connect(self._on_error)
+        self._worker.start()
+
     # ── UI helpers ──────────────────────────────────────────
 
     def _append_html(self, html_str):
@@ -407,10 +726,24 @@ class ChatDockWidget(QDockWidget):
         mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
 
         for msg in self.conversation.messages:
-            html_parts.append(render_message(msg["role"], msg["content"]))
+            if msg["role"] == "tool_result":
+                # Tool results are rendered inline via tool_call_finished signals
+                continue
+            elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                # Render assistant text + tool call indicators
+                if msg.get("content"):
+                    html_parts.append(render_message("assistant", msg["content"]))
+                for tc in msg["tool_calls"]:
+                    html_parts.append(render_tool_call(
+                        tc["name"], tc["id"], started=False, success=True,
+                        output=f"Called with: {json.dumps(tc['arguments'], indent=2)}"
+                    ))
+            else:
+                html_parts.append(render_message(msg["role"], msg.get("content", "")))
 
             if mode == "plan" and msg["role"] == "assistant":
-                code_blocks = extract_code_blocks(msg["content"])
+                content = msg.get("content", "")
+                code_blocks = extract_code_blocks(content)
                 for code in code_blocks:
                     html_parts.append(self._make_plan_buttons_html(code))
 

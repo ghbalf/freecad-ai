@@ -3,7 +3,7 @@
 Assembles a dynamic system prompt that includes:
   1. Identity and instructions
   2. Mode-specific behavior (Plan vs Act)
-  3. FreeCAD API reference
+  3. FreeCAD API reference (omitted when tools are active)
   4. Code conventions
   5. Current document context
   6. AGENTS.md project-level instructions
@@ -33,6 +33,27 @@ You are in **Act** mode. When the user asks you to create or modify geometry:
 - Always include error handling (try/except) so failures are caught gracefully
 - After modifying geometry, call App.ActiveDocument.recompute()
 - If the user asks a question (not a modeling request), answer normally without code"""
+
+ACT_MODE_TOOLS = """\
+## Mode: Act (with Tools)
+You are in **Act** mode with tool calling enabled. You have access to structured tools \
+that perform FreeCAD operations safely. Prefer using tools over generating raw code.
+
+**How to use tools:**
+- Use the available tools to create, modify, and query 3D geometry
+- You can call multiple tools in sequence to build complex models
+- Use `get_document_state` to inspect the current document before making changes
+- Use `measure` to check dimensions, volumes, and distances
+- Use `execute_code` as a fallback when no structured tool covers the operation
+- After tool calls, explain what was done in natural language
+
+**Tool calling strategy:**
+- For simple primitives: use `create_primitive`
+- For parametric parts: use `create_sketch` + `pad_sketch` / `pocket_sketch`
+- For booleans: use `boolean_operation`
+- For transformations: use `transform_object`
+- For edge operations: use `fillet_edges` or `chamfer_edges`
+- For complex operations not covered by tools: use `execute_code`"""
 
 FREECAD_API_REFERENCE = """\
 ## FreeCAD Python API Reference (condensed)
@@ -262,6 +283,14 @@ doc.recompute()
 - After recompute, check `obj.Shape.isValid()` to verify geometry is correct
 - If an operation might fail, always wrap it in try/except to prevent crashes"""
 
+CODE_CONVENTIONS_TOOLS = """\
+## Important FreeCAD Notes
+- When using `execute_code` tool, always use `App.ActiveDocument` and call `doc.recompute()`
+- Use primitives over Revolution/Revolve for basic shapes (sphere, cylinder, cone, torus)
+- Revolution WILL CRASH FreeCAD if given a full circle profile — use semicircle + closing line
+- Boolean operations can crash on coplanar faces — add a tiny offset (0.01mm)
+- PartDesign features must be inside a Body: use `body.newObject()` not `doc.addObject()`"""
+
 RESPONSE_FORMAT = """\
 ## Response Format
 - When generating code, put it in a ```python fenced code block
@@ -271,33 +300,40 @@ RESPONSE_FORMAT = """\
 - If you need more information to proceed, ask the user"""
 
 
-def build_system_prompt(mode: str = "plan", agents_md: str = "") -> str:
+def build_system_prompt(mode: str = "plan", agents_md: str = "",
+                        tools_enabled: bool = False) -> str:
     """Build the full system prompt.
 
     Args:
         mode: "plan" or "act"
         agents_md: Contents of AGENTS.md / FREECAD_AI.md file, if any
+        tools_enabled: Whether tool calling is active (shorter prompt, no API ref)
     """
     sections = [IDENTITY, ""]
 
     # Mode instructions
-    if mode == "plan":
+    if tools_enabled and mode == "act":
+        sections.append(ACT_MODE_TOOLS)
+    elif mode == "plan":
         sections.append(PLAN_MODE)
     else:
         sections.append(ACT_MODE)
     sections.append("")
 
-    # API reference
-    sections.append(FREECAD_API_REFERENCE)
+    if tools_enabled:
+        # With tools, use abbreviated conventions (tools handle the API)
+        sections.append(CODE_CONVENTIONS_TOOLS)
+    else:
+        # Without tools, include full API reference
+        sections.append(FREECAD_API_REFERENCE)
+        sections.append("")
+        sections.append(CODE_CONVENTIONS)
     sections.append("")
 
-    # Code conventions
-    sections.append(CODE_CONVENTIONS)
-    sections.append("")
-
-    # Response format
-    sections.append(RESPONSE_FORMAT)
-    sections.append("")
+    # Response format (only without tools)
+    if not tools_enabled:
+        sections.append(RESPONSE_FORMAT)
+        sections.append("")
 
     # Document context
     doc_ctx = get_document_context()
