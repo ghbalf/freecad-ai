@@ -151,11 +151,10 @@ body.addObject(chamfer)
 chamfer.Base = (pad, ["Edge1"])
 chamfer.Size = 2.0
 
-# Revolution
-rev = doc.addObject("PartDesign::Revolution", "Revolution")
-body.addObject(rev)
+# Revolution (use body.newObject, NOT doc.addObject + body.addObject)
+rev = body.newObject("PartDesign::Revolution", "Revolution")
 rev.Profile = sketch
-rev.Axis = (sketch, ["N_Axis"])  # or custom axis
+rev.ReferenceAxis = (sketch, ["Edge2"])  # reference to a sketch edge as axis
 rev.Angle = 360.0
 
 # Mirrored
@@ -212,11 +211,41 @@ CODE_CONVENTIONS = """\
 
 **Revolution / Revolve (ONLY when no primitive exists):**
 - Revolution REQUIRES an OPEN profile — a closed wire where one edge lies exactly on the revolution axis
-- Example: a half-circle (ArcOfCircle from 0 to pi) closed by a straight line along the Y axis, revolved around that line
 - NEVER revolve a full circle — this WILL CRASH FreeCAD (segfault in OpenCASCADE)
 - NEVER revolve a closed shape that does not have an edge on the revolution axis
 - The sketch profile must NOT cross or overlap the revolution axis
 - If unsure, use a Part primitive instead
+- CENTER THE SKETCH AT THE ORIGIN — the revolution axis must pass through the origin
+- The arc center must be at (0,0,0) so the revolved shape is centered correctly
+
+**Correct semicircle-to-sphere revolution example (radius R, centered at origin):**
+```python
+import FreeCAD as App, Part, math
+
+doc = App.ActiveDocument
+body = doc.addObject("PartDesign::Body", "Body")
+sketch = body.newObject("Sketcher::SketchObject", "Sketch")
+# Attach to XZ plane — OriginFeatures: [0]=X_Axis [1]=Y_Axis [2]=Z_Axis [3]=XY_Plane [4]=XZ_Plane [5]=YZ_Plane
+sketch.AttachmentSupport = [(body.Origin.OriginFeatures[4], "")]  # XZ_Plane
+sketch.MapMode = "FlatFace"
+doc.recompute()
+
+R = 51.0  # radius
+# Arc: semicircle centered at origin (right half)
+sketch.addGeometry(Part.ArcOfCircle(
+    Part.Circle(App.Vector(0, 0, 0), App.Vector(0, 0, 1), R),
+    -math.pi / 2, math.pi / 2))
+# Closing line along Y axis (= revolution axis)
+sketch.addGeometry(Part.LineSegment(App.Vector(0, -R, 0), App.Vector(0, R, 0)))
+doc.recompute()
+
+# Revolution around the closing line (Edge2)
+rev = body.newObject("PartDesign::Revolution", "Revolution")
+rev.Profile = sketch
+rev.ReferenceAxis = (sketch, ["Edge2"])  # NOT rev.Axis — use ReferenceAxis!
+rev.Angle = 360.0
+doc.recompute()
+```
 
 **Booleans:**
 - Boolean operations (fuse/cut/common) can crash if shapes are coplanar or share edges exactly
