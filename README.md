@@ -102,8 +102,11 @@ Skills are reusable instruction sets stored in `~/.config/FreeCAD/FreeCADAI/skil
 | `/gear` | Involute spur gear from module and tooth count |
 | `/fastener-hole` | Clearance, counterbore, or countersink holes (ISO dimensions) |
 | `/lattice` | Grid, honeycomb, or diagonal infill patterns |
+| `/skill-creator` | Create new skills interactively from the chat |
 
 **Creating custom skills:**
+
+You can create skills manually (see below) or use `/skill-creator` in the chat to have the AI walk you through it.
 
 ```
 ~/.config/FreeCAD/FreeCADAI/skills/
