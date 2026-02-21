@@ -141,9 +141,6 @@ class LLMClient:
         }
         if tools:
             body["tools"] = tools
-        # Ollama needs num_ctx to use more than its default 2048 context
-        if self.provider_name == "ollama":
-            body["options"] = {"num_ctx": 32768}
         # OpenAI reasoning models (o1, o3, etc.)
         elif self.thinking != "off":
             effort_map = {"on": "medium", "extended": "high"}

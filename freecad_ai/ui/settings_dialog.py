@@ -93,7 +93,11 @@ class SettingsDialog(QDialog):
         self.max_tokens_spin.setRange(256, 262144)
         self.max_tokens_spin.setSingleStep(1024)
         self.max_tokens_spin.setValue(4096)
-        params_layout.addRow("Max Tokens:", self.max_tokens_spin)
+        self.max_tokens_spin.setToolTip(
+            "Maximum output tokens per response.\n"
+            "Context window is determined by the model/provider."
+        )
+        params_layout.addRow("Max Output Tokens:", self.max_tokens_spin)
 
         self.temperature_edit = QLineEdit()
         self.temperature_edit.setValidator(QDoubleValidator(0.0, 2.0, 2))
