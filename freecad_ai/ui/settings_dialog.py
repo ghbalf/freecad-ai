@@ -90,8 +90,8 @@ class SettingsDialog(QDialog):
         params_layout = QFormLayout()
 
         self.max_tokens_spin = QSpinBox()
-        self.max_tokens_spin.setRange(256, 32768)
-        self.max_tokens_spin.setSingleStep(256)
+        self.max_tokens_spin.setRange(256, 262144)
+        self.max_tokens_spin.setSingleStep(1024)
         self.max_tokens_spin.setValue(4096)
         params_layout.addRow("Max Tokens:", self.max_tokens_spin)
 
