@@ -163,7 +163,7 @@ def _handle_create_sketch(
     def do(doc):
         body = None
         if body_name:
-            body = doc.getObject(body_name)
+            body = _get_object(doc, body_name)
             if not body:
                 return ToolResult(success=False, output="", error=f"Body '{body_name}' not found")
 
@@ -300,14 +300,14 @@ def _handle_pad_sketch(
     """Pad (extrude) a sketch."""
 
     def do(doc):
-        sketch = doc.getObject(sketch_name)
+        sketch = _get_object(doc, sketch_name)
         if not sketch:
             return ToolResult(success=False, output="", error=f"Sketch '{sketch_name}' not found")
 
         # Find the body — prefer explicit body_name, fall back to auto-detect
         body = None
         if body_name:
-            body = doc.getObject(body_name)
+            body = _get_object(doc, body_name)
             if not body:
                 return ToolResult(success=False, output="", error=f"Body '{body_name}' not found")
         else:
@@ -357,13 +357,13 @@ def _handle_pocket_sketch(
     """Create a pocket (cut) from a sketch."""
 
     def do(doc):
-        sketch = doc.getObject(sketch_name)
+        sketch = _get_object(doc, sketch_name)
         if not sketch:
             return ToolResult(success=False, output="", error=f"Sketch '{sketch_name}' not found")
 
         body = None
         if body_name:
-            body = doc.getObject(body_name)
+            body = _get_object(doc, body_name)
             if not body:
                 return ToolResult(success=False, output="", error=f"Body '{body_name}' not found")
         else:
@@ -377,6 +377,13 @@ def _handle_pocket_sketch(
             pocket.Type = 1  # Through All
         else:
             pocket.Length = length
+
+        # Recompute and check — if pocket fails, try reversing direction.
+        # This handles sketches on XY plane (z=0) that need to cut upward
+        # into a solid padded in the +Z direction.
+        doc.recompute()
+        if not pocket.Shape or not pocket.Shape.isValid() or pocket.Shape.Volume < 0.001:
+            pocket.Reversed = True
 
         return ToolResult(
             success=True,
@@ -413,8 +420,8 @@ def _handle_boolean_operation(
     """Perform a boolean operation (fuse/cut/common) between two objects."""
 
     def do(doc):
-        obj1 = doc.getObject(object1)
-        obj2 = doc.getObject(object2)
+        obj1 = _get_object(doc, object1)
+        obj2 = _get_object(doc, object2)
         if not obj1:
             return ToolResult(success=False, output="", error=f"Object '{object1}' not found")
         if not obj2:
@@ -476,7 +483,7 @@ def _handle_transform_object(
     import FreeCAD as App
 
     def do(doc):
-        obj = doc.getObject(object_name)
+        obj = _get_object(doc, object_name)
         if not obj:
             return ToolResult(success=False, output="", error=f"Object '{object_name}' not found")
 
@@ -531,7 +538,7 @@ def _handle_fillet_edges(
     """Apply fillet to edges of an object."""
 
     def do(doc):
-        obj = doc.getObject(object_name)
+        obj = _get_object(doc, object_name)
         if not obj:
             return ToolResult(success=False, output="", error=f"Object '{object_name}' not found")
 
@@ -585,7 +592,7 @@ def _handle_chamfer_edges(
     """Apply chamfer to edges of an object."""
 
     def do(doc):
-        obj = doc.getObject(object_name)
+        obj = _get_object(doc, object_name)
         if not obj:
             return ToolResult(success=False, output="", error=f"Object '{object_name}' not found")
 
@@ -642,8 +649,8 @@ def _handle_measure(
         return ToolResult(success=False, output="", error="No active document")
 
     if measure_type == "distance" and target and target2:
-        obj1 = doc.getObject(target)
-        obj2 = doc.getObject(target2)
+        obj1 = _get_object(doc, target)
+        obj2 = _get_object(doc, target2)
         if not obj1 or not obj2:
             return ToolResult(success=False, output="", error="One or both objects not found")
         bb1 = obj1.Shape.BoundBox
@@ -657,7 +664,7 @@ def _handle_measure(
             data={"distance": dist},
         )
 
-    obj = doc.getObject(target) if target else None
+    obj = _get_object(doc, target) if target else None
     if not obj:
         return ToolResult(success=False, output="", error=f"Object '{target}' not found")
 
@@ -758,7 +765,7 @@ def _handle_modify_property(
     """Modify a property on an object."""
 
     def do(doc):
-        obj = doc.getObject(object_name)
+        obj = _get_object(doc, object_name)
         if not obj:
             return ToolResult(success=False, output="", error=f"Object '{object_name}' not found")
 
@@ -808,7 +815,7 @@ def _handle_export_model(
         return ToolResult(success=False, output="", error="No active document")
 
     if objects:
-        objs = [doc.getObject(n) for n in objects if doc.getObject(n)]
+        objs = [_get_object(doc, n) for n in objects if _get_object(doc, n)]
     else:
         objs = [o for o in doc.Objects if hasattr(o, "Shape")]
 
@@ -917,6 +924,22 @@ UNDO = ToolDefinition(
 
 
 # ── Helpers ─────────────────────────────────────────────────
+
+def _get_object(doc, name_or_label):
+    """Find a document object by internal Name first, then by Label.
+
+    FreeCAD may assign different internal Names than requested (e.g., "Body"
+    instead of "EnclosureBase"), so we fall back to Label matching.
+    """
+    obj = doc.getObject(name_or_label)
+    if obj:
+        return obj
+    # Fallback: search by Label
+    for o in doc.Objects:
+        if o.Label == name_or_label:
+            return o
+    return None
+
 
 def _find_body_for(doc, obj):
     """Find the PartDesign body containing an object, if any."""
