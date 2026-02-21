@@ -123,9 +123,13 @@ class LLMClient:
         msgs = []
         if system:
             sys_content = system
-            # For Ollama: append /no_think when thinking is off
-            if self.provider_name == "ollama" and self.thinking == "off":
-                sys_content += "\n/no_think"
+            # For Ollama: append /think or /no_think tags for models that support them
+            # (models that don't will just ignore these as text)
+            if self.provider_name == "ollama":
+                if self.thinking == "off":
+                    sys_content += "\n/no_think"
+                else:
+                    sys_content += "\n/think"
             msgs.append({"role": "system", "content": sys_content})
         msgs.extend(messages)
         body = {
@@ -139,10 +143,7 @@ class LLMClient:
             body["tools"] = tools
         # Ollama needs num_ctx to use more than its default 2048 context
         if self.provider_name == "ollama":
-            options = {"num_ctx": 32768}
-            if self.thinking != "off":
-                options["think"] = True
-            body["options"] = options
+            body["options"] = {"num_ctx": 32768}
         # OpenAI reasoning models (o1, o3, etc.)
         elif self.thinking != "off":
             effort_map = {"on": "medium", "extended": "high"}
