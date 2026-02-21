@@ -71,7 +71,7 @@ class _LLMWorker(QThread):
         self._tool_result_ready = QtCore.QMutex()
         self._tool_result_wait = QtCore.QWaitCondition()
         self._pending_result = None
-        self._max_tool_turns = 10  # Safety limit
+        self._max_tool_turns = 30  # Safety limit
 
     def run(self):
         try:
