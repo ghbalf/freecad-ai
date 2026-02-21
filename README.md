@@ -8,10 +8,12 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 
 - **Chat interface** — dock widget with streaming LLM responses
 - **Plan / Act modes** — review code before execution (Plan) or auto-execute (Act)
+- **Tool calling** — structured FreeCAD operations (Act mode) for safer, more reliable modeling
+- **Skills** — reusable instruction sets invoked via `/command` (enclosure, gear, fastener holes, etc.)
 - **Multiple LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, or any OpenAI-compatible endpoint
 - **Context-aware** — automatically includes document state (objects, properties, selection) in prompts
 - **Error self-correction** — failed code is sent back to the LLM for automatic retry (up to 3 attempts)
-- **AGENTS.md support** — project-level instructions loaded from files alongside your `.FCStd` documents
+- **AGENTS.md support** — project-level instructions with include directives and variable substitution
 - **Zero external dependencies** — uses only Python stdlib (`urllib`, `json`, `threading`, `ssl`)
 
 ## Requirements
@@ -61,7 +63,62 @@ Type a request like *"Create a box 50mm x 30mm x 20mm"*. The AI generates Python
 
 ### Act Mode
 
-Same workflow, but code executes automatically (with a confirmation dialog unless `auto_execute` is enabled in settings).
+Same workflow, but with two execution paths:
+
+- **Tool calling** (default): The LLM invokes structured tools like `create_primitive`, `boolean_operation`, `fillet_edges`, etc. These are pre-validated operations wrapped in undo transactions — safer and more reliable than raw code.
+- **Code generation** (fallback): When tools are disabled or the LLM generates code blocks instead, code executes with the same safety layers as before (static validation, subprocess sandbox, undo transactions).
+
+Tool calling is enabled by default. Disable it by setting `enable_tools: false` in `~/.config/FreeCAD/FreeCADAI/config.json`.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `create_primitive` | Box, Cylinder, Sphere, Cone, Torus |
+| `create_sketch` | Sketch with lines, circles, arcs, rectangles + constraints |
+| `pad_sketch` | Extrude a sketch |
+| `pocket_sketch` | Cut a pocket from a sketch |
+| `boolean_operation` | Fuse, Cut, or Common between two objects |
+| `transform_object` | Move and/or rotate an object |
+| `fillet_edges` | Round edges |
+| `chamfer_edges` | Chamfer edges |
+| `measure` | Volume, area, bounding box, distance, edge listing |
+| `get_document_state` | Inspect current objects and properties |
+| `modify_property` | Change any object property |
+| `export_model` | Export to STL, STEP, or IGES |
+| `execute_code` | Fallback: run arbitrary Python |
+| `undo` | Undo last N operations |
+
+### Skills
+
+Skills are reusable instruction sets stored in `~/.config/FreeCAD/FreeCADAI/skills/`. Invoke them by typing `/command` in the chat.
+
+**Built-in skills:**
+
+| Command | Description |
+|---------|-------------|
+| `/enclosure` | Parametric electronics enclosure with base, lid, screw posts |
+| `/thread-insert` | Heat-set thread insert holes (M2–M5) with correct dimensions |
+| `/gear` | Involute spur gear from module and tooth count |
+| `/fastener-hole` | Clearance, counterbore, or countersink holes (ISO dimensions) |
+| `/lattice` | Grid, honeycomb, or diagonal infill patterns |
+
+**Creating custom skills:**
+
+```
+~/.config/FreeCAD/FreeCADAI/skills/
+  my-skill/
+    SKILL.md          # Instructions injected into the LLM prompt
+    handler.py        # Optional: Python handler with execute(args) function
+```
+
+The `SKILL.md` file contains instructions for the LLM. When invoked, these are injected into the prompt along with any arguments you provide. For example:
+
+```
+/enclosure 100x60x40mm, 2mm walls, snap-fit lid
+```
+
+If a `handler.py` exists with an `execute(args)` function, it runs directly instead of prompting the LLM.
 
 ### AGENTS.md
 
@@ -74,6 +131,21 @@ All parts should have 1mm fillets on external edges.
 Use PartDesign workflow (Body -> Sketch -> Pad), not Part primitives.
 ```
 
+**Search order:** document directory → parent directories (up to 3 levels) → `~/.config/FreeCAD/FreeCADAI/AGENTS.md`
+
+**Include directives** — split instructions across files:
+```markdown
+<!-- include: materials.md -->
+<!-- include: conventions.md -->
+```
+
+**Variable substitution** — use live document values:
+```markdown
+Document: {{document_name}}
+Objects: {{object_count}}
+Active body: {{active_body}}
+```
+
 ## Project Structure
 
 ```
@@ -82,25 +154,29 @@ freecad-ai/
 ├── InitGui.py                 # Workbench registration + commands
 ├── package.xml                # FreeCAD addon metadata
 ├── freecad_ai/
-│   ├── config.py              # Settings (provider, API key, mode)
+│   ├── config.py              # Settings (provider, API key, mode, tools)
 │   ├── paths.py               # Path utilities
 │   ├── llm/
-│   │   ├── client.py          # HTTP client with SSE streaming
+│   │   ├── client.py          # HTTP client with SSE streaming + tool calling
 │   │   └── providers.py       # Provider registry
+│   ├── tools/
+│   │   ├── registry.py        # Tool abstractions + registry
+│   │   ├── freecad_tools.py   # 14 FreeCAD tool handlers
+│   │   └── setup.py           # Default registry factory
 │   ├── ui/
 │   │   ├── compat.py          # PySide2/PySide6 shim
-│   │   ├── chat_widget.py     # Main chat dock widget
-│   │   ├── message_view.py    # Message rendering
+│   │   ├── chat_widget.py     # Chat dock + agentic tool loop
+│   │   ├── message_view.py    # Message + tool call rendering
 │   │   ├── code_review_dialog.py
 │   │   └── settings_dialog.py
 │   ├── core/
-│   │   ├── executor.py        # Code execution engine
+│   │   ├── executor.py        # Code execution with safety layers
 │   │   ├── context.py         # Document state inspector
 │   │   ├── system_prompt.py   # System prompt builder
-│   │   └── conversation.py    # Conversation history
+│   │   └── conversation.py    # Conversation history + tool messages
 │   └── extensions/
-│       ├── agents_md.py       # AGENTS.md loader
-│       └── skills.py          # Skills registry (stub)
+│       ├── agents_md.py       # AGENTS.md loader (multi-location, includes, vars)
+│       └── skills.py          # Skills registry + execution
 └── resources/
     └── icons/
         └── freecad_ai.svg
