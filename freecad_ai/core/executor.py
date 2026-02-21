@@ -40,19 +40,35 @@ def extract_code_blocks(text: str) -> list[str]:
 
 
 def _find_freecad_cmd() -> str:
-    """Find the FreeCAD executable for console-mode subprocess runs."""
-    # Check common locations
+    """Find the FreeCAD executable for console-mode subprocess runs.
+
+    Handles AppImages, wrapper scripts, and standard installs.
+    """
+    import glob
+    import shutil
+
+    # 1. Look for AppImages in ~/bin (preferred — direct binary, not a wrapper script)
+    appimage_patterns = [
+        os.path.expanduser("~/bin/FreeCAD*.AppImage"),
+        "/usr/local/bin/FreeCAD*.AppImage",
+    ]
+    for pattern in appimage_patterns:
+        matches = sorted(glob.glob(pattern), reverse=True)  # newest version first
+        if matches:
+            return matches[0]
+
+    # 2. Check standard install locations
     candidates = [
-        os.path.expanduser("~/bin/freecad"),
-        "/usr/bin/freecad",
         "/usr/bin/freecadcmd",
+        "/usr/bin/freecad",
         "/usr/local/bin/freecad",
+        os.path.expanduser("~/bin/freecad"),
     ]
     for c in candidates:
         if os.path.isfile(c) and os.access(c, os.X_OK):
             return c
-    # Fallback: try PATH
-    import shutil
+
+    # 3. Fallback: try PATH
     for name in ("freecadcmd", "freecad"):
         found = shutil.which(name)
         if found:
