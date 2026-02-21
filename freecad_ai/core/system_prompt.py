@@ -202,12 +202,21 @@ CODE_CONVENTIONS = """\
 
 ## CRITICAL — Common FreeCAD Pitfalls (can cause crashes!)
 
-**Revolution / Revolve:**
-- Revolution REQUIRES an OPEN profile (e.g. a half-circle + straight line), NOT a closed shape
-- To make a sphere via revolution: sketch a HALF-CIRCLE (semicircular arc + closing straight line along the axis), then revolve 360 degrees around the straight edge
-- Revolving a full circle WILL CRASH FreeCAD — the geometry kernel cannot handle it
-- The revolution axis must be a straight edge of the sketch profile, or an explicit axis line
-- The sketch profile must NOT cross the revolution axis
+**ALWAYS use primitives when possible — DO NOT use Revolution/Revolve for basic shapes:**
+- Sphere → `Part.makeSphere(radius)` or `doc.addObject("Part::Sphere", "Sphere")`
+- Cylinder → `Part.makeCylinder(r, h)` or `doc.addObject("Part::Cylinder", "Cylinder")`
+- Cone → `Part.makeCone(r1, r2, h)` or `doc.addObject("Part::Cone", "Cone")`
+- Torus → `Part.makeTorus(R, r)` or `doc.addObject("Part::Torus", "Torus")`
+- Even if the user says "rotate a circle" or "revolve a profile" to make a sphere, USE Part.makeSphere() instead — it is safer and simpler
+- Only use Revolution/Revolve for custom profiles that have no primitive equivalent
+
+**Revolution / Revolve (ONLY when no primitive exists):**
+- Revolution REQUIRES an OPEN profile — a closed wire where one edge lies exactly on the revolution axis
+- Example: a half-circle (ArcOfCircle from 0 to pi) closed by a straight line along the Y axis, revolved around that line
+- NEVER revolve a full circle — this WILL CRASH FreeCAD (segfault in OpenCASCADE)
+- NEVER revolve a closed shape that does not have an edge on the revolution axis
+- The sketch profile must NOT cross or overlap the revolution axis
+- If unsure, use a Part primitive instead
 
 **Booleans:**
 - Boolean operations (fuse/cut/common) can crash if shapes are coplanar or share edges exactly
@@ -220,9 +229,7 @@ CODE_CONVENTIONS = """\
 - Close sketch profiles properly — unclosed sketches cannot be padded/pocketed
 
 **General:**
-- Prefer `Part.makeSphere(radius)` for a simple sphere instead of revolving a profile
-- Prefer `Part.makeCylinder(r, h)` for a simple cylinder instead of revolving a rectangle
-- Use the simplest primitive available rather than constructing shapes from sketches when possible
+- Use the simplest primitive available rather than constructing shapes from sketches
 - After recompute, check `obj.Shape.isValid()` to verify geometry is correct
 - If an operation might fail, always wrap it in try/except to prevent crashes"""
 

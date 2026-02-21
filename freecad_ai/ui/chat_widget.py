@@ -183,6 +183,7 @@ class ChatDockWidget(QDockWidget):
             return
 
         self.input_edit.clear()
+        self._retry_count = 0  # Reset retries for new user message
 
         # Add to conversation and display
         self.conversation.add_user_message(text)
@@ -316,7 +317,10 @@ class ChatDockWidget(QDockWidget):
                 result.success, result.stdout, result.stderr
             ))
 
-            if not result.success:
+            if result.success:
+                # Reset retry counter on success
+                self._retry_count = 0
+            else:
                 self._handle_execution_error(result)
                 break
 
@@ -458,11 +462,8 @@ class ChatDockWidget(QDockWidget):
         self.input_edit.setReadOnly(loading)
         if loading:
             self.send_btn.setText("...")
-            self._retry_count_for_success = self._retry_count
         else:
             self.send_btn.setText("Send")
-            if self._retry_count == getattr(self, "_retry_count_for_success", 0):
-                self._retry_count = 0
 
     def _update_token_count(self):
         """Update the token estimate display."""

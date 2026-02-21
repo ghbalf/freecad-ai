@@ -3,13 +3,21 @@
 Extracts Python code from LLM responses and executes them in FreeCAD's
 interpreter with the appropriate modules in scope.
 
-Uses FreeCAD undo transactions so failed operations can be rolled back.
+Safety layers:
+  1. Static validation — block dangerous patterns
+  2. Subprocess sandbox — test code in a headless FreeCAD process first
+  3. Undo transactions — roll back failed operations
+  4. Auto-save — save document before execution so crashes don't lose work
 """
 
 import io
+import json
+import os
 import re
 import signal
+import subprocess
 import sys
+import tempfile
 import traceback
 from dataclasses import dataclass
 
@@ -31,14 +39,140 @@ def extract_code_blocks(text: str) -> list[str]:
     return CODE_BLOCK_RE.findall(text)
 
 
-def execute_code(code: str, timeout: int = 30) -> ExecutionResult:
+def _find_freecad_cmd() -> str:
+    """Find the FreeCAD executable for console-mode subprocess runs."""
+    # Check common locations
+    candidates = [
+        os.path.expanduser("~/bin/freecad"),
+        "/usr/bin/freecad",
+        "/usr/bin/freecadcmd",
+        "/usr/local/bin/freecad",
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    # Fallback: try PATH
+    import shutil
+    for name in ("freecadcmd", "freecad"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return ""
+
+
+def _sandbox_test(code: str, timeout: int = 15) -> tuple:
+    """Test code in a headless FreeCAD subprocess.
+
+    Returns (safe: bool, error_message: str).
+    If FreeCAD console is not available, returns (True, "") to skip sandboxing.
+    """
+    freecad_bin = _find_freecad_cmd()
+    if not freecad_bin:
+        return True, ""  # Can't sandbox, let it through
+
+    result_file = tempfile.mktemp(suffix=".json")
+    script_file = tempfile.mktemp(suffix=".py")
+
+    # Write a test harness that runs the code in a fresh document
+    harness = '''import sys, json, traceback
+result = {{"ok": False, "error": ""}}
+try:
+    import FreeCAD as App
+    doc = App.newDocument("SandboxTest")
+    # --- user code ---
+{indented_code}
+    # --- end user code ---
+    doc.recompute()
+    result["ok"] = True
+except Exception as e:
+    result["error"] = traceback.format_exc()
+finally:
+    with open({result_path!r}, "w") as f:
+        json.dump(result, f)
+'''.format(
+        indented_code="\n".join("    " + line for line in code.splitlines()),
+        result_path=result_file,
+    )
+
+    try:
+        with open(script_file, "w") as f:
+            f.write(harness)
+
+        proc = subprocess.run(
+            [freecad_bin, "-c", script_file],
+            timeout=timeout,
+            capture_output=True,
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+        )
+
+        if proc.returncode != 0 and proc.returncode > 0:
+            # Non-zero but not a signal — Python error
+            stderr = proc.stderr.decode(errors="replace")[-500:]
+            return False, "Sandbox: code raised an error:\n" + stderr
+
+        if proc.returncode < 0:
+            # Killed by signal (e.g. SIGSEGV = -11)
+            sig = -proc.returncode
+            sig_name = signal.Signals(sig).name if sig in signal.Signals._value2member_map_ else str(sig)
+            return False, (
+                "Sandbox: code CRASHED FreeCAD (signal {}). "
+                "This code is not safe to execute.".format(sig_name)
+            )
+
+        # Read result
+        if os.path.exists(result_file):
+            with open(result_file) as f:
+                result = json.load(f)
+            if result["ok"]:
+                return True, ""
+            else:
+                return False, "Sandbox: " + result["error"]
+
+        return True, ""  # No result file but process exited OK
+
+    except subprocess.TimeoutExpired:
+        return False, "Sandbox: code timed out after {} seconds".format(timeout)
+    except Exception as e:
+        # Sandbox itself failed — don't block execution
+        return True, ""
+    finally:
+        for f in (script_file, result_file):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+
+
+def _auto_save(namespace: dict):
+    """Save a recovery copy of the active document before executing code."""
+    try:
+        app = namespace.get("App") or namespace.get("FreeCAD")
+        if not app or not app.ActiveDocument:
+            return
+        doc = app.ActiveDocument
+        if not doc.FileName:
+            return  # Unsaved document, nothing to back up
+        backup = doc.FileName + ".ai-backup"
+        doc.saveAs(backup)
+        # Restore the original filename so the user doesn't notice
+        doc.FileName = doc.FileName.replace(".ai-backup", "")
+    except Exception:
+        pass  # Best-effort
+
+
+def execute_code(code: str, timeout: int = 30, sandbox: bool = True) -> ExecutionResult:
     """Execute Python code in FreeCAD's context.
 
     The code runs with FreeCAD modules available in its namespace.
     stdout/stderr are captured and returned along with success status.
-    Execution is wrapped in an undo transaction so failures can be rolled back.
+
+    Safety layers:
+      1. Static validation (block dangerous patterns)
+      2. Subprocess sandbox (test in headless FreeCAD first)
+      3. Undo transactions (roll back on Python-level failure)
+      4. Auto-save (backup document before execution)
     """
-    # Pre-execution validation
+    # Layer 1: Static validation
     warnings = _validate_code(code)
     if warnings:
         return ExecutionResult(
@@ -48,8 +182,22 @@ def execute_code(code: str, timeout: int = 30) -> ExecutionResult:
             code=code,
         )
 
+    # Layer 2: Subprocess sandbox
+    if sandbox:
+        safe, sandbox_err = _sandbox_test(code, timeout=min(timeout, 15))
+        if not safe:
+            return ExecutionResult(
+                success=False,
+                stdout="",
+                stderr=sandbox_err,
+                code=code,
+            )
+
     # Build execution namespace with FreeCAD modules
     namespace = _build_namespace()
+
+    # Layer 4: Auto-save before execution
+    _auto_save(namespace)
 
     # Capture stdout/stderr
     old_stdout = sys.stdout
@@ -62,7 +210,7 @@ def execute_code(code: str, timeout: int = 30) -> ExecutionResult:
     doc = _get_active_doc(namespace)
     success = True
     try:
-        # Open undo transaction so we can roll back on failure
+        # Layer 3: Undo transaction
         if doc:
             doc.openTransaction("AI Code Execution")
 
@@ -74,13 +222,11 @@ def execute_code(code: str, timeout: int = 30) -> ExecutionResult:
             _old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
             signal.alarm(timeout)
         except (OSError, AttributeError):
-            # SIGALRM not available on all platforms
             pass
 
         try:
             exec(code, namespace)
         finally:
-            # Cancel the alarm
             try:
                 signal.alarm(0)
                 if _old_handler is not None:
@@ -95,7 +241,6 @@ def execute_code(code: str, timeout: int = 30) -> ExecutionResult:
     except Exception:
         success = False
         traceback.print_exc(file=captured_err)
-        # Roll back the failed transaction
         if doc:
             try:
                 doc.abortTransaction()
@@ -131,6 +276,26 @@ def _validate_code(code: str) -> list[str]:
     for pattern, msg in dangerous_patterns:
         if re.search(pattern, code):
             warnings.append(msg)
+
+    # FreeCAD crash-prone patterns
+    has_revolution = bool(re.search(r"Revolution|Revolve|makeRevolution", code))
+    if has_revolution:
+        # Revolution with a full circle profile is a known crash
+        has_full_circle = bool(re.search(r"Part\.Circle\s*\(", code))
+        has_arc = bool(re.search(r"ArcOfCircle|Arc\s*\(", code))
+        if has_full_circle and not has_arc:
+            warnings.append(
+                "Revolution with a full Part.Circle profile will crash FreeCAD. "
+                "Use Part.ArcOfCircle (semicircle) + a closing line instead, "
+                "or use Part.makeSphere() for spheres."
+            )
+        # Check for 360 degree revolution — always risky with sketch profiles
+        if re.search(r"\.Angle\s*=\s*360", code):
+            warnings.append(
+                "360-degree Revolution detected. Ensure the profile is an OPEN "
+                "shape (semicircle + straight line along axis), NOT a closed "
+                "circle. If you want a sphere, use Part.makeSphere() instead."
+            )
 
     return warnings
 
