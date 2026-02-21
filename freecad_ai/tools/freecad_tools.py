@@ -363,16 +363,8 @@ def _handle_boolean_operation(
 
         name = label or operation.capitalize()
         result_obj = doc.addObject(part_type, name)
-
-        if operation.lower() == "fuse":
-            result_obj.Shape1 = obj1
-            result_obj.Shape2 = obj2
-        elif operation.lower() == "cut":
-            result_obj.Base = obj1
-            result_obj.Tool = obj2
-        elif operation.lower() == "common":
-            result_obj.Shape1 = obj1
-            result_obj.Shape2 = obj2
+        result_obj.Base = obj1
+        result_obj.Tool = obj2
 
         return ToolResult(
             success=True,
@@ -823,14 +815,22 @@ def _handle_undo(steps: int = 1) -> ToolResult:
     if not doc:
         return ToolResult(success=False, output="", error="No active document")
 
-    for i in range(steps):
+    available = doc.UndoCount
+    if available == 0:
+        return ToolResult(
+            success=False, output="",
+            error="Nothing to undo (undo stack is empty)"
+        )
+
+    actual = min(steps, available)
+    for i in range(actual):
         doc.undo()
     doc.recompute()
 
     return ToolResult(
         success=True,
-        output=f"Undid {steps} operation(s)",
-        data={"steps": steps},
+        output=f"Undid {actual} operation(s)",
+        data={"steps": actual},
     )
 
 
