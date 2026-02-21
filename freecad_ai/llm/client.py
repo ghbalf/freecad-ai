@@ -420,10 +420,12 @@ class LLMClient:
         """Make an HTTP POST request and return parsed JSON response."""
         payload = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        # Ollama may need extra time to load large models from disk
+        timeout = 300 if self.provider_name == "ollama" else 120
 
         try:
             ctx = self._ssl_ctx if url.startswith("https") else None
-            with urllib.request.urlopen(req, context=ctx, timeout=120) as resp:
+            with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             error_body = ""
@@ -441,10 +443,12 @@ class LLMClient:
         """Make a streaming HTTP POST and yield parsed SSE data chunks."""
         payload = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        # Ollama may need extra time to load large models from disk
+        timeout = 300 if self.provider_name == "ollama" else 120
 
         try:
             ctx = self._ssl_ctx if url.startswith("https") else None
-            resp = urllib.request.urlopen(req, context=ctx, timeout=120)
+            resp = urllib.request.urlopen(req, context=ctx, timeout=timeout)
         except urllib.error.HTTPError as e:
             error_body = ""
             try:
