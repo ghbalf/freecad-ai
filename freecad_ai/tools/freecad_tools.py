@@ -235,10 +235,27 @@ def _handle_create_sketch(
 
         if constraints:
             for con in constraints:
-                args = [con["type"]]
+                con_type = con.get("type", "")
+                if not con_type:
+                    continue
+
+                # Validate: constraints need at least a geometry index ("first")
+                # to be meaningful. Without it, FreeCAD's C++ layer may segfault.
+                # Constraints with only type+value and no geometry refs are skipped.
+                if "first" not in con and con_type not in ("Block",):
+                    continue
+
+                args = [con_type]
                 for key in ("first", "first_pos", "second", "second_pos", "value"):
                     if key in con:
-                        args.append(con[key])
+                        v = con[key]
+                        # Ensure numeric args are ints (geometry/point indices) or float (value)
+                        if key == "value":
+                            args.append(float(v))
+                        elif isinstance(v, float):
+                            args.append(int(v))
+                        else:
+                            args.append(v)
                 try:
                     sketch.addConstraint(Sketcher.Constraint(*args))
                 except Exception:
