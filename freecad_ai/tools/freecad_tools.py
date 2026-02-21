@@ -154,6 +154,7 @@ def _handle_create_sketch(
     geometries: list | None = None,
     constraints: list | None = None,
     label: str = "",
+    offset: float = 0.0,
 ) -> ToolResult:
     """Create a sketch with geometry and constraints."""
     import FreeCAD as App
@@ -181,6 +182,16 @@ def _handle_create_sketch(
             sketch.AttachmentSupport = [(body.Origin.OriginFeatures[idx], "")]
             sketch.MapMode = "FlatFace"
 
+        # Offset the sketch along the plane normal
+        if offset != 0:
+            offset_map = {
+                "XY": App.Vector(0, 0, offset),
+                "XZ": App.Vector(0, offset, 0),
+                "YZ": App.Vector(offset, 0, 0),
+            }
+            ovec = offset_map.get(plane.upper(), App.Vector(0, 0, offset))
+            sketch.AttachmentOffset = App.Placement(ovec, App.Rotation())
+
         doc.recompute()
 
         geo_count = 0
@@ -193,13 +204,15 @@ def _handle_create_sketch(
                     sketch.addGeometry(Part.LineSegment(p1, p2))
                     geo_count += 1
                 elif geo_type == "circle":
-                    cx, cy = geo.get("cx", 0), geo.get("cy", 0)
+                    cx = geo.get("cx", geo.get("x", 0))
+                    cy = geo.get("cy", geo.get("y", 0))
                     r = geo.get("radius", 10)
                     sketch.addGeometry(Part.Circle(
                         App.Vector(cx, cy, 0), App.Vector(0, 0, 1), r))
                     geo_count += 1
                 elif geo_type == "arc":
-                    cx, cy = geo.get("cx", 0), geo.get("cy", 0)
+                    cx = geo.get("cx", geo.get("x", 0))
+                    cy = geo.get("cy", geo.get("y", 0))
                     r = geo.get("radius", 10)
                     start_angle = geo.get("start_angle", 0)
                     end_angle = geo.get("end_angle", 3.14159)
@@ -283,6 +296,7 @@ CREATE_SKETCH = ToolDefinition(
         ToolParam("constraints", "array", "List of Sketcher constraints. Each has 'type' plus constraint-specific params.",
                   required=False, items={"type": "object"}),
         ToolParam("label", "string", "Display label for the sketch", required=False, default=""),
+        ToolParam("offset", "number", "Offset the sketch along the plane normal (e.g. offset=40 on XY places sketch at z=40)", required=False, default=0.0),
     ],
     handler=_handle_create_sketch,
 )
@@ -378,12 +392,19 @@ def _handle_pocket_sketch(
         else:
             pocket.Length = length
 
-        # Recompute and check — if pocket fails, try reversing direction.
-        # This handles sketches on XY plane (z=0) that need to cut upward
-        # into a solid padded in the +Z direction.
+        # Measure volume before pocket to detect direction issues.
+        # Sketches on XY plane (z=0) often need Reversed=True to cut
+        # upward into a solid padded in the +Z direction.
+        vol_before = body.Shape.Volume if body.Shape else 0
         doc.recompute()
-        if not pocket.Shape or not pocket.Shape.isValid() or pocket.Shape.Volume < 0.001:
-            pocket.Reversed = True
+
+        vol_after = body.Shape.Volume if body.Shape and body.Shape.isValid() else 0
+        shape_ok = pocket.Shape and pocket.Shape.isValid() and vol_after > 0.001
+
+        # If the pocket didn't remove material (or shape is invalid), reverse it
+        if not shape_ok or vol_after >= vol_before - 0.1:
+            pocket.Reversed = not pocket.Reversed
+            doc.recompute()
 
         return ToolResult(
             success=True,
