@@ -66,6 +66,7 @@ class AppConfig:
     auto_execute: bool = False
     max_retries: int = 3
     enable_tools: bool = True
+    thinking: str = "off"  # "off", "on", "extended"
 
     def to_dict(self) -> dict:
         return asdict(self)

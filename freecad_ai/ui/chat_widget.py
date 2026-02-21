@@ -50,6 +50,7 @@ class _LLMWorker(QThread):
     """
 
     token_received = Signal(str)           # Text delta
+    thinking_received = Signal(str)        # Thinking/reasoning delta
     response_finished = Signal(str)        # Full response text (final turn only)
     error_occurred = Signal(str)           # Error message
     tool_call_started = Signal(str, str)   # (tool_name, call_id)
@@ -65,6 +66,7 @@ class _LLMWorker(QThread):
         self.registry = registry
         self.api_style = api_style
         self._full_response = ""
+        self._thinking_text = ""
         self._tool_results = []
         self._tool_result_ready = QtCore.QMutex()
         self._tool_result_wait = QtCore.QWaitCondition()
@@ -110,6 +112,9 @@ class _LLMWorker(QThread):
                     text_parts.append(event.text)
                     self._full_response += event.text
                     self.token_received.emit(event.text)
+                elif event.type == "thinking_delta":
+                    self._thinking_text += event.text
+                    self.thinking_received.emit(event.text)
                 elif event.type == "tool_call_start":
                     if event.tool_call:
                         self.tool_call_started.emit(event.tool_call.name, event.tool_call.id)
@@ -239,6 +244,43 @@ class _LLMWorker(QThread):
         self._tool_result_ready.unlock()
 
 
+class _CompactionWorker(QThread):
+    """Background thread that summarizes older messages for context compaction."""
+    finished = Signal(str)  # summary text
+
+    def __init__(self, conversation_text, parent=None):
+        super().__init__(parent)
+        self.conversation_text = conversation_text
+
+    def run(self):
+        try:
+            from ..llm.client import create_client_from_config
+            client = create_client_from_config()
+
+            messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        "Summarize the following conversation concisely. "
+                        "Focus on: what the user asked for, what was created/modified "
+                        "(object names, dimensions, operations), any errors encountered "
+                        "and how they were resolved, and the current state of the project. "
+                        "Keep technical details (names, numbers, tool calls) that would be "
+                        "needed to continue the conversation.\n\n"
+                        "CONVERSATION:\n" + self.conversation_text
+                    ),
+                }
+            ]
+            summary = client.send(
+                messages,
+                system="You are a conversation summarizer. Be concise but preserve key technical details."
+            )
+            self.finished.emit(summary)
+        except Exception as e:
+            # On failure, emit empty string (compaction will be skipped)
+            self.finished.emit("")
+
+
 # ── Chat Dock Widget ────────────────────────────────────────
 
 class ChatDockWidget(QDockWidget):
@@ -255,6 +297,7 @@ class ChatDockWidget(QDockWidget):
         self._retry_count = 0
         self._anchor_connected = False
         self._tool_registry = None
+        self._in_thinking = False  # Whether currently rendering thinking content
 
         self._build_ui()
 
@@ -328,6 +371,12 @@ class ChatDockWidget(QDockWidget):
         new_chat_btn.clicked.connect(self._new_chat)
         footer.addWidget(new_chat_btn)
 
+        load_chat_btn = QPushButton("Load")
+        load_chat_btn.setMaximumWidth(60)
+        load_chat_btn.setToolTip("Load a previous chat session")
+        load_chat_btn.clicked.connect(self._load_chat)
+        footer.addWidget(load_chat_btn)
+
         save_log_btn = QPushButton("Save Log")
         save_log_btn.setMaximumWidth(80)
         save_log_btn.setToolTip("Save session log for debugging (tool calls, arguments, results)")
@@ -379,7 +428,165 @@ class ChatDockWidget(QDockWidget):
         self.conversation.add_user_message(text)
         self._append_html(render_message("user", text))
 
-        # Build system prompt
+        # Check if conversation needs compaction
+        if self.conversation.needs_compaction():
+            self._compact_and_send()
+            return
+
+        self._continue_send()
+
+    def _on_mode_changed(self, index):
+        """Update config when mode is toggled."""
+        cfg = get_config()
+        cfg.mode = "plan" if index == 0 else "act"
+        save_current_config()
+
+    def _open_settings(self):
+        """Open the settings dialog."""
+        from .settings_dialog import SettingsDialog
+        try:
+            import FreeCADGui as Gui
+            parent = Gui.getMainWindow()
+        except ImportError:
+            parent = self
+        dlg = SettingsDialog(parent)
+        dlg.exec()
+
+    def _new_chat(self):
+        """Start a new conversation."""
+        if self.conversation.messages:
+            self.conversation.save()
+
+        self.conversation = Conversation()
+        self.chat_display.clear()
+        self._update_token_count()
+
+    def _load_chat(self):
+        """Show a dialog to load a previous chat session."""
+        saved = Conversation.list_saved()
+        if not saved:
+            self._append_html(render_message("system", "No saved sessions found."))
+            return
+
+        # Build display items with timestamps and preview
+        items = []
+        for conv_id in saved[:20]:  # Show last 20
+            try:
+                conv = Conversation.load(conv_id)
+                # Get timestamp from conversation
+                import time
+                ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(conv.created_at)) if conv.created_at else "?"
+                # Get first user message as preview
+                preview = ""
+                for m in conv.messages:
+                    if m["role"] == "user" and not m["content"].startswith("["):
+                        preview = m["content"][:60].replace("\n", " ")
+                        break
+                item_text = f"{ts} | {preview or conv_id}"
+                items.append((item_text, conv_id))
+            except Exception:
+                items.append((conv_id, conv_id))
+
+        # Use QInputDialog to pick a session
+        item_labels = [item[0] for item in items]
+
+        try:
+            import FreeCADGui as Gui
+            parent = Gui.getMainWindow()
+        except ImportError:
+            parent = self
+
+        from .compat import QtWidgets as _QtWidgets
+        selected, ok = _QtWidgets.QInputDialog.getItem(
+            parent, "Load Chat Session",
+            "Select a session to resume:",
+            item_labels, 0, False
+        )
+
+        if ok and selected:
+            idx = item_labels.index(selected)
+            conv_id = items[idx][1]
+
+            # Save current conversation first
+            if self.conversation.messages:
+                self.conversation.save()
+
+            # Load the selected conversation
+            try:
+                self.conversation = Conversation.load(conv_id)
+                self._rerender_chat()
+                self._update_token_count()
+                self._append_html(render_message(
+                    "system", f"Resumed session from {items[idx][0].split(' | ')[0]}"
+                ))
+            except Exception as e:
+                self._append_html(render_message("system", f"Failed to load session: {e}"))
+
+    def _compact_and_send(self):
+        """Compact conversation by summarizing older messages, then continue sending."""
+        self._append_html(
+            '<div style="margin: 4px 0; padding: 6px 10px; '
+            'background-color: #fff3e0; border-left: 3px solid #ff9800; '
+            'border-radius: 0 4px 4px 0; font-size: 12px; color: #e65100;">'
+            '&#9881; Compacting context (~{}k tokens)...</div>'.format(
+                self.conversation.estimated_tokens() // 1000)
+        )
+
+        # Build summary of older messages (all except last 4)
+        keep_recent = 4
+        older = self.conversation.messages[:-keep_recent] if len(self.conversation.messages) > keep_recent else []
+        if not older:
+            # Nothing to compact, just send normally
+            self._continue_send()
+            return
+
+        # Build a text summary of older messages for the LLM to compress
+        summary_parts = []
+        for msg in older:
+            role = msg["role"]
+            content = msg.get("content", "")
+            if role == "tool_result":
+                # Truncate long tool results for the summary request
+                if len(content) > 500:
+                    content = content[:500] + "..."
+                summary_parts.append(f"[Tool Result] {content}")
+            elif role == "assistant" and msg.get("tool_calls"):
+                tc_names = [tc["name"] for tc in msg["tool_calls"]]
+                summary_parts.append(f"[Assistant] Called tools: {', '.join(tc_names)}")
+                if content:
+                    summary_parts.append(f"  Text: {content[:300]}")
+            else:
+                label = "User" if role == "user" else "Assistant" if role == "assistant" else "System"
+                if len(content) > 500:
+                    content = content[:500] + "..."
+                summary_parts.append(f"[{label}] {content}")
+
+        summary_text = "\n".join(summary_parts)
+
+        # Use a background thread to generate the summary
+        self._set_loading(True)
+        self._compaction_worker = _CompactionWorker(summary_text, parent=self)
+        self._compaction_worker.finished.connect(self._on_compaction_finished)
+        self._compaction_worker.start()
+
+    def _on_compaction_finished(self, summary):
+        """Handle compaction result and continue sending."""
+        if summary:
+            self.conversation.compact(summary, keep_recent=4)
+            self._append_html(
+                '<div style="margin: 4px 0; padding: 6px 10px; '
+                'background-color: #e8f5e9; border-left: 3px solid #4caf50; '
+                'border-radius: 0 4px 4px 0; font-size: 12px; color: #2e7d32;">'
+                '&#10003; Context compacted to ~{}k tokens</div>'.format(
+                    self.conversation.estimated_tokens() // 1000)
+            )
+        self._set_loading(False)
+        self._update_token_count()
+        # Continue with the normal send flow
+        self._continue_send()
+
+    def _continue_send(self):
+        """Continue the send flow after optional compaction."""
         from ..core.system_prompt import build_system_prompt
         mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
         cfg = get_config()
@@ -416,44 +623,20 @@ class ChatDockWidget(QDockWidget):
             '<div style="white-space: pre-wrap;">'
         )
 
+        self._in_thinking = False
         self._worker = _LLMWorker(
             messages, system_prompt,
             tools=tools_schema, registry=self._tool_registry,
             api_style=api_style, parent=self,
         )
         self._worker.token_received.connect(self._on_token)
+        self._worker.thinking_received.connect(self._on_thinking)
         self._worker.response_finished.connect(self._on_response_finished)
         self._worker.error_occurred.connect(self._on_error)
         self._worker.tool_call_started.connect(self._on_tool_call_started)
         self._worker.tool_call_finished.connect(self._on_tool_call_finished)
         self._worker.tool_exec_requested.connect(self._execute_tool_call)
         self._worker.start()
-
-    def _on_mode_changed(self, index):
-        """Update config when mode is toggled."""
-        cfg = get_config()
-        cfg.mode = "plan" if index == 0 else "act"
-        save_current_config()
-
-    def _open_settings(self):
-        """Open the settings dialog."""
-        from .settings_dialog import SettingsDialog
-        try:
-            import FreeCADGui as Gui
-            parent = Gui.getMainWindow()
-        except ImportError:
-            parent = self
-        dlg = SettingsDialog(parent)
-        dlg.exec()
-
-    def _new_chat(self):
-        """Start a new conversation."""
-        if self.conversation.messages:
-            self.conversation.save()
-
-        self.conversation = Conversation()
-        self.chat_display.clear()
-        self._update_token_count()
 
     def _save_session_log(self):
         """Save the current session log as JSON for debugging."""
@@ -536,9 +719,44 @@ class ChatDockWidget(QDockWidget):
     # ── Streaming handlers ──────────────────────────────────
 
     @Slot(str)
+    def _on_thinking(self, chunk):
+        """Handle a thinking/reasoning delta — render dimmed."""
+        import html as html_mod
+        if not self._in_thinking:
+            self._in_thinking = True
+            # Start a thinking block
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertHtml(
+                '<div style="margin: 4px 0; padding: 4px 8px; '
+                'background-color: #f0f0f0; border-left: 2px solid #ccc; '
+                'font-size: 11px; color: #888; font-style: italic;">'
+                '<span style="color: #aaa;">Thinking...</span><br>'
+            )
+            self.chat_display.setTextCursor(cursor)
+
+        escaped = html_mod.escape(chunk)
+        escaped = escaped.replace("\n", "<br>")
+
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertHtml(f'<span style="color: #999; font-size: 11px;">{escaped}</span>')
+        self.chat_display.setTextCursor(cursor)
+        self.chat_display.ensureCursorVisible()
+
+    @Slot(str)
     def _on_token(self, chunk):
         """Handle a streamed token — append to the display."""
         import html as html_mod
+
+        # Close thinking block if transitioning from thinking to regular content
+        if self._in_thinking:
+            self._in_thinking = False
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertHtml('</div>')
+            self.chat_display.setTextCursor(cursor)
+
         escaped = html_mod.escape(chunk)
         escaped = escaped.replace("\n", "<br>")
         self._streaming_html += chunk
@@ -581,6 +799,9 @@ class ChatDockWidget(QDockWidget):
             self.conversation.add_assistant_message(full_response)
 
         self._update_token_count()
+
+        # Auto-save conversation for resume capability
+        self.conversation.save()
 
         # Auto-save session log when tool calls were used
         if self._worker and self._worker._tool_results:

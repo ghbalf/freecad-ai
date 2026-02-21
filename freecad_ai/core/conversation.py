@@ -191,7 +191,49 @@ class Conversation:
     def estimated_tokens(self) -> int:
         """Rough token estimate (chars / 4)."""
         total_chars = sum(len(m.get("content", "")) for m in self.messages)
+        # Also count tool call arguments
+        for m in self.messages:
+            for tc in m.get("tool_calls", []):
+                total_chars += len(str(tc.get("arguments", {})))
         return total_chars // 4
+
+    def needs_compaction(self, threshold_tokens: int = 20000) -> bool:
+        """Check if conversation is long enough to benefit from compaction."""
+        return self.estimated_tokens() > threshold_tokens and len(self.messages) > 6
+
+    def compact(self, summary: str, keep_recent: int = 4):
+        """Replace older messages with a summary, keeping the most recent messages.
+
+        Args:
+            summary: Text summarizing the older messages
+            keep_recent: Number of recent messages to preserve (at minimum)
+        """
+        if len(self.messages) <= keep_recent + 1:
+            return  # Not enough messages to compact
+
+        # Find a safe split point: never split in the middle of a tool_call/tool_result pair
+        split_idx = len(self.messages) - keep_recent
+
+        # Walk backward from split_idx to ensure we don't break a tool pair
+        while split_idx > 0 and self.messages[split_idx]["role"] == "tool_result":
+            split_idx -= 1
+        # Also don't split after an assistant message with tool_calls
+        if split_idx > 0 and self.messages[split_idx - 1]["role"] == "assistant":
+            if self.messages[split_idx - 1].get("tool_calls"):
+                split_idx -= 1
+
+        if split_idx <= 1:
+            return  # Would compact everything, not useful
+
+        # Replace old messages with summary
+        summary_msg = {
+            "role": "user",
+            "content": (
+                "[Context Summary — earlier conversation was compacted to save space]\n\n"
+                + summary
+            ),
+        }
+        self.messages = [summary_msg] + self.messages[split_idx:]
 
     # ── Persistence ──────────────────────────────────────────
 

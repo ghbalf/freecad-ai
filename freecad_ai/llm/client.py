@@ -39,7 +39,7 @@ class LLMResponse:
 @dataclass
 class LLMStreamEvent:
     """A single event from a streaming LLM response."""
-    type: str  # "text_delta", "tool_call_start", "tool_call_delta", "tool_call_end", "done"
+    type: str  # "text_delta", "thinking_delta", "tool_call_start", "tool_call_delta", "tool_call_end", "done"
     text: str = ""
     tool_call: ToolCall | None = None
     argument_delta: str = ""
@@ -54,13 +54,15 @@ class LLMClient:
     """Unified client for multiple LLM providers."""
 
     def __init__(self, provider_name: str, base_url: str, api_key: str,
-                 model: str, max_tokens: int = 4096, temperature: float = 0.3):
+                 model: str, max_tokens: int = 4096, temperature: float = 0.3,
+                 thinking: str = "off"):
         self.provider_name = provider_name
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.thinking = thinking  # "off", "on", "extended"
         self.api_style = get_api_style(provider_name)
 
         # SSL context for HTTPS requests
@@ -120,7 +122,11 @@ class LLMClient:
                      tools: list[dict] | None = None) -> dict:
         msgs = []
         if system:
-            msgs.append({"role": "system", "content": system})
+            sys_content = system
+            # For Ollama: append /no_think when thinking is off
+            if self.provider_name == "ollama" and self.thinking == "off":
+                sys_content += "\n/no_think"
+            msgs.append({"role": "system", "content": sys_content})
         msgs.extend(messages)
         body = {
             "model": self.model,
@@ -133,7 +139,14 @@ class LLMClient:
             body["tools"] = tools
         # Ollama needs num_ctx to use more than its default 2048 context
         if self.provider_name == "ollama":
-            body["options"] = {"num_ctx": 32768}
+            options = {"num_ctx": 32768}
+            if self.thinking != "off":
+                options["think"] = True
+            body["options"] = options
+        # OpenAI reasoning models (o1, o3, etc.)
+        elif self.thinking != "off":
+            effort_map = {"on": "medium", "extended": "high"}
+            body["reasoning_effort"] = effort_map.get(self.thinking, "medium")
         return body
 
     def _send_openai(self, messages: list[dict], system: str, stream: bool = False) -> str:
@@ -181,6 +194,7 @@ class LLMClient:
                     content = delta.get("content")
                     if content:
                         yield content
+                    # Skip reasoning_content in simple stream mode
             except (KeyError, IndexError):
                 continue
 
@@ -198,6 +212,11 @@ class LLMClient:
                 choice = choices[0]
                 delta = choice.get("delta", {})
                 finish = choice.get("finish_reason")
+
+                # Thinking/reasoning content (Ollama qwen3, OpenAI o1/o3)
+                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                if reasoning:
+                    yield LLMStreamEvent(type="thinking_delta", text=reasoning)
 
                 # Text content
                 content = delta.get("content")
@@ -259,11 +278,14 @@ class LLMClient:
         return f"{self.base_url}/v1/messages"
 
     def _anthropic_headers(self) -> dict:
-        return {
+        headers = {
             "Content-Type": "application/json",
             "x-api-key": self.api_key,
             "anthropic-version": ANTHROPIC_API_VERSION,
         }
+        if self.thinking != "off":
+            headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
+        return headers
 
     def _anthropic_body(self, messages: list[dict], system: str, stream: bool,
                         tools: list[dict] | None = None) -> dict:
@@ -271,9 +293,19 @@ class LLMClient:
             "model": self.model,
             "messages": messages,
             "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
             "stream": stream,
         }
+        # Anthropic extended thinking requires temperature=1 and a budget
+        if self.thinking != "off":
+            budget_map = {"on": 4096, "extended": 16384}
+            budget = budget_map.get(self.thinking, 4096)
+            body["temperature"] = 1
+            body["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": budget,
+            }
+        else:
+            body["temperature"] = self.temperature
         if system:
             body["system"] = system
         if tools:
@@ -348,6 +380,10 @@ class LLMClient:
                     text = delta.get("text", "")
                     if text:
                         yield LLMStreamEvent(type="text_delta", text=text)
+                elif delta.get("type") == "thinking_delta":
+                    thinking_text = delta.get("thinking", "")
+                    if thinking_text:
+                        yield LLMStreamEvent(type="thinking_delta", text=thinking_text)
                 elif delta.get("type") == "input_json_delta":
                     json_chunk = delta.get("partial_json", "")
                     if json_chunk:
@@ -464,4 +500,5 @@ def create_client_from_config() -> LLMClient:
         model=cfg.provider.model,
         max_tokens=cfg.max_tokens,
         temperature=cfg.temperature,
+        thinking=cfg.thinking,
     )

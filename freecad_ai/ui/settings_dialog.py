@@ -112,6 +112,20 @@ class SettingsDialog(QDialog):
         )
         behavior_layout.addWidget(self.auto_execute_check)
 
+        # Thinking mode
+        thinking_layout = QHBoxLayout()
+        thinking_layout.addWidget(QLabel("Thinking:"))
+        self.thinking_combo = QComboBox()
+        self.thinking_combo.addItems(["Off", "On", "Extended"])
+        self.thinking_combo.setToolTip(
+            "Off: No reasoning (fastest)\n"
+            "On: Standard thinking/reasoning\n"
+            "Extended: Extended thinking with higher budget"
+        )
+        thinking_layout.addWidget(self.thinking_combo)
+        thinking_layout.addStretch()
+        behavior_layout.addLayout(thinking_layout)
+
         behavior_group.setLayout(behavior_layout)
         layout.addWidget(behavior_group)
 
@@ -162,6 +176,9 @@ class SettingsDialog(QDialog):
         self.temperature_edit.setText(str(cfg.temperature))
         self.auto_execute_check.setChecked(cfg.auto_execute)
 
+        thinking_map = {"off": 0, "on": 1, "extended": 2}
+        self.thinking_combo.setCurrentIndex(thinking_map.get(cfg.thinking, 0))
+
     def _on_provider_changed(self, index):
         """Update base URL and model when provider selection changes."""
         names = get_provider_names()
@@ -188,6 +205,9 @@ class SettingsDialog(QDialog):
             cfg.temperature = 0.3
 
         cfg.auto_execute = self.auto_execute_check.isChecked()
+
+        thinking_values = ["off", "on", "extended"]
+        cfg.thinking = thinking_values[self.thinking_combo.currentIndex()]
 
         save_current_config()
         self.accept()
@@ -232,3 +252,6 @@ class SettingsDialog(QDialog):
             cfg.temperature = float(self.temperature_edit.text())
         except ValueError:
             pass
+
+        thinking_values = ["off", "on", "extended"]
+        cfg.thinking = thinking_values[self.thinking_combo.currentIndex()]

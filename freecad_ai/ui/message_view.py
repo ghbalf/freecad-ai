@@ -10,6 +10,9 @@ import re
 # Match ```python ... ``` code blocks
 CODE_BLOCK_RE = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
 
+# Match <think>...</think> blocks
+THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+
 # Match inline `code`
 INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 
@@ -160,24 +163,55 @@ def render_tool_call(tool_name: str, call_id: str, started: bool = True,
         return "".join(parts)
 
 
+def _render_thinking_block(thinking_text: str) -> str:
+    """Render a <think> block as a dimmed, collapsible-style block."""
+    escaped = html.escape(thinking_text.strip())
+    # Truncate very long thinking
+    if len(escaped) > 2000:
+        escaped = escaped[:2000] + "..."
+    return (
+        '<div style="margin: 4px 0; padding: 4px 8px; '
+        'background-color: #f0f0f0; border-left: 2px solid #ccc; '
+        'font-size: 11px; color: #999; font-style: italic;">'
+        '<span style="color: #aaa;">Thinking</span><br>'
+        f'{escaped}</div>'
+    )
+
+
 def _format_content(text: str) -> str:
-    """Convert markdown-ish text to HTML, handling code blocks specially."""
+    """Convert markdown-ish text to HTML, handling code blocks and think blocks."""
+    # First strip <think> blocks
     parts = []
     last_end = 0
 
-    for match in CODE_BLOCK_RE.finditer(text):
-        # Process text before the code block
+    # Combine code blocks and think blocks into a single pass
+    # by finding all special blocks and processing in order
+    code_matches = list(CODE_BLOCK_RE.finditer(text))
+    think_matches = list(THINK_BLOCK_RE.finditer(text))
+
+    # Merge and sort all matches by start position
+    all_matches = [(m, "code") for m in code_matches] + [(m, "think") for m in think_matches]
+    all_matches.sort(key=lambda x: x[0].start())
+
+    for match, match_type in all_matches:
+        if match.start() < last_end:
+            continue  # Skip overlapping matches
+
+        # Process text before this block
         before = text[last_end:match.start()]
         if before:
             parts.append(_format_inline(html.escape(before)))
 
-        # Render the code block
-        language = match.group(1) or "python"
-        code = match.group(2)
-        parts.append(render_code_block(code, language))
+        if match_type == "code":
+            language = match.group(1) or "python"
+            code = match.group(2)
+            parts.append(render_code_block(code, language))
+        elif match_type == "think":
+            parts.append(_render_thinking_block(match.group(1)))
+
         last_end = match.end()
 
-    # Process remaining text after last code block
+    # Process remaining text after last block
     remaining = text[last_end:]
     if remaining:
         parts.append(_format_inline(html.escape(remaining)))
