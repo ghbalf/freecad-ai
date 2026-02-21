@@ -328,6 +328,12 @@ class ChatDockWidget(QDockWidget):
         new_chat_btn.clicked.connect(self._new_chat)
         footer.addWidget(new_chat_btn)
 
+        save_log_btn = QPushButton("Save Log")
+        save_log_btn.setMaximumWidth(80)
+        save_log_btn.setToolTip("Save session log for debugging (tool calls, arguments, results)")
+        save_log_btn.clicked.connect(self._save_session_log)
+        footer.addWidget(save_log_btn)
+
         footer.addStretch()
 
         self.token_label = QLabel("tokens: ~0")
@@ -449,6 +455,84 @@ class ChatDockWidget(QDockWidget):
         self.chat_display.clear()
         self._update_token_count()
 
+    def _save_session_log(self):
+        """Save the current session log as JSON for debugging."""
+        import os
+        from datetime import datetime
+
+        log_dir = os.path.expanduser("~/.config/FreeCAD/FreeCADAI/logs")
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = os.path.join(log_dir, f"session_{timestamp}.json")
+
+        # Build the log from conversation messages
+        log_data = {
+            "timestamp": datetime.now().isoformat(),
+            "messages": [],
+        }
+
+        for msg in self.conversation.messages:
+            entry = {"role": msg["role"]}
+            if "content" in msg and msg["content"]:
+                entry["content"] = msg["content"]
+            if "tool_calls" in msg:
+                entry["tool_calls"] = msg["tool_calls"]
+            if "tool_call_id" in msg:
+                entry["tool_call_id"] = msg["tool_call_id"]
+            log_data["messages"].append(entry)
+
+        # Also include the last worker's tool results if available
+        if self._worker and hasattr(self._worker, "_tool_results") and self._worker._tool_results:
+            log_data["tool_trace"] = self._worker._tool_results
+
+        try:
+            with open(filepath, "w") as f:
+                json.dump(log_data, f, indent=2, default=str)
+
+            self._append_html(render_message(
+                "system", f"Session log saved to: {filepath}"
+            ))
+        except Exception as e:
+            self._append_html(render_message(
+                "system", f"Failed to save log: {e}"
+            ))
+
+    def _auto_save_log(self):
+        """Auto-save tool trace after each tool-using response."""
+        import os
+        from datetime import datetime
+
+        log_dir = os.path.expanduser("~/.config/FreeCAD/FreeCADAI/logs")
+        os.makedirs(log_dir, exist_ok=True)
+
+        filepath = os.path.join(log_dir, "latest_session.json")
+
+        log_data = {
+            "timestamp": datetime.now().isoformat(),
+            "tool_trace": [],
+        }
+
+        if self._worker and hasattr(self._worker, "_tool_results"):
+            for turn_idx, turn in enumerate(self._worker._tool_results):
+                turn_data = {
+                    "turn": turn_idx + 1,
+                    "assistant_text": turn["assistant_text"],
+                    "tool_calls": [],
+                }
+                for tc, result in zip(turn["tool_calls"], turn["results"]):
+                    turn_data["tool_calls"].append({
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
+                        "result": result["content"],
+                    })
+                log_data["tool_trace"].append(turn_data)
+
+        try:
+            with open(filepath, "w") as f:
+                json.dump(log_data, f, indent=2, default=str)
+        except Exception:
+            pass  # Don't disrupt the UI for auto-save failures
+
     # ── Streaming handlers ──────────────────────────────────
 
     @Slot(str)
@@ -497,6 +581,10 @@ class ChatDockWidget(QDockWidget):
             self.conversation.add_assistant_message(full_response)
 
         self._update_token_count()
+
+        # Auto-save session log when tool calls were used
+        if self._worker and self._worker._tool_results:
+            self._auto_save_log()
 
         # Re-render the full chat to get proper code block formatting
         self._rerender_chat()
