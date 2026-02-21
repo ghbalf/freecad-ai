@@ -295,6 +295,7 @@ def _handle_pad_sketch(
     length: float = 10.0,
     symmetric: bool = False,
     label: str = "",
+    body_name: str = "",
 ) -> ToolResult:
     """Pad (extrude) a sketch."""
 
@@ -303,8 +304,14 @@ def _handle_pad_sketch(
         if not sketch:
             return ToolResult(success=False, output="", error=f"Sketch '{sketch_name}' not found")
 
-        # Find the body containing this sketch
-        body = _find_body_for(doc, sketch)
+        # Find the body — prefer explicit body_name, fall back to auto-detect
+        body = None
+        if body_name:
+            body = doc.getObject(body_name)
+            if not body:
+                return ToolResult(success=False, output="", error=f"Body '{body_name}' not found")
+        else:
+            body = _find_body_for(doc, sketch)
         if not body:
             return ToolResult(success=False, output="", error=f"No PartDesign body found for sketch '{sketch_name}'")
 
@@ -332,6 +339,7 @@ PAD_SKETCH = ToolDefinition(
         ToolParam("length", "number", "Extrusion length in mm", required=False, default=10.0),
         ToolParam("symmetric", "boolean", "Pad symmetrically in both directions", required=False, default=False),
         ToolParam("label", "string", "Display label for the pad feature", required=False, default=""),
+        ToolParam("body_name", "string", "Explicit body name (use when multiple bodies exist)", required=False, default=""),
     ],
     handler=_handle_pad_sketch,
 )
@@ -344,6 +352,7 @@ def _handle_pocket_sketch(
     length: float = 10.0,
     through_all: bool = False,
     label: str = "",
+    body_name: str = "",
 ) -> ToolResult:
     """Create a pocket (cut) from a sketch."""
 
@@ -352,7 +361,13 @@ def _handle_pocket_sketch(
         if not sketch:
             return ToolResult(success=False, output="", error=f"Sketch '{sketch_name}' not found")
 
-        body = _find_body_for(doc, sketch)
+        body = None
+        if body_name:
+            body = doc.getObject(body_name)
+            if not body:
+                return ToolResult(success=False, output="", error=f"Body '{body_name}' not found")
+        else:
+            body = _find_body_for(doc, sketch)
         if not body:
             return ToolResult(success=False, output="", error=f"No PartDesign body found for sketch '{sketch_name}'")
 
@@ -381,6 +396,7 @@ POCKET_SKETCH = ToolDefinition(
         ToolParam("length", "number", "Pocket depth in mm", required=False, default=10.0),
         ToolParam("through_all", "boolean", "Cut through the entire body", required=False, default=False),
         ToolParam("label", "string", "Display label for the pocket feature", required=False, default=""),
+        ToolParam("body_name", "string", "Explicit body name (use when multiple bodies exist)", required=False, default=""),
     ],
     handler=_handle_pocket_sketch,
 )
@@ -904,10 +920,13 @@ UNDO = ToolDefinition(
 
 def _find_body_for(doc, obj):
     """Find the PartDesign body containing an object, if any."""
+    target_name = obj.Name
     for o in doc.Objects:
         if hasattr(o, "TypeId") and o.TypeId == "PartDesign::Body":
-            if hasattr(o, "Group") and obj in o.Group:
-                return o
+            if hasattr(o, "Group"):
+                for member in o.Group:
+                    if member.Name == target_name:
+                        return o
     return None
 
 
