@@ -999,26 +999,11 @@ class ChatDockWidget(QDockWidget):
         return True
 
     def _send_with_injected_prompt(self):
-        """Send the current conversation to the LLM (used after skill injection)."""
-        from ..core.system_prompt import build_system_prompt
-        mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
-        system_prompt = build_system_prompt(mode=mode)
-        messages = self.conversation.get_messages_for_api()
+        """Send the current conversation to the LLM (used after skill injection).
 
-        self._set_loading(True)
-        self._streaming_html = ""
-        self._append_html(
-            '<div style="margin: 8px 0; padding: 8px 12px; '
-            'background-color: #f5f5f5; border-radius: 6px;">'
-            '<div style="font-weight: bold; color: #2e7d32; margin-bottom: 4px;">AI</div>'
-            '<div style="white-space: pre-wrap;">'
-        )
-
-        self._worker = _LLMWorker(messages, system_prompt, parent=self)
-        self._worker.token_received.connect(self._on_token)
-        self._worker.response_finished.connect(self._on_response_finished)
-        self._worker.error_occurred.connect(self._on_error)
-        self._worker.start()
+        Reuses _continue_send to ensure tools are available in Act mode.
+        """
+        self._continue_send()
 
     # ── UI helpers ──────────────────────────────────────────
 
