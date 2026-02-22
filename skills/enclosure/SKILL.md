@@ -45,14 +45,23 @@ Post centers must be far enough from walls so they don't protrude:
 - `create_sketch` on XY, body_name="EnclosureLid": rectangle x=0, y=0, width=L, height=W
 - `pad_sketch` length=**T**, body_name="EnclosureLid"
 
-**For PRESS-FIT or SNAP-FIT lid** (build lip first, then slab on top so lip points downward):
+**For PRESS-FIT lid** (build lip first, then slab on top so lip points downward):
 - `create_body` label="EnclosureLid"
 - `create_sketch` on XY, body_name="EnclosureLid": rectangle x=T+0.2, y=T+0.2, width=L-2*T-0.4, height=W-2*T-0.4
 - `pad_sketch` length=**3** (3mm lip), body_name="EnclosureLid"
 - `create_sketch` on XY, **offset=3**, body_name="EnclosureLid": rectangle x=0, y=0, width=L, height=W
 - `pad_sketch` length=**T**, body_name="EnclosureLid"
-- The 0.2mm gap on each side provides clearance
-- Lip: z=0→3, Slab: z=3→3+T. After positioning, the lip hangs into the base.
+- The 0.2mm gap on each side provides clearance for a friction fit.
+
+**For SNAP-FIT lid** (same structure, but 1mm clearance so snap tabs have room):
+- `create_body` label="EnclosureLid"
+- `create_sketch` on XY, body_name="EnclosureLid": rectangle x=T+1, y=T+1, width=L-2*T-2, height=W-2*T-2
+- `pad_sketch` length=**3** (3mm lip), body_name="EnclosureLid"
+- `create_sketch` on XY, **offset=3**, body_name="EnclosureLid": rectangle x=0, y=0, width=L, height=W
+- `pad_sketch` length=**T**, body_name="EnclosureLid"
+- The 1mm gap on each side provides room for the snap tabs (0.5mm protrusion).
+
+For both: Lip: z=0→3, Slab: z=3→3+T. After positioning, the lip hangs into the base.
 
 ### 7. Lid holes (SCREW LID ONLY — skip for press-fit and snap-fit)
 - `create_sketch` on XY, body_name="EnclosureLid": 4 circles at same post centers, radius=1.75
@@ -67,7 +76,7 @@ Post centers must be far enough from walls so they don't protrude:
 Add a ridge on the base interior and snap tabs on the lid lip.
 The snap tabs tool copies the lid's shape (including its position), so the lid MUST be positioned first in step 8.
 - `create_inner_ridge` body_name="EnclosureBase", length=L, width=W, wall_thickness=T, ridge_width=0.8, ridge_height=0.5, z_position=**H-2**
-- `create_snap_tabs` body_name="EnclosureLid", length=L, width=W, wall_thickness=T, clearance=0.2, lip_height=3
+- `create_snap_tabs` body_name="EnclosureLid", length=L, width=W, wall_thickness=T, clearance=1.0, lip_height=3
 
 ### 10. Hide sketches
 Use `execute_code` to hide all sketches at once:

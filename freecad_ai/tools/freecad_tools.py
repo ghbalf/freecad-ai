@@ -1063,6 +1063,16 @@ def _handle_create_snap_tabs(
         T = wall_thickness
         cl = clearance
 
+        # Clamp protrusion so tabs stay within the clearance gap
+        # (otherwise they penetrate the base wall)
+        actual_protrusion = min(protrusion, cl - 0.05)
+        if actual_protrusion < 0.1:
+            return ToolResult(
+                success=False, output="",
+                error=f"Clearance ({cl}mm) too small for snap tabs. "
+                      f"Need at least 0.5mm; got {cl}mm. "
+                      f"Use a wider lip clearance for snap-fit lids.")
+
         # body.Shape for PartDesign bodies already includes Placement,
         # so tab boxes must be created in global coordinates to match.
         ox = body.Placement.Base.x
@@ -1077,25 +1087,29 @@ def _handle_create_snap_tabs(
         lip_cx = (lip_x1 + lip_x2) / 2
         lip_cy = (lip_y1 + lip_y2) / 2
 
-        # Tab Z center (middle of lip, in global coords)
-        tab_z = lip_height / 2 + oz
+        # Tab Z: at the bottom of the lip, with a gap below the ridge.
+        # Shorten tab by 0.3mm so it doesn't touch the ridge above.
+        snap_gap = 0.3
+        th = tab_height - snap_gap  # effective tab height
+        tab_z = th / 2 + oz
 
         # Place 2 tabs on each long side, 1 on each short side
         tabs = []
 
         # Long sides (front y=lip_y1, back y=lip_y2) — 2 tabs each
+        p = actual_protrusion
         third = (lip_x2 - lip_x1) / 3
         for x_off in [lip_x1 + third, lip_x1 + 2 * third]:
             # Front wall tab: protrudes in -Y direction
             tabs.append({
                 "x": x_off, "y": lip_y1, "z": tab_z,
-                "sx": tab_width, "sy": protrusion, "sz": tab_height,
-                "dy": -protrusion,
+                "sx": tab_width, "sy": p, "sz": th,
+                "dy": -p,
             })
             # Back wall tab: protrudes in +Y direction
             tabs.append({
                 "x": x_off, "y": lip_y2, "z": tab_z,
-                "sx": tab_width, "sy": protrusion, "sz": tab_height,
+                "sx": tab_width, "sy": p, "sz": th,
                 "dy": 0,
             })
 
@@ -1103,13 +1117,13 @@ def _handle_create_snap_tabs(
         # Left wall tab: protrudes in -X direction
         tabs.append({
             "x": lip_x1, "y": lip_cy, "z": tab_z,
-            "sx": protrusion, "sy": tab_width, "sz": tab_height,
-            "dx": -protrusion,
+            "sx": p, "sy": tab_width, "sz": th,
+            "dx": -p,
         })
         # Right wall tab: protrudes in +X direction
         tabs.append({
             "x": lip_x2, "y": lip_cy, "z": tab_z,
-            "sx": protrusion, "sy": tab_width, "sz": tab_height,
+            "sx": p, "sy": tab_width, "sz": th,
             "dx": 0,
         })
 
@@ -1143,7 +1157,7 @@ def _handle_create_snap_tabs(
 
         return ToolResult(
             success=True,
-            output=f"Added {tab_count} snap tabs to '{body_name}' (protrusion={protrusion}mm). Result in '{label}'.",
+            output=f"Added {tab_count} snap tabs to '{body_name}' (protrusion={actual_protrusion:.1f}mm). Result in '{label}'.",
             data={"name": tab_obj.Name, "label": label, "tab_count": tab_count},
         )
 
