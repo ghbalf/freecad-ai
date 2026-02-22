@@ -944,6 +944,226 @@ UNDO = ToolDefinition(
 )
 
 
+# ── create_inner_ridge ─────────────────────────────────────
+
+def _handle_create_inner_ridge(
+    body_name: str,
+    length: float,
+    width: float,
+    wall_thickness: float = 2.0,
+    ridge_width: float = 0.8,
+    ridge_height: float = 0.5,
+    z_position: float = 0.0,
+    label: str = "Ridge",
+) -> ToolResult:
+    """Add a thin ridge/ledge around the inside perimeter of a rectangular body."""
+    import FreeCAD as App
+    import Part
+    import Sketcher
+
+    def do(doc):
+        body = _get_object(doc, body_name)
+        if not body:
+            return ToolResult(success=False, output="", error=f"Body '{body_name}' not found")
+
+        T = wall_thickness
+        rw = ridge_width
+
+        # Outer rectangle = inner wall of enclosure
+        ox, oy = T, T
+        ow, oh = length - 2 * T, width - 2 * T
+
+        # Inner rectangle = inset by ridge_width
+        ix, iy = T + rw, T + rw
+        iw, ih = length - 2 * T - 2 * rw, width - 2 * T - 2 * rw
+
+        sketch = body.newObject("Sketcher::SketchObject", label + "Sketch")
+        sketch.AttachmentSupport = [(body.Origin.OriginFeatures[3], "")]  # XY
+        sketch.MapMode = "FlatFace"
+        sketch.AttachmentOffset = App.Placement(
+            App.Vector(0, 0, z_position), App.Rotation())
+
+        # Outer rectangle
+        sketch.addGeometry(Part.LineSegment(App.Vector(ox, oy, 0), App.Vector(ox + ow, oy, 0)))
+        sketch.addGeometry(Part.LineSegment(App.Vector(ox + ow, oy, 0), App.Vector(ox + ow, oy + oh, 0)))
+        sketch.addGeometry(Part.LineSegment(App.Vector(ox + ow, oy + oh, 0), App.Vector(ox, oy + oh, 0)))
+        sketch.addGeometry(Part.LineSegment(App.Vector(ox, oy + oh, 0), App.Vector(ox, oy, 0)))
+        sketch.addConstraint(Sketcher.Constraint("Coincident", 0, 2, 1, 1))
+        sketch.addConstraint(Sketcher.Constraint("Coincident", 1, 2, 2, 1))
+        sketch.addConstraint(Sketcher.Constraint("Coincident", 2, 2, 3, 1))
+        sketch.addConstraint(Sketcher.Constraint("Coincident", 3, 2, 0, 1))
+
+        # Inner rectangle (creates the ring shape)
+        sketch.addGeometry(Part.LineSegment(App.Vector(ix, iy, 0), App.Vector(ix + iw, iy, 0)))
+        sketch.addGeometry(Part.LineSegment(App.Vector(ix + iw, iy, 0), App.Vector(ix + iw, iy + ih, 0)))
+        sketch.addGeometry(Part.LineSegment(App.Vector(ix + iw, iy + ih, 0), App.Vector(ix, iy + ih, 0)))
+        sketch.addGeometry(Part.LineSegment(App.Vector(ix, iy + ih, 0), App.Vector(ix, iy, 0)))
+        sketch.addConstraint(Sketcher.Constraint("Coincident", 4, 2, 5, 1))
+        sketch.addConstraint(Sketcher.Constraint("Coincident", 5, 2, 6, 1))
+        sketch.addConstraint(Sketcher.Constraint("Coincident", 6, 2, 7, 1))
+        sketch.addConstraint(Sketcher.Constraint("Coincident", 7, 2, 4, 1))
+
+        doc.recompute()
+
+        pad = body.newObject("PartDesign::Pad", label)
+        pad.Profile = sketch
+        pad.Length = ridge_height
+        sketch.Visibility = False
+
+        return ToolResult(
+            success=True,
+            output=f"Created inner ridge '{label}' at z={z_position}mm ({ridge_width}mm wide, {ridge_height}mm tall)",
+            data={"name": pad.Name, "label": label},
+        )
+
+    return _with_undo("Create Inner Ridge", do)
+
+
+CREATE_INNER_RIDGE = ToolDefinition(
+    name="create_inner_ridge",
+    description="Add a thin ridge/ledge running around the inside perimeter of a rectangular hollow body. Useful as a catch for snap-fit lids. The ridge is a ring-shaped pad on the inner walls.",
+    category="modeling",
+    parameters=[
+        ToolParam("body_name", "string", "Name of the PartDesign body to add the ridge to"),
+        ToolParam("length", "number", "Outer length of the enclosure (L)"),
+        ToolParam("width", "number", "Outer width of the enclosure (W)"),
+        ToolParam("wall_thickness", "number", "Wall thickness (T)", required=False, default=2.0),
+        ToolParam("ridge_width", "number", "How far the ridge protrudes inward from the wall (mm)", required=False, default=0.8),
+        ToolParam("ridge_height", "number", "Height of the ridge along Z (mm)", required=False, default=0.5),
+        ToolParam("z_position", "number", "Z height where the ridge starts"),
+        ToolParam("label", "string", "Display label", required=False, default="Ridge"),
+    ],
+    handler=_handle_create_inner_ridge,
+)
+
+
+# ── create_snap_tabs ──────────────────────────────────────
+
+def _handle_create_snap_tabs(
+    body_name: str,
+    length: float,
+    width: float,
+    wall_thickness: float = 2.0,
+    clearance: float = 0.2,
+    lip_height: float = 3.0,
+    tab_width: float = 3.0,
+    tab_height: float = 1.0,
+    protrusion: float = 0.5,
+    label: str = "SnapTab",
+) -> ToolResult:
+    """Add snap tabs on the outside of a rectangular lip that catch on an inner ridge."""
+    import FreeCAD as App
+    import Part
+
+    def do(doc):
+        body = _get_object(doc, body_name)
+        if not body:
+            return ToolResult(success=False, output="", error=f"Body '{body_name}' not found")
+
+        T = wall_thickness
+        cl = clearance
+
+        # Lip outer dimensions (in body-local coords, lip starts at z=0)
+        lip_x1 = T + cl
+        lip_x2 = length - T - cl
+        lip_y1 = T + cl
+        lip_y2 = width - T - cl
+        lip_cx = (lip_x1 + lip_x2) / 2
+        lip_cy = (lip_y1 + lip_y2) / 2
+
+        # Tab Z center (middle of lip)
+        tab_z = lip_height / 2
+
+        # Place 2 tabs on each long side, 1 on each short side
+        tabs = []
+
+        # Long sides (front y=lip_y1, back y=lip_y2) — 2 tabs each
+        third = (lip_x2 - lip_x1) / 3
+        for x_off in [lip_x1 + third, lip_x1 + 2 * third]:
+            # Front wall tab: protrudes in -Y direction
+            tabs.append({
+                "x": x_off, "y": lip_y1, "z": tab_z,
+                "sx": tab_width, "sy": protrusion, "sz": tab_height,
+                "dy": -protrusion,
+            })
+            # Back wall tab: protrudes in +Y direction
+            tabs.append({
+                "x": x_off, "y": lip_y2, "z": tab_z,
+                "sx": tab_width, "sy": protrusion, "sz": tab_height,
+                "dy": 0,
+            })
+
+        # Short sides (left x=lip_x1, right x=lip_x2) — 1 tab each
+        # Left wall tab: protrudes in -X direction
+        tabs.append({
+            "x": lip_x1, "y": lip_cy, "z": tab_z,
+            "sx": protrusion, "sy": tab_width, "sz": tab_height,
+            "dx": -protrusion,
+        })
+        # Right wall tab: protrudes in +X direction
+        tabs.append({
+            "x": lip_x2, "y": lip_cy, "z": tab_z,
+            "sx": protrusion, "sy": tab_width, "sz": tab_height,
+            "dx": 0,
+        })
+
+        # Create tab shapes and fuse with body
+        body_shape = body.Shape.copy()
+        tab_count = 0
+        for t in tabs:
+            bx = t.get("dx", 0) + t["x"] - t["sx"] / 2
+            by = t.get("dy", 0) + t["y"] - t["sy"] / 2
+            bz = t["z"] - t["sz"] / 2
+            # Adjust: for wall-adjacent tabs, anchor to wall edge
+            if "dx" in t:
+                bx = t["x"] + t["dx"]
+            if "dy" in t:
+                by = t["y"] + t["dy"]
+
+            box = Part.makeBox(t["sx"], t["sy"], t["sz"],
+                               App.Vector(bx, by, bz))
+            body_shape = body_shape.fuse(box)
+            tab_count += 1
+
+        body_shape = body_shape.removeSplitter()
+
+        # Create a Part::Feature with the result (outside PartDesign body)
+        tab_obj = doc.addObject("Part::Feature", label)
+        tab_obj.Label = label
+        tab_obj.Shape = body_shape
+
+        # Hide the original body — the tab object replaces its visual
+        body.Visibility = False
+
+        return ToolResult(
+            success=True,
+            output=f"Added {tab_count} snap tabs to '{body_name}' (protrusion={protrusion}mm). Result in '{label}'.",
+            data={"name": tab_obj.Name, "label": label, "tab_count": tab_count},
+        )
+
+    return _with_undo("Create Snap Tabs", do)
+
+
+CREATE_SNAP_TABS = ToolDefinition(
+    name="create_snap_tabs",
+    description="Add snap tabs (small protruding bumps) on the outside of a rectangular lip. The tabs catch on an inner ridge to hold the lid in place. Places 2 tabs on each long side and 1 on each short side. Use with create_inner_ridge for a complete snap-fit closure.",
+    category="modeling",
+    parameters=[
+        ToolParam("body_name", "string", "Name of the lid body with the lip"),
+        ToolParam("length", "number", "Outer length of the enclosure (L)"),
+        ToolParam("width", "number", "Outer width of the enclosure (W)"),
+        ToolParam("wall_thickness", "number", "Wall thickness (T)", required=False, default=2.0),
+        ToolParam("clearance", "number", "Gap between lip and wall (mm)", required=False, default=0.2),
+        ToolParam("lip_height", "number", "Height of the lip (mm)", required=False, default=3.0),
+        ToolParam("tab_width", "number", "Width of each tab along the wall (mm)", required=False, default=3.0),
+        ToolParam("tab_height", "number", "Height of each tab along Z (mm)", required=False, default=1.0),
+        ToolParam("protrusion", "number", "How far each tab protrudes outward (mm)", required=False, default=0.5),
+        ToolParam("label", "string", "Display label for the result", required=False, default="SnapTab"),
+    ],
+    handler=_handle_create_snap_tabs,
+)
+
+
 # ── Helpers ─────────────────────────────────────────────────
 
 def _get_object(doc, name_or_label):
@@ -986,6 +1206,8 @@ ALL_TOOLS = [
     TRANSFORM_OBJECT,
     FILLET_EDGES,
     CHAMFER_EDGES,
+    CREATE_INNER_RIDGE,
+    CREATE_SNAP_TABS,
     MEASURE,
     GET_DOCUMENT_STATE,
     MODIFY_PROPERTY,

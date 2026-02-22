@@ -86,6 +86,8 @@ Tool calling is enabled by default. Disable it by setting `enable_tools: false` 
 | `transform_object` | Move and/or rotate an object |
 | `fillet_edges` | Round edges |
 | `chamfer_edges` | Chamfer edges |
+| `create_inner_ridge` | Add a snap-fit ridge inside a rectangular hollow |
+| `create_snap_tabs` | Add snap tabs on a lid lip (pairs with ridge) |
 | `measure` | Volume, area, bounding box, distance, edge listing |
 | `get_document_state` | Inspect current objects and properties |
 | `modify_property` | Change any object property |
@@ -184,7 +186,7 @@ freecad-ai/
 │   │   └── providers.py       # Provider registry
 │   ├── tools/
 │   │   ├── registry.py        # Tool abstractions + registry
-│   │   ├── freecad_tools.py   # 15 FreeCAD tool handlers
+│   │   ├── freecad_tools.py   # 17 FreeCAD tool handlers
 │   │   └── setup.py           # Default registry factory
 │   ├── ui/
 │   │   ├── compat.py          # PySide2/PySide6 shim
