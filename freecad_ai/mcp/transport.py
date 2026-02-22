@@ -30,6 +30,21 @@ class StdioClientTransport:
         """Launch the subprocess and start the reader thread."""
         import os
         env = os.environ.copy()
+
+        # FreeCAD's AppImage sets PYTHONHOME/PYTHONPATH to its bundled
+        # Python, which breaks any subprocess that uses a different Python.
+        # Strip these so the subprocess inherits a clean environment.
+        for key in ("PYTHONHOME", "PYTHONPATH"):
+            env.pop(key, None)
+
+        # Restore a sane PATH — the AppImage prepends its own bin dirs.
+        # Keep system paths so npx/node/python3 are findable.
+        path = env.get("PATH", "")
+        clean_parts = [p for p in path.split(os.pathsep)
+                       if ".mount_FreeCA" not in p]
+        if clean_parts:
+            env["PATH"] = os.pathsep.join(clean_parts)
+
         if self._env:
             env.update(self._env)
 
