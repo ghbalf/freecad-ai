@@ -1063,16 +1063,22 @@ def _handle_create_snap_tabs(
         T = wall_thickness
         cl = clearance
 
-        # Lip outer dimensions (in body-local coords, lip starts at z=0)
-        lip_x1 = T + cl
-        lip_x2 = length - T - cl
-        lip_y1 = T + cl
-        lip_y2 = width - T - cl
+        # body.Shape for PartDesign bodies already includes Placement,
+        # so tab boxes must be created in global coordinates to match.
+        ox = body.Placement.Base.x
+        oy = body.Placement.Base.y
+        oz = body.Placement.Base.z
+
+        # Lip outer dimensions (shifted to global coords)
+        lip_x1 = T + cl + ox
+        lip_x2 = length - T - cl + ox
+        lip_y1 = T + cl + oy
+        lip_y2 = width - T - cl + oy
         lip_cx = (lip_x1 + lip_x2) / 2
         lip_cy = (lip_y1 + lip_y2) / 2
 
-        # Tab Z center (middle of lip)
-        tab_z = lip_height / 2
+        # Tab Z center (middle of lip, in global coords)
+        tab_z = lip_height / 2 + oz
 
         # Place 2 tabs on each long side, 1 on each short side
         tabs = []
@@ -1127,13 +1133,10 @@ def _handle_create_snap_tabs(
 
         body_shape = body_shape.removeSplitter()
 
-        # Create a Part::Feature with the result (outside PartDesign body)
+        # Create a Part::Feature (shape is already in global coords)
         tab_obj = doc.addObject("Part::Feature", label)
         tab_obj.Label = label
         tab_obj.Shape = body_shape
-
-        # Copy the body's Placement so the result is at the same position
-        tab_obj.Placement = body.Placement
 
         # Hide the original body — the tab object replaces its visual
         body.Visibility = False
