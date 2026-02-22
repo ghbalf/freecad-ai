@@ -10,6 +10,9 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 - **Plan / Act modes** — review code before execution (Plan) or auto-execute (Act)
 - **Tool calling** — structured FreeCAD operations (Act mode) for safer, more reliable modeling
 - **Skills** — reusable instruction sets invoked via `/command` (enclosure, gear, fastener holes, etc.)
+- **Thinking mode** — enable LLM reasoning for complex multi-step tasks (Off / On / Extended)
+- **Context compacting** — automatically summarizes older messages when approaching context limits
+- **Session resume** — save and load chat sessions to continue work later
 - **Multiple LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, or any OpenAI-compatible endpoint
 - **Context-aware** — automatically includes document state (objects, properties, selection) in prompts
 - **Error self-correction** — failed code is sent back to the LLM for automatic retry (up to 3 attempts)
@@ -74,10 +77,11 @@ Tool calling is enabled by default. Disable it by setting `enable_tools: false` 
 
 | Tool | Description |
 |------|-------------|
+| `create_body` | Create a PartDesign Body for parametric modeling |
 | `create_primitive` | Box, Cylinder, Sphere, Cone, Torus |
-| `create_sketch` | Sketch with lines, circles, arcs, rectangles + constraints |
+| `create_sketch` | Sketch with lines, circles, arcs, rectangles + constraints (supports plane offset) |
 | `pad_sketch` | Extrude a sketch |
-| `pocket_sketch` | Cut a pocket from a sketch |
+| `pocket_sketch` | Cut a pocket from a sketch (auto-detects correct direction) |
 | `boolean_operation` | Fuse, Cut, or Common between two objects |
 | `transform_object` | Move and/or rotate an object |
 | `fillet_edges` | Round edges |
@@ -123,6 +127,22 @@ The `SKILL.md` file contains instructions for the LLM. When invoked, these are i
 
 If a `handler.py` exists with an `execute(args)` function, it runs directly instead of prompting the LLM.
 
+### Thinking Mode
+
+Enable LLM reasoning in Settings (gear icon). Three levels:
+
+| Level | Description |
+|-------|-------------|
+| Off | Standard responses (default) |
+| On | LLM shows reasoning before responding |
+| Extended | Longer reasoning budget for complex tasks |
+
+Thinking is displayed dimmed in the chat. Provider support varies — Anthropic Claude, OpenAI o-series, and some Ollama models (qwen3) support thinking. Models that don't support it will silently ignore the setting.
+
+### Session Resume
+
+Conversations are auto-saved after each LLM response. Click the **Load** button in the chat footer to resume a previous session from the last 20 saved conversations.
+
 ### AGENTS.md
 
 Place an `AGENTS.md` or `FREECAD_AI.md` file next to your `.FCStd` file to provide project-specific instructions:
@@ -157,14 +177,14 @@ freecad-ai/
 ├── InitGui.py                 # Workbench registration + commands
 ├── package.xml                # FreeCAD addon metadata
 ├── freecad_ai/
-│   ├── config.py              # Settings (provider, API key, mode, tools)
+│   ├── config.py              # Settings (provider, API key, mode, tools, thinking)
 │   ├── paths.py               # Path utilities
 │   ├── llm/
 │   │   ├── client.py          # HTTP client with SSE streaming + tool calling
 │   │   └── providers.py       # Provider registry
 │   ├── tools/
 │   │   ├── registry.py        # Tool abstractions + registry
-│   │   ├── freecad_tools.py   # 14 FreeCAD tool handlers
+│   │   ├── freecad_tools.py   # 15 FreeCAD tool handlers
 │   │   └── setup.py           # Default registry factory
 │   ├── ui/
 │   │   ├── compat.py          # PySide2/PySide6 shim
@@ -176,10 +196,17 @@ freecad-ai/
 │   │   ├── executor.py        # Code execution with safety layers
 │   │   ├── context.py         # Document state inspector
 │   │   ├── system_prompt.py   # System prompt builder
-│   │   └── conversation.py    # Conversation history + tool messages
+│   │   └── conversation.py    # Conversation history + compacting + save/load
 │   └── extensions/
 │       ├── agents_md.py       # AGENTS.md loader (multi-location, includes, vars)
 │       └── skills.py          # Skills registry + execution
+├── skills/                    # Built-in skill definitions
+│   ├── enclosure/SKILL.md
+│   ├── gear/SKILL.md
+│   ├── fastener-hole/SKILL.md
+│   ├── thread-insert/SKILL.md
+│   ├── lattice/SKILL.md
+│   └── skill-creator/SKILL.md
 └── resources/
     └── icons/
         └── freecad_ai.svg
