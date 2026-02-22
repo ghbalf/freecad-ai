@@ -82,6 +82,9 @@ Tool calling is enabled by default. Disable it by setting `enable_tools: false` 
 | `create_sketch` | Sketch with lines, circles, arcs, rectangles + constraints (supports plane offset) |
 | `pad_sketch` | Extrude a sketch |
 | `pocket_sketch` | Cut a pocket from a sketch (auto-detects correct direction) |
+| `revolve_sketch` | Revolve a sketch around an axis (vase, wheel, bottle) |
+| `loft_sketches` | Loft between sketches for tapered/organic shapes |
+| `sweep_sketch` | Sweep a profile along a spine path (pipe, tube) |
 | `boolean_operation` | Fuse, Cut, or Common between two objects |
 | `transform_object` | Move and/or rotate an object |
 | `fillet_edges` | Round edges |
@@ -186,7 +189,7 @@ freecad-ai/
 │   │   └── providers.py       # Provider registry
 │   ├── tools/
 │   │   ├── registry.py        # Tool abstractions + registry
-│   │   ├── freecad_tools.py   # 17 FreeCAD tool handlers
+│   │   ├── freecad_tools.py   # 20 FreeCAD tool handlers
 │   │   └── setup.py           # Default registry factory
 │   ├── ui/
 │   │   ├── compat.py          # PySide2/PySide6 shim
