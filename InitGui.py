@@ -3,14 +3,14 @@
 import FreeCADGui as Gui
 import FreeCAD as App
 
-from freecad_ai.i18n import QT_TRANSLATE_NOOP
-
 
 class FreeCADAIWorkbench(Gui.Workbench):
     """AI assistant workbench for FreeCAD."""
 
-    MenuText = QT_TRANSLATE_NOOP("FreeCADAIWorkbench", "FreeCAD AI")
-    ToolTip = QT_TRANSLATE_NOOP("FreeCADAIWorkbench", "AI-powered assistant for 3D modeling")
+    # FreeCAD auto-translates MenuText/ToolTip using class name as context.
+    # The .qm file provides translations under the "FreeCADAIWorkbench" context.
+    MenuText = "FreeCAD AI"
+    ToolTip = "AI-powered assistant for 3D modeling"
 
     def __init__(self):
         from freecad_ai.paths import get_icon_path
@@ -53,8 +53,8 @@ class OpenChatCommand:
     def GetResources(self):
         from freecad_ai.paths import get_icon_path
         d = {
-            "MenuText": QT_TRANSLATE_NOOP("OpenChatCommand", "Open AI Chat"),
-            "ToolTip": QT_TRANSLATE_NOOP("OpenChatCommand", "Open the FreeCAD AI chat panel"),
+            "MenuText": "Open AI Chat",
+            "ToolTip": "Open the FreeCAD AI chat panel",
         }
         icon = get_icon_path()
         if icon:
@@ -77,8 +77,8 @@ class OpenSettingsCommand:
 
     def GetResources(self):
         return {
-            "MenuText": QT_TRANSLATE_NOOP("OpenSettingsCommand", "AI Settings"),
-            "ToolTip": QT_TRANSLATE_NOOP("OpenSettingsCommand", "Configure FreeCAD AI providers and options"),
+            "MenuText": "AI Settings",
+            "ToolTip": "Configure FreeCAD AI providers and options",
         }
 
     def Activated(self, index=0):

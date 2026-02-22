@@ -1,10 +1,11 @@
 #!/bin/bash
-# Re-extract translatable strings from Python sources into .ts files.
-# Requires pylupdate5 (from pyqt5-dev-tools) or pyside2-lupdate.
+# Re-extract translatable strings from Python sources into .ts files,
+# then compile .ts -> .qm for runtime use.
 #
 # Usage: cd translations && bash update_translations.sh
 
 set -e
+cd "$(dirname "$0")"
 
 SOURCES=(
     ../InitGui.py
@@ -15,16 +16,27 @@ SOURCES=(
     ../freecad_ai/ui/message_view.py
 )
 
+# Step 1: Extract strings (optional — requires pylupdate5)
 if command -v pylupdate5 &>/dev/null; then
-    LUPDATE=pylupdate5
+    echo "Extracting strings with pylupdate5..."
+    pylupdate5 "${SOURCES[@]}" -ts freecad_ai_de.ts
 elif command -v pyside2-lupdate &>/dev/null; then
-    LUPDATE=pyside2-lupdate
+    echo "Extracting strings with pyside2-lupdate..."
+    pyside2-lupdate "${SOURCES[@]}" -ts freecad_ai_de.ts
 else
-    echo "Error: neither pylupdate5 nor pyside2-lupdate found."
+    echo "Note: pylupdate5 not found, skipping string extraction."
     echo "Install with: sudo apt install pyqt5-dev-tools"
-    exit 1
 fi
 
-echo "Using: $LUPDATE"
-$LUPDATE "${SOURCES[@]}" -ts freecad_ai_de.ts
-echo "Done. Review freecad_ai_de.ts for new untranslated strings."
+# Step 2: Compile .ts -> .qm
+echo "Compiling .ts -> .qm..."
+if command -v lrelease &>/dev/null; then
+    lrelease freecad_ai_de.ts
+elif command -v lrelease-qt5 &>/dev/null; then
+    lrelease-qt5 freecad_ai_de.ts
+else
+    # Fallback: use bundled Python compiler
+    python3 compile_ts.py freecad_ai_de.ts
+fi
+
+echo "Done."
