@@ -174,6 +174,22 @@ Objects: {{object_count}}
 Active body: {{active_body}}
 ```
 
+## Translations
+
+The UI supports internationalization via Qt's `.ts`/`.qm` translation system. Currently available:
+
+| Language | Status |
+|----------|--------|
+| English  | Default (built-in) |
+| German   | Complete |
+
+To add a new language, copy `translations/freecad_ai_de.ts` to `freecad_ai_<lang>.ts`, translate the strings (or use [Qt Linguist](https://doc.qt.io/qt-5/qtlinguist-index.html)), and compile with `lrelease`.
+
+To re-extract strings after code changes:
+```bash
+cd translations && bash update_translations.sh
+```
+
 ## Project Structure
 
 ```
@@ -183,6 +199,7 @@ freecad-ai/
 ├── package.xml                # FreeCAD addon metadata
 ├── freecad_ai/
 │   ├── config.py              # Settings (provider, API key, mode, tools, thinking)
+│   ├── i18n.py                # Internationalization helpers
 │   ├── paths.py               # Path utilities
 │   ├── llm/
 │   │   ├── client.py          # HTTP client with SSE streaming + tool calling
@@ -205,6 +222,9 @@ freecad-ai/
 │   └── extensions/
 │       ├── agents_md.py       # AGENTS.md loader (multi-location, includes, vars)
 │       └── skills.py          # Skills registry + execution
+├── translations/
+│   ├── freecad_ai_de.ts       # German translation source
+│   └── update_translations.sh # Re-extract strings with pylupdate5
 ├── skills/                    # Built-in skill definitions
 │   ├── enclosure/SKILL.md
 │   ├── gear/SKILL.md

@@ -18,6 +18,16 @@ def get_wb_dir() -> str:
     return ""
 
 
+def get_translations_path() -> str:
+    """Get the path to the translations directory, or empty string."""
+    wb = get_wb_dir()
+    if wb:
+        p = os.path.join(wb, "translations")
+        if os.path.isdir(p):
+            return p
+    return ""
+
+
 def get_icon_path() -> str:
     """Get the path to the workbench SVG icon, or empty string."""
     wb = get_wb_dir()
