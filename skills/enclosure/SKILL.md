@@ -58,15 +58,16 @@ Post centers must be far enough from walls so they don't protrude:
 - `create_sketch` on XY, body_name="EnclosureLid": 4 circles at same post centers, radius=1.75
 - `pocket_sketch` through_all=true, body_name="EnclosureLid"
 
-### 8. Snap-fit ridge and tabs (SNAP-FIT ONLY — skip for screw and press-fit)
-Add a ridge on the base interior and snap tabs on the lid lip:
-- `create_inner_ridge` body_name="EnclosureBase", length=L, width=W, wall_thickness=T, ridge_width=0.8, ridge_height=0.5, z_position=**H-2**
-- `create_snap_tabs` body_name="EnclosureLid", length=L, width=W, wall_thickness=T, clearance=0.2, lip_height=3
-
-### 9. Position lid
+### 8. Position lid (BEFORE snap tabs so the shape is in the right place)
 - **Screw lid**: `transform_object` EnclosureLid, translate_z=**H**
 - **Press-fit lid**: `transform_object` EnclosureLid, translate_z=**H-3**
-- **Snap-fit lid**: `transform_object` EnclosureLid, translate_z=**H-3**, then also `transform_object` SnapTab, translate_z=**H-3**
+- **Snap-fit lid**: `transform_object` EnclosureLid, translate_z=**H-3**
+
+### 9. Snap-fit ridge and tabs (SNAP-FIT ONLY — skip for screw and press-fit)
+Add a ridge on the base interior and snap tabs on the lid lip.
+The snap tabs tool copies the lid's shape (including its position), so the lid MUST be positioned first in step 8.
+- `create_inner_ridge` body_name="EnclosureBase", length=L, width=W, wall_thickness=T, ridge_width=0.8, ridge_height=0.5, z_position=**H-2**
+- `create_snap_tabs` body_name="EnclosureLid", length=L, width=W, wall_thickness=T, clearance=0.2, lip_height=3
 
 ### 10. Hide sketches
 Use `execute_code` to hide all sketches at once:

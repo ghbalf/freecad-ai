@@ -1132,6 +1132,9 @@ def _handle_create_snap_tabs(
         tab_obj.Label = label
         tab_obj.Shape = body_shape
 
+        # Copy the body's Placement so the result is at the same position
+        tab_obj.Placement = body.Placement
+
         # Hide the original body — the tab object replaces its visual
         body.Visibility = False
 
