@@ -25,6 +25,8 @@ Signal = QtCore.Signal
 QThread = QtCore.QThread
 QDoubleValidator = QtGui.QDoubleValidator
 
+QListWidget = QtWidgets.QListWidget
+
 from ..config import get_config, save_current_config, PROVIDER_PRESETS
 from ..llm.providers import get_provider_names
 
@@ -133,6 +135,29 @@ class SettingsDialog(QDialog):
         behavior_group.setLayout(behavior_layout)
         layout.addWidget(behavior_group)
 
+        # MCP Servers group
+        mcp_group = QGroupBox("MCP Servers")
+        mcp_layout = QVBoxLayout()
+
+        self.mcp_list = QListWidget()
+        self.mcp_list.setMaximumHeight(100)
+        mcp_layout.addWidget(self.mcp_list)
+
+        mcp_btn_layout = QHBoxLayout()
+        add_mcp_btn = QPushButton("Add...")
+        add_mcp_btn.clicked.connect(self._add_mcp_server)
+        mcp_btn_layout.addWidget(add_mcp_btn)
+
+        remove_mcp_btn = QPushButton("Remove")
+        remove_mcp_btn.clicked.connect(self._remove_mcp_server)
+        mcp_btn_layout.addWidget(remove_mcp_btn)
+
+        mcp_btn_layout.addStretch()
+        mcp_layout.addLayout(mcp_btn_layout)
+
+        mcp_group.setLayout(mcp_layout)
+        layout.addWidget(mcp_group)
+
         # Test connection
         test_layout = QHBoxLayout()
         self.test_btn = QPushButton("Test Connection")
@@ -183,6 +208,15 @@ class SettingsDialog(QDialog):
         thinking_map = {"off": 0, "on": 1, "extended": 2}
         self.thinking_combo.setCurrentIndex(thinking_map.get(cfg.thinking, 0))
 
+        # MCP servers
+        self.mcp_list.clear()
+        self._mcp_configs = list(cfg.mcp_servers)
+        for entry in self._mcp_configs:
+            enabled = entry.get("enabled", True)
+            prefix = "" if enabled else "(disabled) "
+            args = " ".join(entry.get("args", []))
+            self.mcp_list.addItem(f"{prefix}{entry.get('name', '?')} — {entry.get('command', '')} {args}")
+
     def _on_provider_changed(self, index):
         """Update base URL and model when provider selection changes."""
         names = get_provider_names()
@@ -212,6 +246,8 @@ class SettingsDialog(QDialog):
 
         thinking_values = ["off", "on", "extended"]
         cfg.thinking = thinking_values[self.thinking_combo.currentIndex()]
+
+        cfg.mcp_servers = list(self._mcp_configs) if hasattr(self, "_mcp_configs") else []
 
         save_current_config()
         self.accept()
@@ -259,3 +295,75 @@ class SettingsDialog(QDialog):
 
         thinking_values = ["off", "on", "extended"]
         cfg.thinking = thinking_values[self.thinking_combo.currentIndex()]
+
+    def _add_mcp_server(self):
+        """Show a dialog to add a new MCP server configuration."""
+        dlg = _AddMCPServerDialog(self)
+        if dlg.exec():
+            entry = dlg.get_config()
+            if not hasattr(self, "_mcp_configs"):
+                self._mcp_configs = []
+            self._mcp_configs.append(entry)
+            args = " ".join(entry.get("args", []))
+            self.mcp_list.addItem(f"{entry['name']} — {entry['command']} {args}")
+
+    def _remove_mcp_server(self):
+        """Remove the selected MCP server from the list."""
+        row = self.mcp_list.currentRow()
+        if row >= 0 and hasattr(self, "_mcp_configs"):
+            self.mcp_list.takeItem(row)
+            if row < len(self._mcp_configs):
+                self._mcp_configs.pop(row)
+
+
+class _AddMCPServerDialog(QDialog):
+    """Dialog for adding a new MCP server configuration."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add MCP Server")
+        self.setMinimumWidth(400)
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QFormLayout(self)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("e.g. filesystem")
+        layout.addRow("Name:", self.name_edit)
+
+        self.command_edit = QLineEdit()
+        self.command_edit.setPlaceholderText("e.g. npx")
+        layout.addRow("Command:", self.command_edit)
+
+        self.args_edit = QLineEdit()
+        self.args_edit.setPlaceholderText("e.g. -y @modelcontextprotocol/server-filesystem /tmp")
+        self.args_edit.setToolTip("Space-separated arguments")
+        layout.addRow("Args:", self.args_edit)
+
+        self.enabled_check = QCheckBox("Enabled")
+        self.enabled_check.setChecked(True)
+        layout.addRow("", self.enabled_check)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        ok_btn = QPushButton("Add")
+        ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(ok_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        layout.addRow(btn_layout)
+
+    def get_config(self) -> dict:
+        args_text = self.args_edit.text().strip()
+        return {
+            "name": self.name_edit.text().strip(),
+            "command": self.command_edit.text().strip(),
+            "args": args_text.split() if args_text else [],
+            "env": {},
+            "enabled": self.enabled_check.isChecked(),
+        }

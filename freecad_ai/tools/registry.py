@@ -101,6 +101,17 @@ class ToolRegistry:
             })
         return result
 
+    def to_mcp_schema(self) -> list[dict]:
+        """Convert all tools to MCP tools/list format."""
+        return [
+            {
+                "name": t.name,
+                "description": t.description,
+                "inputSchema": _params_to_json_schema(t.parameters),
+            }
+            for t in self._tools.values()
+        ]
+
 
 def _params_to_json_schema(params: list[ToolParam]) -> dict:
     """Convert a list of ToolParam to a JSON Schema object."""

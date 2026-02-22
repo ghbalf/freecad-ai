@@ -298,6 +298,7 @@ class ChatDockWidget(QDockWidget):
         self._anchor_connected = False
         self._tool_registry = None
         self._in_thinking = False  # Whether currently rendering thinking content
+        self._mcp_connected = False
 
         self._build_ui()
 
@@ -597,6 +598,10 @@ class ChatDockWidget(QDockWidget):
         api_style = "openai"
 
         if use_tools:
+            # Connect MCP servers on first tool-enabled send
+            if not self._mcp_connected:
+                self._connect_mcp_servers(cfg)
+
             from ..tools.setup import create_default_registry
             from ..llm.providers import get_api_style
             self._tool_registry = create_default_registry()
@@ -1101,10 +1106,44 @@ class ChatDockWidget(QDockWidget):
         else:
             self.token_label.setText("tokens: ~{}".format(tokens))
 
+    def _connect_mcp_servers(self, cfg):
+        """Connect to configured MCP servers (called once on first tool-enabled send)."""
+        if not cfg.mcp_servers:
+            self._mcp_connected = True
+            return
+        try:
+            from ..mcp.manager import get_mcp_manager
+            manager = get_mcp_manager()
+            manager.connect_all(cfg.mcp_servers)
+            self._mcp_connected = True
+            servers = manager.connected_servers
+            if servers:
+                self._append_html(
+                    '<div style="margin: 4px 0; padding: 4px 8px; '
+                    'background-color: #e8f5e9; border-left: 3px solid #4caf50; '
+                    'border-radius: 0 4px 4px 0; font-size: 11px; color: #2e7d32;">'
+                    'MCP: connected to {}</div>'.format(", ".join(servers))
+                )
+        except Exception as e:
+            self._mcp_connected = True  # Don't retry on failure
+            self._append_html(
+                '<div style="margin: 4px 0; padding: 4px 8px; '
+                'background-color: #fff3e0; border-left: 3px solid #ff9800; '
+                'border-radius: 0 4px 4px 0; font-size: 11px; color: #e65100;">'
+                'MCP connection error: {}</div>'.format(str(e))
+            )
+
     def closeEvent(self, event):
-        """Save conversation when widget is closed."""
+        """Save conversation and disconnect MCP when widget is closed."""
         if self.conversation.messages:
             self.conversation.save()
+        # Disconnect MCP servers
+        if self._mcp_connected:
+            try:
+                from ..mcp.manager import get_mcp_manager
+                get_mcp_manager().disconnect_all()
+            except Exception:
+                pass
         super().closeEvent(event)
 
 
