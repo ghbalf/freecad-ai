@@ -46,3 +46,11 @@ Create standard fastener holes: clearance, counterbore, or countersink.
 3. Pocket through-all for the clearance hole
 4. For counterbore: add a second larger circle, pocket to CB depth
 5. For countersink: use a cone (Part.makeCone) to create the 90-degree chamfer
+
+## Cleanup
+After construction, hide all sketches for a clean viewport:
+```python
+for obj in App.ActiveDocument.Objects:
+    if obj.TypeId == "Sketcher::SketchObject":
+        obj.Visibility = False
+```

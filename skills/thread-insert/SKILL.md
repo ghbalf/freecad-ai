@@ -23,3 +23,11 @@ Create properly sized holes for heat-set threaded inserts (common in 3D printed 
 
 ## Clearance hole diameters (for through-holes below insert)
 - M2: 2.4mm, M2.5: 2.9mm, M3: 3.4mm, M4: 4.5mm, M5: 5.5mm
+
+## Cleanup
+After construction, hide all sketches for a clean viewport:
+```python
+for obj in App.ActiveDocument.Objects:
+    if obj.TypeId == "Sketcher::SketchObject":
+        obj.Visibility = False
+```

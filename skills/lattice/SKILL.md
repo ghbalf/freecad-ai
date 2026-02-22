@@ -38,3 +38,9 @@ Generate a 3D lattice or infill pattern inside a bounding region. Useful for lig
 - Always create the lattice larger than the target region, then use boolean intersection to trim
 - Label clearly: "Lattice Grid 10mm" etc.
 - For 3D printing, ensure wall_thickness >= 2x nozzle diameter (typically >= 0.8mm)
+- After construction, hide all sketches for a clean viewport:
+```python
+for obj in App.ActiveDocument.Objects:
+    if obj.TypeId == "Sketcher::SketchObject":
+        obj.Visibility = False
+```
