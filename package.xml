@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package format="1">
+    <name>FreeCAD AI</name>
+    <description>AI-powered assistant for 3D modeling in FreeCAD. Supports multiple LLM providers with Plan/Act modes for text-to-FreeCAD-code generation.</description>
+    <version>0.1.0</version>
+    <maintainer email="freecad-ai@example.com">FreeCAD AI Contributors</maintainer>
+    <license>LGPL-2.1</license>
+    <url type="repository">https://github.com/example/freecad-ai</url>
+    <content>
+        <workbench>
+            <classname>FreeCADAIWorkbench</classname>
+            <subdirectory>./</subdirectory>
+        </workbench>
+    </content>
+    <depend>FreeCAD</depend>
+    <freecadmin>0.21</freecadmin>
+</package>
