@@ -394,6 +394,7 @@ def _handle_pad_sketch(
         pad.Length = length
         if symmetric:
             pad.Symmetric = True
+        sketch.Visibility = False
 
         return ToolResult(
             success=True,
@@ -452,19 +453,33 @@ def _handle_pocket_sketch(
         else:
             pocket.Length = length
 
-        # Measure volume before pocket to detect direction issues.
-        # Sketches on XY plane (z=0) often need Reversed=True to cut
-        # upward into a solid padded in the +Z direction.
+        # Auto-direction: try both directions, keep the one that removes
+        # the most material.  This handles sketches at any Z-offset
+        # (e.g. offset=3 vs offset=H) and through_all pockets where the
+        # default direction may only graze a thin slab.
         vol_before = body.Shape.Volume if body.Shape else 0
+
+        # Try default direction (Reversed=False)
+        pocket.Reversed = False
         doc.recompute()
+        vol_default = body.Shape.Volume if body.Shape and body.Shape.isValid() else vol_before
+        ok_default = pocket.Shape and pocket.Shape.isValid() and vol_default > 0.001
 
-        vol_after = body.Shape.Volume if body.Shape and body.Shape.isValid() else 0
-        shape_ok = pocket.Shape and pocket.Shape.isValid() and vol_after > 0.001
+        # Try reversed direction
+        pocket.Reversed = True
+        doc.recompute()
+        vol_reversed = body.Shape.Volume if body.Shape and body.Shape.isValid() else vol_before
+        ok_reversed = pocket.Shape and pocket.Shape.isValid() and vol_reversed > 0.001
 
-        # If the pocket didn't remove material (or shape is invalid), reverse it
-        if not shape_ok or vol_after >= vol_before - 0.1:
-            pocket.Reversed = not pocket.Reversed
+        # Pick direction that removes the most material
+        removed_default = (vol_before - vol_default) if ok_default else 0
+        removed_reversed = (vol_before - vol_reversed) if ok_reversed else 0
+
+        if removed_default >= removed_reversed:
+            pocket.Reversed = False
             doc.recompute()
+
+        sketch.Visibility = False
 
         return ToolResult(
             success=True,
@@ -477,12 +492,17 @@ def _handle_pocket_sketch(
 
 POCKET_SKETCH = ToolDefinition(
     name="pocket_sketch",
-    description="Create a pocket (cut) from a sketch into the body's solid.",
+    description=(
+        "Create a pocket (cut) from a sketch into the body's solid. "
+        "Tip: for hollowing a box (e.g. enclosure), place the sketch at the top face "
+        "using offset=H in create_sketch and set length=H-T (height minus wall thickness). "
+        "The tool auto-detects the correct cut direction."
+    ),
     category="modeling",
     parameters=[
         ToolParam("sketch_name", "string", "Internal name of the sketch to pocket"),
-        ToolParam("length", "number", "Pocket depth in mm", required=False, default=10.0),
-        ToolParam("through_all", "boolean", "Cut through the entire body", required=False, default=False),
+        ToolParam("length", "number", "Pocket depth in mm (prefer explicit depth over through_all)", required=False, default=10.0),
+        ToolParam("through_all", "boolean", "Cut through the entire body (use only for holes, prefer explicit length for cavities)", required=False, default=False),
         ToolParam("label", "string", "Display label for the pocket feature", required=False, default=""),
         ToolParam("body_name", "string", "Explicit body name (use when multiple bodies exist)", required=False, default=""),
     ],
@@ -1314,16 +1334,21 @@ def _handle_create_inner_ridge(
 
 CREATE_INNER_RIDGE = ToolDefinition(
     name="create_inner_ridge",
-    description="Add a thin ridge/ledge running around the inside perimeter of a rectangular hollow body. Useful as a catch for snap-fit lids. The ridge is a ring-shaped pad on the inner walls.",
+    description=(
+        "Add a thin ridge/ledge running around the inside perimeter of a rectangular "
+        "hollow body. Useful as a catch for snap-fit lids. The defaults (0.8mm wide, "
+        "0.5mm tall) are tuned for 3D printing — do NOT override ridge_width/ridge_height "
+        "unless the user explicitly requests different dimensions."
+    ),
     category="modeling",
     parameters=[
         ToolParam("body_name", "string", "Name of the PartDesign body to add the ridge to"),
         ToolParam("length", "number", "Outer length of the enclosure (L)"),
         ToolParam("width", "number", "Outer width of the enclosure (W)"),
-        ToolParam("wall_thickness", "number", "Wall thickness (T)", required=False, default=2.0),
-        ToolParam("ridge_width", "number", "How far the ridge protrudes inward from the wall (mm)", required=False, default=0.8),
-        ToolParam("ridge_height", "number", "Height of the ridge along Z (mm)", required=False, default=0.5),
-        ToolParam("z_position", "number", "Z height where the ridge starts"),
+        ToolParam("wall_thickness", "number", "Wall thickness (T) — MUST match the enclosure wall thickness"),
+        ToolParam("ridge_width", "number", "Inward protrusion from wall (mm). Default 0.8 — do not increase", required=False, default=0.8),
+        ToolParam("ridge_height", "number", "Height along Z (mm). Default 0.5 — do not increase", required=False, default=0.5),
+        ToolParam("z_position", "number", "Z height where the ridge starts (typically H-2)"),
         ToolParam("label", "string", "Display label", required=False, default="Ridge"),
     ],
     handler=_handle_create_inner_ridge,
@@ -1459,14 +1484,19 @@ def _handle_create_snap_tabs(
 
 CREATE_SNAP_TABS = ToolDefinition(
     name="create_snap_tabs",
-    description="Add snap tabs (small protruding bumps) on the outside of a rectangular lip. The tabs catch on an inner ridge to hold the lid in place. Places 2 tabs on each long side and 1 on each short side. Use with create_inner_ridge for a complete snap-fit closure.",
+    description=(
+        "Add snap tabs on the outside of a rectangular lip. The tabs catch on an inner "
+        "ridge to hold the lid in place. Places 2 tabs on each long side and 1 on each "
+        "short side. IMPORTANT: the lid must be built lip-FIRST (lip at body origin, slab "
+        "on top) and positioned BEFORE calling this tool. Use defaults for tab dimensions."
+    ),
     category="modeling",
     parameters=[
         ToolParam("body_name", "string", "Name of the lid body with the lip"),
         ToolParam("length", "number", "Outer length of the enclosure (L)"),
         ToolParam("width", "number", "Outer width of the enclosure (W)"),
-        ToolParam("wall_thickness", "number", "Wall thickness (T)", required=False, default=2.0),
-        ToolParam("clearance", "number", "Gap between lip and wall (mm)", required=False, default=0.2),
+        ToolParam("wall_thickness", "number", "Wall thickness (T) — MUST match the enclosure wall thickness"),
+        ToolParam("clearance", "number", "Gap between lip and wall (mm). Use 1.0 for snap-fit", required=False, default=0.2),
         ToolParam("lip_height", "number", "Height of the lip (mm)", required=False, default=3.0),
         ToolParam("tab_width", "number", "Width of each tab along the wall (mm)", required=False, default=3.0),
         ToolParam("tab_height", "number", "Height of each tab along Z (mm)", required=False, default=1.0),
@@ -1474,6 +1504,122 @@ CREATE_SNAP_TABS = ToolDefinition(
         ToolParam("label", "string", "Display label for the result", required=False, default="SnapTab"),
     ],
     handler=_handle_create_snap_tabs,
+)
+
+
+# ── create_enclosure_lid ─────────────────────────────────
+
+def _handle_create_enclosure_lid(
+    length: float,
+    width: float,
+    wall_thickness: float,
+    clearance: float = 1.0,
+    lip_height: float = 3.0,
+    label: str = "EnclosureLid",
+) -> ToolResult:
+    """Create a snap-fit enclosure lid with correct lip+slab geometry."""
+    import FreeCAD as App
+    import Part
+
+    def do(doc):
+        T = wall_thickness
+        CL = clearance
+        LH = lip_height
+
+        body = doc.addObject("PartDesign::Body", label)
+        body.Label = label
+        doc.recompute()
+
+        # ── Step 1: Lip (built first so it points downward when positioned) ──
+        lip_x = T + CL
+        lip_y = T + CL
+        lip_w = length - 2 * T - 2 * CL
+        lip_h = width - 2 * T - 2 * CL
+
+        if lip_w <= 0 or lip_h <= 0:
+            return ToolResult(
+                success=False, output="",
+                error=f"Lip dimensions too small ({lip_w:.1f}x{lip_h:.1f}mm). "
+                      f"Reduce wall_thickness or clearance.")
+
+        lip_sketch = body.newObject("Sketcher::SketchObject", "LipSketch")
+        xy_plane = _get_body_plane(body, "XY")
+        if xy_plane:
+            lip_sketch.AttachmentSupport = [(xy_plane, "")]
+        lip_sketch.MapMode = "FlatFace"
+
+        # Rectangle for lip
+        x1, y1 = lip_x, lip_y
+        x2, y2 = lip_x + lip_w, lip_y + lip_h
+        lip_sketch.addGeometry(Part.LineSegment(App.Vector(x1, y1, 0), App.Vector(x2, y1, 0)))
+        lip_sketch.addGeometry(Part.LineSegment(App.Vector(x2, y1, 0), App.Vector(x2, y2, 0)))
+        lip_sketch.addGeometry(Part.LineSegment(App.Vector(x2, y2, 0), App.Vector(x1, y2, 0)))
+        lip_sketch.addGeometry(Part.LineSegment(App.Vector(x1, y2, 0), App.Vector(x1, y1, 0)))
+        import Sketcher
+        lip_sketch.addConstraint(Sketcher.Constraint("Coincident", 0, 2, 1, 1))
+        lip_sketch.addConstraint(Sketcher.Constraint("Coincident", 1, 2, 2, 1))
+        lip_sketch.addConstraint(Sketcher.Constraint("Coincident", 2, 2, 3, 1))
+        lip_sketch.addConstraint(Sketcher.Constraint("Coincident", 3, 2, 0, 1))
+        doc.recompute()
+
+        lip_pad = body.newObject("PartDesign::Pad", "LipPad")
+        lip_pad.Profile = lip_sketch
+        lip_pad.Length = LH
+        lip_sketch.Visibility = False
+
+        # ── Step 2: Slab on top of lip (full enclosure size) ──
+        slab_sketch = body.newObject("Sketcher::SketchObject", "SlabSketch")
+        if xy_plane:
+            slab_sketch.AttachmentSupport = [(xy_plane, "")]
+        slab_sketch.MapMode = "FlatFace"
+        slab_sketch.AttachmentOffset = App.Placement(
+            App.Vector(0, 0, LH), App.Rotation())
+
+        slab_sketch.addGeometry(Part.LineSegment(App.Vector(0, 0, 0), App.Vector(length, 0, 0)))
+        slab_sketch.addGeometry(Part.LineSegment(App.Vector(length, 0, 0), App.Vector(length, width, 0)))
+        slab_sketch.addGeometry(Part.LineSegment(App.Vector(length, width, 0), App.Vector(0, width, 0)))
+        slab_sketch.addGeometry(Part.LineSegment(App.Vector(0, width, 0), App.Vector(0, 0, 0)))
+        slab_sketch.addConstraint(Sketcher.Constraint("Coincident", 0, 2, 1, 1))
+        slab_sketch.addConstraint(Sketcher.Constraint("Coincident", 1, 2, 2, 1))
+        slab_sketch.addConstraint(Sketcher.Constraint("Coincident", 2, 2, 3, 1))
+        slab_sketch.addConstraint(Sketcher.Constraint("Coincident", 3, 2, 0, 1))
+        doc.recompute()
+
+        slab_pad = body.newObject("PartDesign::Pad", "SlabPad")
+        slab_pad.Profile = slab_sketch
+        slab_pad.Length = T
+        slab_sketch.Visibility = False
+
+        return ToolResult(
+            success=True,
+            output=f"Created enclosure lid '{label}' (lip: {lip_w:.0f}x{lip_h:.0f}x{LH:.0f}mm, slab: {length:.0f}x{width:.0f}x{T:.0f}mm). "
+                   f"Use transform_object to position at z=H-{LH:.0f}.",
+            data={"name": body.Name, "label": label,
+                  "lip_width": lip_w, "lip_height_dim": lip_h, "lip_depth": LH,
+                  "slab_thickness": T},
+        )
+
+    return _with_undo("Create Enclosure Lid", do)
+
+
+CREATE_ENCLOSURE_LID = ToolDefinition(
+    name="create_enclosure_lid",
+    description=(
+        "Create a snap-fit enclosure lid body with correct lip+slab geometry. "
+        "The lip is automatically inset by wall_thickness+clearance so it fits inside "
+        "the base cavity with room for snap tabs. After calling this, position the lid "
+        "with transform_object at z=H-lip_height, then add snap tabs."
+    ),
+    category="modeling",
+    parameters=[
+        ToolParam("length", "number", "Outer length of the enclosure (L)"),
+        ToolParam("width", "number", "Outer width of the enclosure (W)"),
+        ToolParam("wall_thickness", "number", "Wall thickness (T) — must match the base"),
+        ToolParam("clearance", "number", "Gap between lip and cavity wall (mm). Use 1.0 for snap-fit", required=False, default=1.0),
+        ToolParam("lip_height", "number", "How far the lip extends down into the base (mm)", required=False, default=3.0),
+        ToolParam("label", "string", "Display label for the lid body", required=False, default="EnclosureLid"),
+    ],
+    handler=_handle_create_enclosure_lid,
 )
 
 
@@ -1524,6 +1670,7 @@ ALL_TOOLS = [
     CHAMFER_EDGES,
     CREATE_INNER_RIDGE,
     CREATE_SNAP_TABS,
+    CREATE_ENCLOSURE_LID,
     MEASURE,
     GET_DOCUMENT_STATE,
     MODIFY_PROPERTY,

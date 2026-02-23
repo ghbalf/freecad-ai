@@ -55,7 +55,15 @@ that perform FreeCAD operations safely. Prefer using tools over generating raw c
 - For edge operations: use `fillet_edges` or `chamfer_edges`
 - For complex operations not covered by tools: use `execute_code`
 
-**Important:** Always create a PartDesign Body with `create_body` before using sketch/pad/pocket workflows."""
+**Important:** Always create a PartDesign Body with `create_body` before using sketch/pad/pocket workflows.
+
+**Enclosure construction pattern** (base + snap-fit lid, T=wall thickness):
+1. Base: create_body → outer rectangle at (0,0) size L×W → pad H → pocket sketch at **offset=H**, inner rect at (T,T) size (L-2T)×(W-2T) → pocket **length=H-T**
+2. Lid: **use `create_enclosure_lid`** with length=L, width=W, wall_thickness=T, clearance=1.0 (computes lip dimensions automatically)
+3. Position lid: transform_object translate_z=**H-3**
+4. Ridge on base: create_inner_ridge wall_thickness=T, z_position=H-2
+5. Snap tabs on lid: create_snap_tabs wall_thickness=T, clearance=1.0, lip_height=3
+6. Hide sketches: execute_code `for obj in App.ActiveDocument.Objects:\n    if obj.TypeId == "Sketcher::SketchObject":\n        obj.Visibility = False`"""
 
 FREECAD_API_REFERENCE = """\
 ## FreeCAD Python API Reference (condensed)
