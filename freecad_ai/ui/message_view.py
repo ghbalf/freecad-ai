@@ -7,6 +7,8 @@ into HTML suitable for display in a QTextBrowser.
 import html
 import re
 
+from ..i18n import translate
+
 # Match ```python ... ``` code blocks
 CODE_BLOCK_RE = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
 
@@ -34,15 +36,15 @@ def render_message(role: str, content: str) -> str:
         HTML string for insertion into QTextBrowser
     """
     if role == "user":
-        label = "You"
+        label = translate("MessageView", "You")
         bg_color = "#e3f2fd"
         label_color = "#1565c0"
     elif role == "assistant":
-        label = "AI"
+        label = translate("MessageView", "AI")
         bg_color = "#f5f5f5"
         label_color = "#2e7d32"
     else:
-        label = "System"
+        label = translate("MessageView", "System")
         bg_color = "#fff3e0"
         label_color = "#e65100"
 
@@ -76,11 +78,11 @@ def render_execution_result(success: bool, stdout: str, stderr: str) -> str:
     if success:
         icon = "&#10003;"  # checkmark
         color = "#2e7d32"
-        status = "Code executed successfully"
+        status = translate("MessageView", "Code executed successfully")
     else:
         icon = "&#10007;"  # X
         color = "#c62828"
-        status = "Execution failed"
+        status = translate("MessageView", "Execution failed")
 
     parts = [
         f'<div style="margin: 6px 0; padding: 8px 12px; '
@@ -122,12 +124,14 @@ def render_tool_call(tool_name: str, call_id: str, started: bool = True,
         output: Tool result output (only used when started=False)
     """
     if started:
+        calling_text = translate("MessageView", "Calling {}...").format(
+            '<b>{}</b>'.format(html.escape(tool_name)))
         return (
-            f'<div style="margin: 4px 0; padding: 6px 10px; '
-            f'background-color: #e8f5e9; border-left: 3px solid #4caf50; '
-            f'border-radius: 0 4px 4px 0; font-size: 12px;">'
-            f'<span style="color: #2e7d32;">&#9881; Calling <b>{html.escape(tool_name)}</b>...</span>'
-            f'</div>'
+            '<div style="margin: 4px 0; padding: 6px 10px; '
+            'background-color: #e8f5e9; border-left: 3px solid #4caf50; '
+            'border-radius: 0 4px 4px 0; font-size: 12px;">'
+            '<span style="color: #2e7d32;">&#9881; {}</span>'
+            '</div>'.format(calling_text)
         )
     else:
         if success:
@@ -173,8 +177,10 @@ def _render_thinking_block(thinking_text: str) -> str:
         '<div style="margin: 4px 0; padding: 4px 8px; '
         'background-color: #f0f0f0; border-left: 2px solid #ccc; '
         'font-size: 11px; color: #999; font-style: italic;">'
-        '<span style="color: #aaa;">Thinking</span><br>'
-        f'{escaped}</div>'
+        '<span style="color: #aaa;">{label}</span><br>'
+        '{text}</div>'.format(
+            label=translate("MessageView", "Thinking"),
+            text=escaped)
     )
 
 

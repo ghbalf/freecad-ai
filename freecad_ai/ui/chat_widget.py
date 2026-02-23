@@ -12,6 +12,7 @@ tool calls on the main thread, feed results back to the LLM.
 import json
 
 from .compat import QtWidgets, QtCore, QtGui
+from ..i18n import translate
 
 QDockWidget = QtWidgets.QDockWidget
 QWidget = QtWidgets.QWidget
@@ -210,8 +211,10 @@ class _LLMWorker(QThread):
             })
 
         # If we reach here, we hit the max turns limit
-        self._full_response += "\n\n[Reached maximum tool call iterations]"
-        self.token_received.emit("\n\n[Reached maximum tool call iterations]")
+        limit_msg = "\n\n[{}]".format(
+            translate("ChatDockWidget", "Reached maximum tool call iterations"))
+        self._full_response += limit_msg
+        self.token_received.emit(limit_msg)
         self.response_finished.emit(self._full_response)
 
     def _execute_tool_on_main_thread(self, tool_name: str, arguments: dict) -> dict:
@@ -287,7 +290,7 @@ class ChatDockWidget(QDockWidget):
     """Main chat dock widget for FreeCAD AI."""
 
     def __init__(self, parent=None):
-        super().__init__("FreeCAD AI", parent)
+        super().__init__(translate("ChatDockWidget", "FreeCAD AI"), parent)
         self.setObjectName("FreeCADAIChatDock")
         self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
 
@@ -311,21 +314,24 @@ class ChatDockWidget(QDockWidget):
         # ── Header bar ──
         header = QHBoxLayout()
 
-        title = QLabel("<b>FreeCAD AI</b>")
+        title = QLabel("<b>{}</b>".format(translate("ChatDockWidget", "FreeCAD AI")))
         header.addWidget(title)
         header.addStretch()
 
         # Mode toggle
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Plan", "Act"])
+        self.mode_combo.addItems([
+            translate("ChatDockWidget", "Plan"),
+            translate("ChatDockWidget", "Act"),
+        ])
         cfg = get_config()
         self.mode_combo.setCurrentIndex(0 if cfg.mode == "plan" else 1)
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        header.addWidget(QLabel("Mode:"))
+        header.addWidget(QLabel(translate("ChatDockWidget", "Mode:")))
         header.addWidget(self.mode_combo)
 
         # Settings button
-        settings_btn = QPushButton("Settings")
+        settings_btn = QPushButton(translate("ChatDockWidget", "Settings"))
         settings_btn.setMaximumWidth(80)
         settings_btn.clicked.connect(self._open_settings)
         header.addWidget(settings_btn)
@@ -347,13 +353,13 @@ class ChatDockWidget(QDockWidget):
         input_layout = QHBoxLayout()
 
         self.input_edit = QTextEdit()
-        self.input_edit.setPlaceholderText("Describe what you want to create...")
+        self.input_edit.setPlaceholderText(translate("ChatDockWidget", "Describe what you want to create..."))
         self.input_edit.setMaximumHeight(80)
         self.input_edit.setFont(QFont("Sans", 10))
         self.input_edit.installEventFilter(self)
         input_layout.addWidget(self.input_edit, 1)
 
-        self.send_btn = QPushButton("Send")
+        self.send_btn = QPushButton(translate("ChatDockWidget", "Send"))
         self.send_btn.setMinimumHeight(40)
         self.send_btn.setStyleSheet(
             "QPushButton { background-color: #3daee9; color: white; "
@@ -367,26 +373,26 @@ class ChatDockWidget(QDockWidget):
         # ── Footer ──
         footer = QHBoxLayout()
 
-        new_chat_btn = QPushButton("+ New Chat")
+        new_chat_btn = QPushButton(translate("ChatDockWidget", "+ New Chat"))
         new_chat_btn.setMaximumWidth(100)
         new_chat_btn.clicked.connect(self._new_chat)
         footer.addWidget(new_chat_btn)
 
-        load_chat_btn = QPushButton("Load")
+        load_chat_btn = QPushButton(translate("ChatDockWidget", "Load"))
         load_chat_btn.setMaximumWidth(60)
-        load_chat_btn.setToolTip("Load a previous chat session")
+        load_chat_btn.setToolTip(translate("ChatDockWidget", "Load a previous chat session"))
         load_chat_btn.clicked.connect(self._load_chat)
         footer.addWidget(load_chat_btn)
 
-        save_log_btn = QPushButton("Save Log")
+        save_log_btn = QPushButton(translate("ChatDockWidget", "Save Log"))
         save_log_btn.setMaximumWidth(80)
-        save_log_btn.setToolTip("Save session log for debugging (tool calls, arguments, results)")
+        save_log_btn.setToolTip(translate("ChatDockWidget", "Save session log for debugging"))
         save_log_btn.clicked.connect(self._save_session_log)
         footer.addWidget(save_log_btn)
 
         footer.addStretch()
 
-        self.token_label = QLabel("tokens: ~0")
+        self.token_label = QLabel(translate("ChatDockWidget", "tokens: ~0"))
         self.token_label.setStyleSheet("color: #888; font-size: 11px;")
         footer.addWidget(self.token_label)
 
@@ -466,7 +472,7 @@ class ChatDockWidget(QDockWidget):
         """Show a dialog to load a previous chat session."""
         saved = Conversation.list_saved()
         if not saved:
-            self._append_html(render_message("system", "No saved sessions found."))
+            self._append_html(render_message("system", translate("ChatDockWidget", "No saved sessions found.")))
             return
 
         # Build display items with timestamps and preview
@@ -499,8 +505,8 @@ class ChatDockWidget(QDockWidget):
 
         from .compat import QtWidgets as _QtWidgets
         selected, ok = _QtWidgets.QInputDialog.getItem(
-            parent, "Load Chat Session",
-            "Select a session to resume:",
+            parent, translate("ChatDockWidget", "Load Chat Session"),
+            translate("ChatDockWidget", "Select a session to resume:"),
             item_labels, 0, False
         )
 
@@ -518,10 +524,15 @@ class ChatDockWidget(QDockWidget):
                 self._rerender_chat()
                 self._update_token_count()
                 self._append_html(render_message(
-                    "system", f"Resumed session from {items[idx][0].split(' | ')[0]}"
+                    "system",
+                    translate("ChatDockWidget", "Resumed session from {}").format(
+                        items[idx][0].split(' | ')[0])
                 ))
             except Exception as e:
-                self._append_html(render_message("system", f"Failed to load session: {e}"))
+                self._append_html(render_message(
+                    "system",
+                    translate("ChatDockWidget", "Failed to load session: {}").format(e)
+                ))
 
     def _compact_and_send(self):
         """Compact conversation by summarizing older messages, then continue sending."""
@@ -529,8 +540,9 @@ class ChatDockWidget(QDockWidget):
             '<div style="margin: 4px 0; padding: 6px 10px; '
             'background-color: #fff3e0; border-left: 3px solid #ff9800; '
             'border-radius: 0 4px 4px 0; font-size: 12px; color: #e65100;">'
-            '&#9881; Compacting context (~{}k tokens)...</div>'.format(
-                self.conversation.estimated_tokens() // 1000)
+            '{}</div>'.format(
+                translate("ChatDockWidget", "Compacting context (~{}k tokens)...").format(
+                    self.conversation.estimated_tokens() // 1000))
         )
 
         # Build summary of older messages (all except last 4)
@@ -578,8 +590,9 @@ class ChatDockWidget(QDockWidget):
                 '<div style="margin: 4px 0; padding: 6px 10px; '
                 'background-color: #e8f5e9; border-left: 3px solid #4caf50; '
                 'border-radius: 0 4px 4px 0; font-size: 12px; color: #2e7d32;">'
-                '&#10003; Context compacted to ~{}k tokens</div>'.format(
-                    self.conversation.estimated_tokens() // 1000)
+                '{}</div>'.format(
+                    translate("ChatDockWidget", "Context compacted to ~{}k tokens").format(
+                        self.conversation.estimated_tokens() // 1000))
             )
         self._set_loading(False)
         self._update_token_count()
@@ -678,11 +691,13 @@ class ChatDockWidget(QDockWidget):
                 json.dump(log_data, f, indent=2, default=str)
 
             self._append_html(render_message(
-                "system", f"Session log saved to: {filepath}"
+                "system",
+                translate("ChatDockWidget", "Session log saved to: {}").format(filepath)
             ))
         except Exception as e:
             self._append_html(render_message(
-                "system", f"Failed to save log: {e}"
+                "system",
+                translate("ChatDockWidget", "Failed to save log: {}").format(e)
             ))
 
     def _auto_save_log(self):
@@ -736,7 +751,8 @@ class ChatDockWidget(QDockWidget):
                 '<div style="margin: 4px 0; padding: 4px 8px; '
                 'background-color: #f0f0f0; border-left: 2px solid #ccc; '
                 'font-size: 11px; color: #888; font-style: italic;">'
-                '<span style="color: #aaa;">Thinking...</span><br>'
+                '<span style="color: #aaa;">{}</span><br>'.format(
+                    translate("ChatDockWidget", "Thinking..."))
             )
             self.chat_display.setTextCursor(cursor)
 
@@ -831,7 +847,7 @@ class ChatDockWidget(QDockWidget):
         cursor.movePosition(QTextCursor.End)
         cursor.insertHtml("</div></div>")
 
-        self._append_html(render_message("system", "Error: " + error_msg))
+        self._append_html(render_message("system", translate("ChatDockWidget", "Error: ") + error_msg))
         self._rerender_chat()
 
     # ── Tool call handlers ──────────────────────────────────
@@ -906,20 +922,21 @@ class ChatDockWidget(QDockWidget):
         if self._retry_count >= get_config().max_retries:
             self._append_html(render_message(
                 "system",
-                "Max retries ({}) reached. "
-                "Please review the error and provide guidance.".format(
+                translate("ChatDockWidget",
+                          "Max retries ({}) reached. "
+                          "Please review the error and provide guidance.").format(
                     get_config().max_retries)
             ))
             self._retry_count = 0
             return
 
         self._retry_count += 1
-        error_msg = (
+        error_msg = translate(
+            "ChatDockWidget",
             "The code failed with the following error:\n\n"
             "{}\n\n"
-            "Please fix the code and try again. (Attempt {}/{})".format(
+            "Please fix the code and try again. (Attempt {}/{})").format(
                 result.stderr, self._retry_count, get_config().max_retries)
-        )
 
         self.conversation.add_system_message(error_msg)
         self._append_html(render_message("system", error_msg))
@@ -961,11 +978,11 @@ class ChatDockWidget(QDockWidget):
             ))
             if result.success:
                 self.conversation.add_system_message(
-                    "Code executed successfully.\n" + result.stdout
+                    translate("ChatDockWidget", "Code executed successfully.") + "\n" + result.stdout
                 )
             else:
                 self.conversation.add_system_message(
-                    "Code execution failed:\n" + result.stderr
+                    translate("ChatDockWidget", "Code execution failed:") + "\n" + result.stderr
                 )
 
     # ── Skill commands ──────────────────────────────────────
@@ -1058,14 +1075,18 @@ class ChatDockWidget(QDockWidget):
         encoded = base64.b64encode(code.encode()).decode()
         return (
             '<div style="margin: 2px 0 8px 0;">'
-            '<a href="execute:{}" style="text-decoration: none; '
+            '<a href="execute:{encoded}" style="text-decoration: none; '
             'background-color: #2e7d32; color: white; padding: 3px 12px; '
             'border-radius: 3px; font-size: 12px; margin-right: 6px;">'
-            'Execute</a> '
-            '<a href="copy:{}" style="text-decoration: none; '
+            '{execute}</a> '
+            '<a href="copy:{encoded}" style="text-decoration: none; '
             'background-color: #666; color: white; padding: 3px 12px; '
-            'border-radius: 3px; font-size: 12px;">Copy</a>'
-            '</div>'.format(encoded, encoded)
+            'border-radius: 3px; font-size: 12px;">{copy}</a>'
+            '</div>'.format(
+                encoded=encoded,
+                execute=translate("ChatDockWidget", "Execute"),
+                copy=translate("ChatDockWidget", "Copy"),
+            )
         )
 
     def _handle_anchor_click(self, url):
@@ -1096,15 +1117,17 @@ class ChatDockWidget(QDockWidget):
         if loading:
             self.send_btn.setText("...")
         else:
-            self.send_btn.setText("Send")
+            self.send_btn.setText(translate("ChatDockWidget", "Send"))
 
     def _update_token_count(self):
         """Update the token estimate display."""
         tokens = self.conversation.estimated_tokens()
         if tokens >= 1000:
-            self.token_label.setText("tokens: ~{:.1f}k".format(tokens / 1000))
+            self.token_label.setText(
+                translate("ChatDockWidget", "tokens: ~{:.1f}k").format(tokens / 1000))
         else:
-            self.token_label.setText("tokens: ~{}".format(tokens))
+            self.token_label.setText(
+                translate("ChatDockWidget", "tokens: ~{}").format(tokens))
 
     def _connect_mcp_servers(self, cfg):
         """Connect to configured MCP servers (called once on first tool-enabled send)."""
@@ -1122,7 +1145,9 @@ class ChatDockWidget(QDockWidget):
                     '<div style="margin: 4px 0; padding: 4px 8px; '
                     'background-color: #e8f5e9; border-left: 3px solid #4caf50; '
                     'border-radius: 0 4px 4px 0; font-size: 11px; color: #2e7d32;">'
-                    'MCP: connected to {}</div>'.format(", ".join(servers))
+                    '{}</div>'.format(
+                        translate("ChatDockWidget", "MCP: connected to {}").format(
+                            ", ".join(servers)))
                 )
         except Exception as e:
             self._mcp_connected = True  # Don't retry on failure
@@ -1130,7 +1155,8 @@ class ChatDockWidget(QDockWidget):
                 '<div style="margin: 4px 0; padding: 4px 8px; '
                 'background-color: #fff3e0; border-left: 3px solid #ff9800; '
                 'border-radius: 0 4px 4px 0; font-size: 11px; color: #e65100;">'
-                'MCP connection error: {}</div>'.format(str(e))
+                '{}</div>'.format(
+                    translate("ChatDockWidget", "MCP connection error: {}").format(str(e)))
             )
 
     def closeEvent(self, event):

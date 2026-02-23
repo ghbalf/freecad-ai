@@ -9,6 +9,7 @@ Provides a GUI for configuring:
 """
 
 from .compat import QtWidgets, QtCore, QtGui
+from ..i18n import translate
 
 QDialog = QtWidgets.QDialog
 QVBoxLayout = QtWidgets.QVBoxLayout
@@ -43,7 +44,7 @@ class _TestConnectionThread(QThread):
             from ..llm.client import create_client_from_config
             client = create_client_from_config()
             response = client.test_connection()
-            self.finished.emit(True, "Connected! Response: " + response)
+            self.finished.emit(True, translate("SettingsDialog", "Connected! Response: ") + response)
         except Exception as e:
             self.finished.emit(False, str(e))
 
@@ -53,7 +54,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("FreeCAD AI Settings")
+        self.setWindowTitle(translate("SettingsDialog", "FreeCAD AI Settings"))
         self.setMinimumWidth(500)
         self._test_thread = None
         self._build_ui()
@@ -63,32 +64,32 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # Provider group
-        provider_group = QGroupBox("LLM Provider")
+        provider_group = QGroupBox(translate("SettingsDialog", "LLM Provider"))
         provider_layout = QFormLayout()
 
         self.provider_combo = QComboBox()
         self.provider_combo.addItems([n.capitalize() for n in get_provider_names()])
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
-        provider_layout.addRow("Provider:", self.provider_combo)
+        provider_layout.addRow(translate("SettingsDialog", "Provider:"), self.provider_combo)
 
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setEchoMode(QLineEdit.Password)
-        self.api_key_edit.setPlaceholderText("Enter API key (stored in plaintext)")
-        provider_layout.addRow("API Key:", self.api_key_edit)
+        self.api_key_edit.setPlaceholderText(translate("SettingsDialog", "Enter API key (stored in plaintext)"))
+        provider_layout.addRow(translate("SettingsDialog", "API Key:"), self.api_key_edit)
 
         self.base_url_edit = QLineEdit()
         self.base_url_edit.setPlaceholderText("https://api.example.com/v1")
-        provider_layout.addRow("Base URL:", self.base_url_edit)
+        provider_layout.addRow(translate("SettingsDialog", "Base URL:"), self.base_url_edit)
 
         self.model_edit = QLineEdit()
-        self.model_edit.setPlaceholderText("Model name")
-        provider_layout.addRow("Model:", self.model_edit)
+        self.model_edit.setPlaceholderText(translate("SettingsDialog", "Model name"))
+        provider_layout.addRow(translate("SettingsDialog", "Model:"), self.model_edit)
 
         provider_group.setLayout(provider_layout)
         layout.addWidget(provider_group)
 
         # Parameters group
-        params_group = QGroupBox("Parameters")
+        params_group = QGroupBox(translate("SettingsDialog", "Parameters"))
         params_layout = QFormLayout()
 
         self.max_tokens_spin = QSpinBox()
@@ -96,37 +97,43 @@ class SettingsDialog(QDialog):
         self.max_tokens_spin.setSingleStep(1024)
         self.max_tokens_spin.setValue(4096)
         self.max_tokens_spin.setToolTip(
-            "Maximum output tokens per response.\n"
-            "Context window is determined by the model/provider."
+            translate("SettingsDialog",
+                      "Maximum output tokens per response.\n"
+                      "Context window is determined by the model/provider.")
         )
-        params_layout.addRow("Max Output Tokens:", self.max_tokens_spin)
+        params_layout.addRow(translate("SettingsDialog", "Max Output Tokens:"), self.max_tokens_spin)
 
         self.temperature_edit = QLineEdit()
         self.temperature_edit.setValidator(QDoubleValidator(0.0, 2.0, 2))
         self.temperature_edit.setText("0.3")
-        params_layout.addRow("Temperature:", self.temperature_edit)
+        params_layout.addRow(translate("SettingsDialog", "Temperature:"), self.temperature_edit)
 
         params_group.setLayout(params_layout)
         layout.addWidget(params_group)
 
         # Behavior group
-        behavior_group = QGroupBox("Behavior")
+        behavior_group = QGroupBox(translate("SettingsDialog", "Behavior"))
         behavior_layout = QVBoxLayout()
 
         self.auto_execute_check = QCheckBox(
-            "Auto-execute code in Act mode (skip confirmation dialog)"
+            translate("SettingsDialog", "Auto-execute code in Act mode (skip confirmation dialog)")
         )
         behavior_layout.addWidget(self.auto_execute_check)
 
         # Thinking mode
         thinking_layout = QHBoxLayout()
-        thinking_layout.addWidget(QLabel("Thinking:"))
+        thinking_layout.addWidget(QLabel(translate("SettingsDialog", "Thinking:")))
         self.thinking_combo = QComboBox()
-        self.thinking_combo.addItems(["Off", "On", "Extended"])
+        self.thinking_combo.addItems([
+            translate("SettingsDialog", "Off"),
+            translate("SettingsDialog", "On"),
+            translate("SettingsDialog", "Extended"),
+        ])
         self.thinking_combo.setToolTip(
-            "Off: No reasoning (fastest)\n"
-            "On: Standard thinking/reasoning\n"
-            "Extended: Extended thinking with higher budget"
+            translate("SettingsDialog",
+                      "Off: No reasoning (fastest)\n"
+                      "On: Standard thinking/reasoning\n"
+                      "Extended: Extended thinking with higher budget")
         )
         thinking_layout.addWidget(self.thinking_combo)
         thinking_layout.addStretch()
@@ -136,7 +143,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(behavior_group)
 
         # MCP Servers group
-        mcp_group = QGroupBox("MCP Servers")
+        mcp_group = QGroupBox(translate("SettingsDialog", "MCP Servers"))
         mcp_layout = QVBoxLayout()
 
         self.mcp_list = QListWidget()
@@ -144,11 +151,11 @@ class SettingsDialog(QDialog):
         mcp_layout.addWidget(self.mcp_list)
 
         mcp_btn_layout = QHBoxLayout()
-        add_mcp_btn = QPushButton("Add...")
+        add_mcp_btn = QPushButton(translate("SettingsDialog", "Add..."))
         add_mcp_btn.clicked.connect(self._add_mcp_server)
         mcp_btn_layout.addWidget(add_mcp_btn)
 
-        remove_mcp_btn = QPushButton("Remove")
+        remove_mcp_btn = QPushButton(translate("SettingsDialog", "Remove"))
         remove_mcp_btn.clicked.connect(self._remove_mcp_server)
         mcp_btn_layout.addWidget(remove_mcp_btn)
 
@@ -160,7 +167,7 @@ class SettingsDialog(QDialog):
 
         # Test connection
         test_layout = QHBoxLayout()
-        self.test_btn = QPushButton("Test Connection")
+        self.test_btn = QPushButton(translate("SettingsDialog", "Test Connection"))
         self.test_btn.clicked.connect(self._test_connection)
         test_layout.addWidget(self.test_btn)
 
@@ -174,14 +181,14 @@ class SettingsDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        save_btn = QPushButton("Save")
+        save_btn = QPushButton(translate("SettingsDialog", "Save"))
         save_btn.setStyleSheet(
             "QPushButton { padding: 6px 24px; font-weight: bold; }"
         )
         save_btn.clicked.connect(self._save)
         btn_layout.addWidget(save_btn)
 
-        cancel_btn = QPushButton("Cancel")
+        cancel_btn = QPushButton(translate("SettingsDialog", "Cancel"))
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 
@@ -257,7 +264,7 @@ class SettingsDialog(QDialog):
         self._save_temp()
 
         self.test_btn.setEnabled(False)
-        self.test_status.setText("Testing...")
+        self.test_status.setText(translate("SettingsDialog", "Testing..."))
         self.test_status.setStyleSheet("color: #666;")
 
         self._test_thread = _TestConnectionThread(self)
@@ -271,7 +278,7 @@ class SettingsDialog(QDialog):
             self.test_status.setText(message)
             self.test_status.setStyleSheet("color: #2e7d32;")
         else:
-            self.test_status.setText("Failed: " + message)
+            self.test_status.setText(translate("SettingsDialog", "Failed: ") + message)
             self.test_status.setStyleSheet("color: #c62828;")
 
     def _save_temp(self):
@@ -321,7 +328,7 @@ class _AddMCPServerDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Add MCP Server")
+        self.setWindowTitle(translate("AddMCPServerDialog", "Add MCP Server"))
         self.setMinimumWidth(400)
         self._build_ui()
 
@@ -329,30 +336,30 @@ class _AddMCPServerDialog(QDialog):
         layout = QFormLayout(self)
 
         self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("e.g. filesystem")
-        layout.addRow("Name:", self.name_edit)
+        self.name_edit.setPlaceholderText(translate("AddMCPServerDialog", "e.g. filesystem"))
+        layout.addRow(translate("AddMCPServerDialog", "Name:"), self.name_edit)
 
         self.command_edit = QLineEdit()
-        self.command_edit.setPlaceholderText("e.g. npx")
-        layout.addRow("Command:", self.command_edit)
+        self.command_edit.setPlaceholderText(translate("AddMCPServerDialog", "e.g. npx"))
+        layout.addRow(translate("AddMCPServerDialog", "Command:"), self.command_edit)
 
         self.args_edit = QLineEdit()
-        self.args_edit.setPlaceholderText("e.g. -y @modelcontextprotocol/server-filesystem /tmp")
-        self.args_edit.setToolTip("Space-separated arguments")
-        layout.addRow("Args:", self.args_edit)
+        self.args_edit.setPlaceholderText(translate("AddMCPServerDialog", "e.g. -y @modelcontextprotocol/server-filesystem /tmp"))
+        self.args_edit.setToolTip(translate("AddMCPServerDialog", "Space-separated arguments"))
+        layout.addRow(translate("AddMCPServerDialog", "Args:"), self.args_edit)
 
-        self.enabled_check = QCheckBox("Enabled")
+        self.enabled_check = QCheckBox(translate("AddMCPServerDialog", "Enabled"))
         self.enabled_check.setChecked(True)
         layout.addRow("", self.enabled_check)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        ok_btn = QPushButton("Add")
+        ok_btn = QPushButton(translate("AddMCPServerDialog", "Add"))
         ok_btn.clicked.connect(self.accept)
         btn_layout.addWidget(ok_btn)
 
-        cancel_btn = QPushButton("Cancel")
+        cancel_btn = QPushButton(translate("AddMCPServerDialog", "Cancel"))
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 

@@ -5,6 +5,7 @@ buttons. After execution, shows the result inline.
 """
 
 from .compat import QtWidgets, QtCore, QtGui
+from ..i18n import translate
 
 QDialog = QtWidgets.QDialog
 QVBoxLayout = QtWidgets.QVBoxLayout
@@ -26,7 +27,7 @@ class CodeReviewDialog(QDialog):
         self.execution_result = None
         self._editable = False
 
-        self.setWindowTitle("Review Code")
+        self.setWindowTitle(translate("CodeReviewDialog", "Review Code"))
         self.setMinimumSize(600, 450)
         self._build_ui()
 
@@ -34,7 +35,7 @@ class CodeReviewDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # Header
-        header = QLabel("Review the proposed code before executing:")
+        header = QLabel(translate("CodeReviewDialog", "Review the proposed code before executing:"))
         header.setStyleSheet("font-weight: bold; margin-bottom: 4px;")
         layout.addWidget(header)
 
@@ -67,13 +68,13 @@ class CodeReviewDialog(QDialog):
         # Buttons
         btn_layout = QHBoxLayout()
 
-        self.edit_btn = QPushButton("Edit")
+        self.edit_btn = QPushButton(translate("CodeReviewDialog", "Edit"))
         self.edit_btn.clicked.connect(self._toggle_edit)
         btn_layout.addWidget(self.edit_btn)
 
         btn_layout.addStretch()
 
-        self.execute_btn = QPushButton("Execute")
+        self.execute_btn = QPushButton(translate("CodeReviewDialog", "Execute"))
         self.execute_btn.setStyleSheet(
             "QPushButton { background-color: #2e7d32; color: white; "
             "padding: 6px 20px; font-weight: bold; }"
@@ -81,7 +82,7 @@ class CodeReviewDialog(QDialog):
         self.execute_btn.clicked.connect(self._execute)
         btn_layout.addWidget(self.execute_btn)
 
-        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn = QPushButton(translate("CodeReviewDialog", "Cancel"))
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
 
@@ -92,13 +93,13 @@ class CodeReviewDialog(QDialog):
         self._editable = not self._editable
         self.code_edit.setReadOnly(not self._editable)
         if self._editable:
-            self.edit_btn.setText("Lock")
+            self.edit_btn.setText(translate("CodeReviewDialog", "Lock"))
             self.code_edit.setStyleSheet(
                 "QTextEdit { background-color: #2d2d2d; color: #d4d4d4; "
                 "border: 1px solid #3daee9; padding: 8px; }"
             )
         else:
-            self.edit_btn.setText("Edit")
+            self.edit_btn.setText(translate("CodeReviewDialog", "Edit"))
             self.code_edit.setStyleSheet(
                 "QTextEdit { background-color: #1e1e1e; color: #d4d4d4; "
                 "border: 1px solid #555; padding: 8px; }"
@@ -111,10 +112,10 @@ class CodeReviewDialog(QDialog):
 
         self.result_label.setVisible(True)
         if self.execution_result.success:
-            self.result_label.setText("Code executed successfully.")
+            self.result_label.setText(translate("CodeReviewDialog", "Code executed successfully."))
             self.result_label.setStyleSheet("color: #2e7d32; font-weight: bold;")
         else:
-            self.result_label.setText("Execution failed:")
+            self.result_label.setText(translate("CodeReviewDialog", "Execution failed:"))
             self.result_label.setStyleSheet("color: #c62828; font-weight: bold;")
 
         output = ""
@@ -131,7 +132,7 @@ class CodeReviewDialog(QDialog):
 
         # Change buttons
         self.execute_btn.setEnabled(False)
-        self.cancel_btn.setText("Close")
+        self.cancel_btn.setText(translate("CodeReviewDialog", "Close"))
         self.cancel_btn.clicked.disconnect()
         self.cancel_btn.clicked.connect(self.accept)
 

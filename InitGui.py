@@ -7,6 +7,8 @@ import FreeCAD as App
 class FreeCADAIWorkbench(Gui.Workbench):
     """AI assistant workbench for FreeCAD."""
 
+    # FreeCAD auto-translates MenuText/ToolTip using class name as context.
+    # The .qm file provides translations under the "FreeCADAIWorkbench" context.
     MenuText = "FreeCAD AI"
     ToolTip = "AI-powered assistant for 3D modeling"
 
@@ -44,9 +46,10 @@ class OpenChatCommand:
 
     def GetResources(self):
         from freecad_ai.paths import get_icon_path
+        from freecad_ai.i18n import translate
         d = {
-            "MenuText": "Open AI Chat",
-            "ToolTip": "Open the FreeCAD AI chat panel",
+            "MenuText": translate("OpenChatCommand", "Open AI Chat"),
+            "ToolTip": translate("OpenChatCommand", "Open the FreeCAD AI chat panel"),
         }
         icon = get_icon_path()
         if icon:
@@ -68,9 +71,10 @@ class OpenSettingsCommand:
     """Command to open the settings dialog."""
 
     def GetResources(self):
+        from freecad_ai.i18n import translate
         return {
-            "MenuText": "AI Settings",
-            "ToolTip": "Configure FreeCAD AI providers and options",
+            "MenuText": translate("OpenSettingsCommand", "AI Settings"),
+            "ToolTip": translate("OpenSettingsCommand", "Configure FreeCAD AI providers and options"),
         }
 
     def Activated(self, index=0):
@@ -81,6 +85,17 @@ class OpenSettingsCommand:
     def IsActive(self):
         return True
 
+
+# Register translation path early so command strings are translated
+# before the workbench is activated.
+try:
+    from freecad_ai.paths import get_translations_path as _gtp
+    _tr_path = _gtp()
+    if _tr_path:
+        Gui.addLanguagePath(_tr_path)
+        Gui.updateLocale()
+except Exception:
+    pass
 
 Gui.addCommand("FreeCADAI_OpenChat", OpenChatCommand())
 Gui.addCommand("FreeCADAI_OpenSettings", OpenSettingsCommand())
