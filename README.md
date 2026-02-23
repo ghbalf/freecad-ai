@@ -8,7 +8,7 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 
 - **Chat interface** — dock widget with streaming LLM responses
 - **Plan / Act modes** — review code before execution (Plan) or auto-execute (Act)
-- **Tool calling** — structured FreeCAD operations (Act mode) for safer, more reliable modeling
+- **Tool calling** — 31 structured FreeCAD operations (Act mode) for safer, more reliable modeling
 - **Skills** — reusable instruction sets invoked via `/command` (enclosure, gear, fastener holes, etc.)
 - **Thinking mode** — enable LLM reasoning for complex multi-step tasks (Off / On / Extended)
 - **Context compacting** — automatically summarizes older messages when approaching context limits
@@ -28,13 +28,28 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 
 Clone or copy this repository into FreeCAD's Mod directory:
 
-```bash
-# Option 1: symlink (recommended for development)
-ln -s /path/to/freecad-ai ~/.local/share/FreeCAD/Mod/freecad-ai
+### Linux
 
-# Option 2: copy
-cp -r /path/to/freecad-ai ~/.local/share/FreeCAD/Mod/freecad-ai
+```bash
+ln -s /path/to/freecad-ai ~/.local/share/FreeCAD/Mod/freecad-ai
 ```
+
+### macOS
+
+```bash
+ln -s /path/to/freecad-ai ~/Library/Application\ Support/FreeCAD/Mod/freecad-ai
+```
+
+### Windows
+
+```powershell
+# Run as Administrator
+New-Item -ItemType SymbolicLink -Path "$env:APPDATA\FreeCAD\Mod\freecad-ai" -Target "C:\path\to\freecad-ai"
+```
+
+Or manually copy the repository into `%APPDATA%\FreeCAD\Mod\freecad-ai`.
+
+---
 
 Restart FreeCAD. The **FreeCAD AI** workbench will appear in the workbench selector.
 
@@ -77,8 +92,8 @@ Tool calling is enabled by default. Disable it by setting `enable_tools: false` 
 
 | Tool | Description |
 |------|-------------|
-| `create_body` | Create a PartDesign Body for parametric modeling |
 | `create_primitive` | Box, Cylinder, Sphere, Cone, Torus |
+| `create_body` | Create a PartDesign Body for parametric modeling |
 | `create_sketch` | Sketch with lines, circles, arcs, rectangles + constraints (supports plane offset) |
 | `pad_sketch` | Extrude a sketch |
 | `pocket_sketch` | Cut a pocket from a sketch (auto-detects correct direction) |
@@ -89,14 +104,25 @@ Tool calling is enabled by default. Disable it by setting `enable_tools: false` 
 | `transform_object` | Move and/or rotate an object |
 | `fillet_edges` | Round edges |
 | `chamfer_edges` | Chamfer edges |
+| `shell_object` | Hollow out a solid (PartDesign::Thickness) |
+| `create_wedge` | Create a wedge/ramp shape |
+| `scale_object` | Scale an object uniformly or per-axis |
+| `section_object` | Cross-section through a plane or another object |
+| `linear_pattern` | Repeat a feature in a line |
+| `polar_pattern` | Repeat a feature in a circular pattern |
 | `create_inner_ridge` | Add a snap-fit ridge inside a rectangular hollow |
 | `create_snap_tabs` | Add snap tabs on a lid lip (pairs with ridge) |
+| `create_enclosure_lid` | Generate a snap-fit enclosure lid with correct dimensions |
 | `measure` | Volume, area, bounding box, distance, edge listing |
 | `get_document_state` | Inspect current objects and properties |
 | `modify_property` | Change any object property |
 | `export_model` | Export to STL, STEP, or IGES |
 | `execute_code` | Fallback: run arbitrary Python |
 | `undo` | Undo last N operations |
+| `capture_viewport` | Save a screenshot of the 3D viewport |
+| `set_view` | Set camera orientation (front, top, isometric, etc.) |
+| `zoom_object` | Zoom the viewport to a specific object |
+| `select_geometry` | Interactive viewport picking for edges, faces, vertices |
 
 ### Skills
 
@@ -206,7 +232,7 @@ freecad-ai/
 │   │   └── providers.py       # Provider registry
 │   ├── tools/
 │   │   ├── registry.py        # Tool abstractions + registry
-│   │   ├── freecad_tools.py   # 20 FreeCAD tool handlers
+│   │   ├── freecad_tools.py   # 31 FreeCAD tool handlers
 │   │   └── setup.py           # Default registry factory
 │   ├── ui/
 │   │   ├── compat.py          # PySide2/PySide6 shim
@@ -239,4 +265,5 @@ freecad-ai/
 
 ## License
 
-LGPL-2.1 — see [LICENSE](LICENSE).
+- **Code:** LGPL-2.1 — see [LICENSE-CODE](LICENSE-CODE)
+- **Icons:** CC0-1.0 (public domain) — see [LICENSE-ICON](LICENSE-ICON)

@@ -1,0 +1,8 @@
+{
+    "recommendations": [
+        "editorconfig.editorconfig",
+        "ms-python.python",
+        "redhat.vscode-xml",
+        "streetsidesoftware.code-spell-checker"
+    ]
+}
