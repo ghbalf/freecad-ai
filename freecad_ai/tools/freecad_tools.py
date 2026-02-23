@@ -430,6 +430,238 @@ POCKET_SKETCH = ToolDefinition(
 )
 
 
+# ── revolve_sketch ──────────────────────────────────────────
+
+def _handle_revolve_sketch(
+    sketch_name: str,
+    axis: str = "Y",
+    angle: float = 360.0,
+    subtractive: bool = False,
+    body_name: str = "",
+    label: str = "",
+) -> ToolResult:
+    """Revolve a sketch around an axis (Revolution or Groove)."""
+
+    def do(doc):
+        sketch = _get_object(doc, sketch_name)
+        if not sketch:
+            return ToolResult(success=False, output="", error=f"Sketch '{sketch_name}' not found")
+
+        body = None
+        if body_name:
+            body = _get_object(doc, body_name)
+            if not body:
+                return ToolResult(success=False, output="", error=f"Body '{body_name}' not found")
+        else:
+            body = _find_body_for(doc, sketch)
+        if not body:
+            return ToolResult(success=False, output="", error=f"No PartDesign body found for sketch '{sketch_name}'")
+
+        # Resolve axis reference
+        axis_upper = axis.upper()
+        if axis_upper in ("X", "Y", "Z"):
+            axis_map = {"X": 0, "Y": 1, "Z": 2}
+            ref = (body.Origin.OriginFeatures[axis_map[axis_upper]], "")
+        else:
+            # Edge reference on the sketch: "Edge1", "Edge2", etc.
+            ref = (sketch, [axis])
+
+        type_name = "PartDesign::Groove" if subtractive else "PartDesign::Revolution"
+        default_label = "Groove" if subtractive else "Revolution"
+        feat = body.newObject(type_name, label or default_label)
+        feat.Profile = sketch
+        feat.ReferenceAxis = ref
+        feat.Angle = angle
+        sketch.Visibility = False
+
+        return ToolResult(
+            success=True,
+            output=f"Revolved sketch '{sketch_name}' {angle}° around {axis}",
+            data={"name": feat.Name, "label": feat.Label, "angle": angle, "axis": axis},
+        )
+
+    return _with_undo("Revolve Sketch", do)
+
+
+REVOLVE_SKETCH = ToolDefinition(
+    name="revolve_sketch",
+    description="Revolve a sketch around an axis to create a solid of revolution (vase, bottle, wheel, etc). Uses PartDesign::Revolution (additive) or PartDesign::Groove (subtractive).",
+    category="modeling",
+    parameters=[
+        ToolParam("sketch_name", "string", "Internal name of the sketch to revolve"),
+        ToolParam("axis", "string", "Revolution axis: X, Y, Z (origin axes) or Edge1, Edge2... (sketch edge)",
+                  required=False, default="Y"),
+        ToolParam("angle", "number", "Revolution angle in degrees (360 = full revolution)",
+                  required=False, default=360.0),
+        ToolParam("subtractive", "boolean", "If true, use Groove (cut) instead of Revolution (add)",
+                  required=False, default=False),
+        ToolParam("body_name", "string", "Explicit body name (use when multiple bodies exist)",
+                  required=False, default=""),
+        ToolParam("label", "string", "Display label for the feature", required=False, default=""),
+    ],
+    handler=_handle_revolve_sketch,
+)
+
+
+# ── loft_sketches ──────────────────────────────────────────
+
+def _handle_loft_sketches(
+    section_names: list,
+    closed: bool = False,
+    ruled: bool = False,
+    subtractive: bool = False,
+    body_name: str = "",
+    label: str = "",
+) -> ToolResult:
+    """Loft between two or more sketches (AdditiveLoft or SubtractiveLoft)."""
+
+    def do(doc):
+        if len(section_names) < 2:
+            return ToolResult(
+                success=False, output="",
+                error=f"Loft requires at least 2 sections, got {len(section_names)}"
+            )
+
+        sections = []
+        for name in section_names:
+            s = _get_object(doc, name)
+            if not s:
+                return ToolResult(success=False, output="", error=f"Section '{name}' not found")
+            sections.append(s)
+
+        # Find the body
+        body = None
+        if body_name:
+            body = _get_object(doc, body_name)
+            if not body:
+                return ToolResult(success=False, output="", error=f"Body '{body_name}' not found")
+        else:
+            body = _find_body_for(doc, sections[0])
+        if not body:
+            return ToolResult(success=False, output="", error=f"No PartDesign body found for section '{section_names[0]}'")
+
+        # Verify all sections are in the same body
+        for s in sections[1:]:
+            sb = _find_body_for(doc, s)
+            if sb is None or sb.Name != body.Name:
+                return ToolResult(
+                    success=False, output="",
+                    error=f"Section '{s.Label}' is not in body '{body.Label}'. All sections must be in the same body."
+                )
+
+        type_name = "PartDesign::SubtractiveLoft" if subtractive else "PartDesign::AdditiveLoft"
+        default_label = "SubtractiveLoft" if subtractive else "Loft"
+        feat = body.newObject(type_name, label or default_label)
+        feat.Profile = sections[0]
+        feat.Sections = sections[1:]
+        feat.Closed = closed
+        feat.Ruled = ruled
+
+        for s in sections:
+            s.Visibility = False
+
+        return ToolResult(
+            success=True,
+            output=f"Lofted {len(sections)} sections: {', '.join(section_names)}",
+            data={"name": feat.Name, "label": feat.Label, "section_count": len(sections)},
+        )
+
+    return _with_undo("Loft Sketches", do)
+
+
+LOFT_SKETCHES = ToolDefinition(
+    name="loft_sketches",
+    description="Loft between two or more sketches to create a smooth transitional solid (tapered shapes, bottles, organic forms). All sketches must be in the same PartDesign Body on different planes/offsets.",
+    category="modeling",
+    parameters=[
+        ToolParam("section_names", "array", "Sketch names to loft between (minimum 2, ordered from start to end)",
+                  items={"type": "string"}),
+        ToolParam("closed", "boolean", "Close the loft loop (connect last section back to first)",
+                  required=False, default=False),
+        ToolParam("ruled", "boolean", "Use ruled (flat) surfaces instead of smooth",
+                  required=False, default=False),
+        ToolParam("subtractive", "boolean", "If true, cut instead of add",
+                  required=False, default=False),
+        ToolParam("body_name", "string", "Explicit body name (use when multiple bodies exist)",
+                  required=False, default=""),
+        ToolParam("label", "string", "Display label for the loft feature", required=False, default=""),
+    ],
+    handler=_handle_loft_sketches,
+)
+
+
+# ── sweep_sketch ───────────────────────────────────────────
+
+def _handle_sweep_sketch(
+    profile_name: str,
+    spine_name: str,
+    subtractive: bool = False,
+    body_name: str = "",
+    label: str = "",
+) -> ToolResult:
+    """Sweep a profile sketch along a spine path (AdditivePipe or SubtractivePipe)."""
+
+    def do(doc):
+        profile = _get_object(doc, profile_name)
+        if not profile:
+            return ToolResult(success=False, output="", error=f"Profile sketch '{profile_name}' not found")
+
+        spine = _get_object(doc, spine_name)
+        if not spine:
+            return ToolResult(success=False, output="", error=f"Spine sketch '{spine_name}' not found")
+
+        body = None
+        if body_name:
+            body = _get_object(doc, body_name)
+            if not body:
+                return ToolResult(success=False, output="", error=f"Body '{body_name}' not found")
+        else:
+            body = _find_body_for(doc, profile)
+        if not body:
+            return ToolResult(success=False, output="", error=f"No PartDesign body found for profile '{profile_name}'")
+
+        # Verify spine is in the same body
+        spine_body = _find_body_for(doc, spine)
+        if spine_body is None or spine_body.Name != body.Name:
+            return ToolResult(
+                success=False, output="",
+                error=f"Spine '{spine_name}' is not in body '{body.Label}'. Profile and spine must be in the same body."
+            )
+
+        type_name = "PartDesign::SubtractivePipe" if subtractive else "PartDesign::AdditivePipe"
+        default_label = "SubtractiveSweep" if subtractive else "Sweep"
+        feat = body.newObject(type_name, label or default_label)
+        feat.Profile = profile
+        feat.Spine = spine
+        profile.Visibility = False
+        spine.Visibility = False
+
+        return ToolResult(
+            success=True,
+            output=f"Swept profile '{profile_name}' along spine '{spine_name}'",
+            data={"name": feat.Name, "label": feat.Label},
+        )
+
+    return _with_undo("Sweep Sketch", do)
+
+
+SWEEP_SKETCH = ToolDefinition(
+    name="sweep_sketch",
+    description="Sweep a profile sketch along a spine path to create a pipe, tube, or complex swept solid. Uses PartDesign::AdditivePipe (additive) or PartDesign::SubtractivePipe (subtractive). Both sketches must be in the same body.",
+    category="modeling",
+    parameters=[
+        ToolParam("profile_name", "string", "Internal name of the cross-section sketch"),
+        ToolParam("spine_name", "string", "Internal name of the path sketch (spine)"),
+        ToolParam("subtractive", "boolean", "If true, cut instead of add",
+                  required=False, default=False),
+        ToolParam("body_name", "string", "Explicit body name (use when multiple bodies exist)",
+                  required=False, default=""),
+        ToolParam("label", "string", "Display label for the sweep feature", required=False, default=""),
+    ],
+    handler=_handle_sweep_sketch,
+)
+
+
 # ── boolean_operation ───────────────────────────────────────
 
 def _handle_boolean_operation(
@@ -1222,6 +1454,9 @@ ALL_TOOLS = [
     CREATE_SKETCH,
     PAD_SKETCH,
     POCKET_SKETCH,
+    REVOLVE_SKETCH,
+    LOFT_SKETCHES,
+    SWEEP_SKETCH,
     BOOLEAN_OPERATION,
     TRANSFORM_OBJECT,
     FILLET_EDGES,
