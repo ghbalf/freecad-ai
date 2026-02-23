@@ -67,6 +67,8 @@ class AppConfig:
     max_retries: int = 3
     enable_tools: bool = True
     thinking: str = "off"  # "off", "on", "extended"
+    mcp_servers: list = field(default_factory=list)
+    # Each entry: {"name": str, "command": str, "args": list, "env": dict, "enabled": bool}
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -75,7 +77,10 @@ class AppConfig:
     def from_dict(cls, data: dict) -> "AppConfig":
         provider_data = data.pop("provider", {})
         provider = ProviderConfig(**provider_data)
-        return cls(provider=provider, **data)
+        # Filter out unknown keys to avoid TypeError
+        known = {f.name for f in cls.__dataclass_fields__.values()} - {"provider"}
+        filtered = {k: v for k, v in data.items() if k in known}
+        return cls(provider=provider, **filtered)
 
 
 def _ensure_dirs():
