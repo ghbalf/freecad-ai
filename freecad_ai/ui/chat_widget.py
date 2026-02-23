@@ -642,6 +642,7 @@ class ChatDockWidget(QDockWidget):
         )
 
         self._in_thinking = False
+        self._tool_results_stored = False
         self._worker = _LLMWorker(
             messages, system_prompt,
             tools=tools_schema, registry=self._tool_registry,
@@ -788,19 +789,19 @@ class ChatDockWidget(QDockWidget):
         self.chat_display.setTextCursor(cursor)
         self.chat_display.ensureCursorVisible()
 
-    @Slot(str)
-    def _on_response_finished(self, full_response):
-        """Handle completion of LLM response."""
-        self._set_loading(False)
+    def _store_tool_results(self, full_response=""):
+        """Store tool results from worker into conversation. Idempotent — skips if already stored."""
+        if not (self._worker and self._worker._tool_results):
+            if full_response:
+                self.conversation.add_assistant_message(full_response)
+            return
 
-        # Close the streaming div
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertHtml("</div></div>")
+        # Guard against double-storage (e.g., if both response_finished and error fire)
+        if getattr(self, '_tool_results_stored', False):
+            return
+        self._tool_results_stored = True
 
-        # Store in conversation - include any tool call info from the worker
-        if self._worker and self._worker._tool_results:
-            # Store each intermediate tool turn
+        try:
             for turn_info in self._worker._tool_results:
                 tc_dicts = turn_info["tool_calls"]
                 self.conversation.add_assistant_message(
@@ -816,8 +817,28 @@ class ChatDockWidget(QDockWidget):
             final_text = full_response[last_tool_end:] if last_tool_end < len(full_response) else full_response
             if final_text.strip():
                 self.conversation.add_assistant_message(final_text)
-        else:
-            self.conversation.add_assistant_message(full_response)
+        except Exception as e:
+            try:
+                import FreeCAD
+                FreeCAD.Console.PrintError(f"_store_tool_results error: {e}\n")
+            except Exception:
+                pass
+            # Fallback: store at least the full response text
+            if full_response.strip():
+                self.conversation.add_assistant_message(full_response)
+
+    @Slot(str)
+    def _on_response_finished(self, full_response):
+        """Handle completion of LLM response."""
+        self._set_loading(False)
+
+        # Close the streaming div
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertHtml("</div></div>")
+
+        # Store in conversation - include any tool call info from the worker
+        self._store_tool_results(full_response)
 
         self._update_token_count()
 
@@ -840,15 +861,49 @@ class ChatDockWidget(QDockWidget):
 
     @Slot(str)
     def _on_error(self, error_msg):
-        """Handle LLM communication error."""
+        """Handle LLM communication error.
+
+        Preserves any tool results from earlier turns, then appends the error
+        without re-rendering (to keep the streaming HTML intact).
+        """
         self._set_loading(False)
 
+        # Close the streaming div
         cursor = self.chat_display.textCursor()
         cursor.movePosition(QTextCursor.End)
         cursor.insertHtml("</div></div>")
 
-        self._append_html(render_message("system", translate("ChatDockWidget", "Error: ") + error_msg))
-        self._rerender_chat()
+        # Store any tool results that were collected before the error
+        self._store_tool_results()
+
+        # Save conversation so tool results aren't lost
+        if len(self.conversation.messages) > 1:
+            self.conversation.save()
+            if self._worker and self._worker._tool_results:
+                self._auto_save_log()
+
+        # If tools ran successfully but the final LLM turn failed,
+        # generate a summary from the tool trace instead of just showing an error.
+        if self._worker and self._worker._tool_results:
+            summary_parts = []
+            for turn in self._worker._tool_results:
+                for tc, r in zip(turn["tool_calls"], turn["results"]):
+                    summary_parts.append(f"- **{tc['name']}**: {r['content']}")
+            summary = "\n".join(summary_parts)
+            self._append_html(render_message(
+                "assistant",
+                translate("ChatDockWidget",
+                          "All operations completed successfully:") + "\n\n" + summary
+            ))
+            # Store the summary in conversation
+            self.conversation.add_assistant_message(
+                translate("ChatDockWidget",
+                          "All operations completed successfully:") + "\n\n" + summary
+            )
+            self.conversation.save()
+        else:
+            # No tool results — show the raw error
+            self._append_html(render_message("system", translate("ChatDockWidget", "Error: ") + error_msg))
 
     # ── Tool call handlers ──────────────────────────────────
 
@@ -955,6 +1010,7 @@ class ChatDockWidget(QDockWidget):
             '<div style="white-space: pre-wrap;">'
         )
 
+        self._tool_results_stored = False
         self._worker = _LLMWorker(messages, system_prompt, parent=self)
         self._worker.token_received.connect(self._on_token)
         self._worker.response_finished.connect(self._on_response_finished)
@@ -1039,35 +1095,39 @@ class ChatDockWidget(QDockWidget):
 
     def _rerender_chat(self):
         """Re-render the entire chat history with proper formatting."""
-        html_parts = []
-        mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
+        try:
+            html_parts = []
+            mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
 
-        for msg in self.conversation.messages:
-            if msg["role"] == "tool_result":
-                # Tool results are rendered inline via tool_call_finished signals
-                continue
-            elif msg["role"] == "assistant" and msg.get("tool_calls"):
-                # Render assistant text + tool call indicators
-                if msg.get("content"):
-                    html_parts.append(render_message("assistant", msg["content"]))
-                for tc in msg["tool_calls"]:
-                    html_parts.append(render_tool_call(
-                        tc["name"], tc["id"], started=False, success=True,
-                        output=f"Called with: {json.dumps(tc['arguments'], indent=2)}"
-                    ))
-            else:
-                html_parts.append(render_message(msg["role"], msg.get("content", "")))
+            for msg in self.conversation.messages:
+                if msg["role"] == "tool_result":
+                    # Tool results are rendered inline via tool_call_finished signals
+                    continue
+                elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                    # Render assistant text + tool call indicators
+                    if msg.get("content"):
+                        html_parts.append(render_message("assistant", msg["content"]))
+                    for tc in msg["tool_calls"]:
+                        html_parts.append(render_tool_call(
+                            tc["name"], tc["id"], started=False, success=True,
+                            output=f"Called with: {json.dumps(tc['arguments'], indent=2)}"
+                        ))
+                else:
+                    html_parts.append(render_message(msg["role"], msg.get("content", "")))
 
-            if mode == "plan" and msg["role"] == "assistant":
-                content = msg.get("content", "")
-                code_blocks = extract_code_blocks(content)
-                for code in code_blocks:
-                    html_parts.append(self._make_plan_buttons_html(code))
+                if mode == "plan" and msg["role"] == "assistant":
+                    content = msg.get("content", "")
+                    code_blocks = extract_code_blocks(content)
+                    for code in code_blocks:
+                        html_parts.append(self._make_plan_buttons_html(code))
 
-        self.chat_display.setHtml("".join(html_parts))
+            full_html = "".join(html_parts)
+            self.chat_display.setHtml(full_html)
 
-        scrollbar = self.chat_display.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+            scrollbar = self.chat_display.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+        except Exception:
+            pass  # Keep existing display content on error
 
     def _make_plan_buttons_html(self, code):
         """Create HTML for Plan mode Execute/Copy buttons."""

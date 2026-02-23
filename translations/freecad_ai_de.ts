@@ -143,6 +143,10 @@
         <translation>Fehler: </translation>
     </message>
     <message>
+        <source>All operations completed successfully:</source>
+        <translation>Alle Operationen erfolgreich abgeschlossen:</translation>
+    </message>
+    <message>
         <source>Thinking...</source>
         <translation>Denke nach...</translation>
     </message>
