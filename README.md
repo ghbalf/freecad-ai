@@ -8,7 +8,7 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 
 - **Chat interface** — dock widget with streaming LLM responses
 - **Plan / Act modes** — review code before execution (Plan) or auto-execute (Act)
-- **Tool calling** — 32 structured FreeCAD operations (Act mode) for safer, more reliable modeling
+- **Tool calling** — 33 structured FreeCAD operations (Act mode) for safer, more reliable modeling
 - **Skills** — reusable instruction sets invoked via `/command` (enclosure, gear, fastener holes, etc.)
 - **Thinking mode** — enable LLM reasoning for complex multi-step tasks (Off / On / Extended)
 - **Context compacting** — automatically summarizes older messages when approaching context limits
@@ -111,6 +111,7 @@ Tool calling is enabled by default. Disable it by setting `enable_tools: false` 
 | `section_object` | Cross-section through a plane or another object |
 | `linear_pattern` | Repeat a feature in a line |
 | `polar_pattern` | Repeat a feature in a circular pattern |
+| `multi_transform` | Chain linear pattern + polar pattern + mirror in one feature |
 | `create_inner_ridge` | Add a snap-fit ridge inside a rectangular hollow |
 | `create_snap_tabs` | Add snap tabs on a lid lip (pairs with ridge) |
 | `create_enclosure_lid` | Generate a snap-fit enclosure lid with correct dimensions |
@@ -233,7 +234,7 @@ freecad-ai/
 │   │   └── providers.py       # Provider registry
 │   ├── tools/
 │   │   ├── registry.py        # Tool abstractions + registry
-│   │   ├── freecad_tools.py   # 32 FreeCAD tool handlers
+│   │   ├── freecad_tools.py   # 33 FreeCAD tool handlers
 │   │   └── setup.py           # Default registry factory
 │   ├── ui/
 │   │   ├── compat.py          # PySide2/PySide6 shim
