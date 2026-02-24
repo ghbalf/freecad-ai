@@ -143,9 +143,13 @@ class TestToolDefinitions:
     def test_multi_transform_params(self):
         names = [p.name for p in MULTI_TRANSFORM.parameters]
         required = [p.name for p in MULTI_TRANSFORM.parameters if p.required]
-        assert "feature_name" in required
+        assert "feature_names" in required
         assert "transformations" in required
         assert "label" in names
+        # feature_names should be array of strings
+        fn_param = next(p for p in MULTI_TRANSFORM.parameters if p.name == "feature_names")
+        assert fn_param.type == "array"
+        assert fn_param.items == {"type": "string"}
         # label should be optional
         label_param = next(p for p in MULTI_TRANSFORM.parameters if p.name == "label")
         assert label_param.required is False

@@ -61,7 +61,7 @@ that perform FreeCAD operations safely. Prefer using tools over generating raw c
 - For cross-sections: use `section_object`
 - For repeating features in a line or circle: use `linear_pattern` or `polar_pattern`
 - For mirroring features across a plane: use `mirror_feature`
-- For chaining multiple transformations (e.g. linear pattern + mirror) into one feature: use `multi_transform`
+- For chaining multiple transformations (e.g. linear pattern + mirror) into one feature: use `multi_transform` — accepts multiple features to transform as a group (order matters: last feature = tip)
 - For hollowing out solids (shell): use `shell_object`
 - For measuring dimensions, distances, or volumes: use `measure`
 - For inspecting the current document and its objects: use `get_document_state`

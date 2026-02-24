@@ -2277,42 +2277,68 @@ MIRROR_FEATURE = ToolDefinition(
 # ── multi_transform ────────────────────────────────────────
 
 def _handle_multi_transform(
-    feature_name: str,
-    transformations: list,
+    feature_names: list = None,
+    transformations: list = None,
     label: str = "",
+    # Backward compat: old callers may pass feature_name as str
+    feature_name: str = None,
 ) -> ToolResult:
     """Chain multiple transformation steps (linear, polar, mirror) into one MultiTransform feature."""
 
     if not transformations:
         return ToolResult(success=False, output="", error="transformations list must not be empty")
 
+    # Normalize: accept old feature_name kwarg for backward compat
+    raw = feature_names if feature_names is not None else feature_name
+    if raw is None:
+        return ToolResult(success=False, output="", error="feature_names is required")
+    names = _coerce_str_list(raw)
+    # Bare string → wrap in list
+    if isinstance(names, str):
+        names = [names]
+    if not names:
+        return ToolResult(success=False, output="", error="feature_names must not be empty")
+
     def do(doc):
-        feature = _get_object(doc, feature_name)
-        if not feature:
-            return ToolResult(success=False, output="", error=f"Feature '{feature_name}' not found")
+        features = []
+        body = None
+        for fname in names:
+            feat = _get_object(doc, fname)
+            if not feat:
+                return ToolResult(success=False, output="", error=f"Feature '{fname}' not found")
 
-        body = _find_body_for(doc, feature)
-        if not body:
-            return ToolResult(
-                success=False, output="",
-                error=f"Feature '{feature_name}' is not inside a PartDesign Body",
-            )
+            feat_body = _find_body_for(doc, feat)
+            if not feat_body:
+                return ToolResult(
+                    success=False, output="",
+                    error=f"Feature '{fname}' is not inside a PartDesign Body",
+                )
 
-        # Reject transformation features (same guard as mirror_feature)
-        if hasattr(feature, "isDerivedFrom") and feature.isDerivedFrom("PartDesign::Transformed"):
-            originals = getattr(feature, "Originals", [])
-            hint = ""
-            if originals:
-                hint = f" Try transforming '{originals[0].Name}' instead."
-            return ToolResult(
-                success=False, output="",
-                error=f"Feature '{feature_name}' is a transformation and cannot be multi-transformed. "
-                      f"Only additive/subtractive features can be used.{hint}",
-            )
+            if body is None:
+                body = feat_body
+            elif feat_body.Name != body.Name:
+                return ToolResult(
+                    success=False, output="",
+                    error=f"All features must be in the same Body. "
+                          f"'{fname}' is in '{feat_body.Label}', expected '{body.Label}'.",
+                )
+
+            # Reject transformation features (same guard as mirror_feature)
+            if hasattr(feat, "isDerivedFrom") and feat.isDerivedFrom("PartDesign::Transformed"):
+                originals = getattr(feat, "Originals", [])
+                hint = ""
+                if originals:
+                    hint = f" Try transforming '{originals[0].Name}' instead."
+                return ToolResult(
+                    success=False, output="",
+                    error=f"Feature '{fname}' is a transformation and cannot be multi-transformed. "
+                          f"Only additive/subtractive features can be used.{hint}",
+                )
+            features.append(feat)
 
         name = label or "MultiTransform"
         multi = body.newObject("PartDesign::MultiTransform", name)
-        multi.Originals = [feature]
+        multi.Originals = features
 
         sub_features = []
         descriptions = []
@@ -2404,9 +2430,10 @@ def _handle_multi_transform(
             sub.Visibility = False
         multi.Visibility = True
 
+        feat_list = ", ".join(f"'{n}'" for n in names)
         return ToolResult(
             success=True,
-            output=f"Created MultiTransform on '{feature_name}' with {len(sub_features)} step(s): {', '.join(descriptions)}",
+            output=f"Created MultiTransform on {feat_list} with {len(sub_features)} step(s): {', '.join(descriptions)}",
             data={"name": multi.Name, "label": multi.Label, "steps": len(sub_features)},
         )
 
@@ -2417,13 +2444,19 @@ MULTI_TRANSFORM = ToolDefinition(
     name="multi_transform",
     description=(
         "Chain multiple transformation steps (linear pattern, polar pattern, mirror) into a single "
-        "PartDesign::MultiTransform feature. Cleaner than stacking separate pattern/mirror features "
-        "and avoids 'transformation of a transformation' errors. The feature must be an additive or "
-        "subtractive feature inside a Body."
+        "PartDesign::MultiTransform feature. Accepts one or more features — pass related features "
+        "(e.g. a post and its screw hole) together so they are transformed as a group. "
+        "Cleaner than stacking separate pattern/mirror features "
+        "and avoids 'transformation of a transformation' errors. All features must be additive or "
+        "subtractive features inside the same Body."
     ),
     category="modeling",
     parameters=[
-        ToolParam("feature_name", "string", "Internal name of the feature to transform"),
+        ToolParam("feature_names", "array",
+                  "Feature(s) to transform. Order matters: the last feature should be the most "
+                  "recent in the model tree (tip). Pass multiple related features to transform them "
+                  "as a group (e.g. a boss and its pocket).",
+                  items={"type": "string"}),
         ToolParam("transformations", "array",
                   "List of transformation steps. Each is an object with 'type' (linear_pattern, polar_pattern, mirror) "
                   "plus type-specific params. linear_pattern: direction (X/Y/Z), length, occurrences. "

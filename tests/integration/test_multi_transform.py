@@ -25,7 +25,7 @@ vol_before = doc.getObject(body_name).Shape.Volume
 
 # Linear 3x along X (length=15 → spacing=7.5 → overlapping), then mirror YZ
 r2 = _handle_multi_transform(
-    feature_name=feat_name,
+    feature_names=[feat_name],
     transformations=[
         {"type": "linear_pattern", "direction": "X", "length": 15, "occurrences": 3},
         {"type": "mirror", "plane": "YZ"},
@@ -64,7 +64,7 @@ feat_name = r1.data["name"]
 vol_before = doc.getObject(body_name).Shape.Volume
 
 r2 = _handle_multi_transform(
-    feature_name=feat_name,
+    feature_names=[feat_name],
     transformations=[
         {"type": "polar_pattern", "axis": "Z", "angle": 360, "occurrences": 4},
     ],
@@ -102,7 +102,7 @@ feat_name = r1.data["name"]
 vol_before = doc.getObject(body_name).Shape.Volume
 
 r2 = _handle_multi_transform(
-    feature_name=feat_name,
+    feature_names=[feat_name],
     transformations=[
         {"type": "linear_pattern", "direction": "X", "length": 5, "occurrences": 2},
         {"type": "polar_pattern", "axis": "Z", "angle": 360, "occurrences": 4},
@@ -138,7 +138,7 @@ r1 = _handle_create_primitive(shape_type="box")
 doc.recompute()
 
 r2 = _handle_multi_transform(
-    feature_name=r1.data["name"],
+    feature_names=[r1.data["name"]],
     transformations=[],
 )
 results["data"] = {
@@ -160,7 +160,7 @@ r1 = _handle_create_primitive(shape_type="box")
 doc.recompute()
 
 r2 = _handle_multi_transform(
-    feature_name=r1.data["name"],
+    feature_names=[r1.data["name"]],
     transformations=[{"type": "scale_pattern"}],
 )
 results["data"] = {
@@ -179,7 +179,7 @@ results["data"] = {
 from freecad_ai.tools.freecad_tools import _handle_multi_transform
 
 r = _handle_multi_transform(
-    feature_name="NoSuchFeature",
+    feature_names=["NoSuchFeature"],
     transformations=[{"type": "mirror", "plane": "YZ"}],
 )
 results["data"] = {
@@ -191,3 +191,62 @@ results["data"] = {
         d = result["data"]
         assert not d["success"]
         assert "not found" in d["error"].lower()
+
+    def test_multiple_features(self, run_freecad_script):
+        """Two features (box pad + cylinder pad) mirrored together as a group."""
+        result = run_freecad_script("""
+from freecad_ai.tools.freecad_tools import (
+    _handle_create_body, _handle_create_sketch, _handle_pad_sketch,
+    _handle_multi_transform,
+)
+
+# Create body + box pad
+r_body = _handle_create_body(label="TestBody")
+doc.recompute()
+body_name = r_body.data["name"]
+
+r_sk1 = _handle_create_sketch(
+    body_name=body_name, plane="XY",
+    geometries=[{"type": "rectangle", "x": 0, "y": 0, "width": 20, "height": 10}],
+)
+doc.recompute()
+r_pad1 = _handle_pad_sketch(sketch_name=r_sk1.data["name"], length=10)
+doc.recompute()
+pad1_name = r_pad1.data["name"]
+
+# Add cylinder pad on top
+r_sk2 = _handle_create_sketch(
+    body_name=body_name, plane="XY", offset=10,
+    geometries=[{"type": "circle", "cx": 10, "cy": 5, "radius": 3}],
+)
+doc.recompute()
+r_pad2 = _handle_pad_sketch(sketch_name=r_sk2.data["name"], length=5)
+doc.recompute()
+pad2_name = r_pad2.data["name"]
+
+body = doc.getObject(body_name)
+vol_before = body.Shape.Volume
+
+# Mirror both features together across YZ
+r_mt = _handle_multi_transform(
+    feature_names=[pad1_name, pad2_name],
+    transformations=[{"type": "mirror", "plane": "YZ"}],
+)
+doc.recompute()
+
+vol_after = body.Shape.Volume
+results["data"] = {
+    "success": r_mt.success,
+    "error": r_mt.error,
+    "steps": r_mt.data.get("steps", 0) if r_mt.data else 0,
+    "vol_before": vol_before,
+    "vol_after": vol_after,
+    "ratio": vol_after / vol_before if vol_before > 0 else 0,
+}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert d["success"], d.get("error")
+        assert d["steps"] == 1
+        # Mirror doubles volume (approximately, some overlap possible)
+        assert d["ratio"] > 1.8, f"Expected ~2x volume, got {d['ratio']:.1f}x"
