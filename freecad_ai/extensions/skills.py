@@ -51,13 +51,25 @@ class SkillsRegistry:
             except (OSError, UnicodeDecodeError):
                 continue
 
-            # Extract description from first non-empty, non-heading line
+            # Extract description: prefer YAML frontmatter "description",
+            # otherwise use first non-empty, non-heading content line.
             description = ""
-            for line in content.splitlines():
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    description = line[:100]
-                    break
+            body = content
+            if content.startswith("---\n"):
+                end = content.find("\n---\n", 4)
+                if end != -1:
+                    frontmatter = content[4:end]
+                    body = content[end + 5:]
+                    for fm_line in frontmatter.splitlines():
+                        if fm_line.startswith("description:"):
+                            description = fm_line[12:].strip().strip("\"'")[:100]
+                            break
+            if not description:
+                for line in body.splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        description = line[:100]
+                        break
 
             handler_path = os.path.join(skill_dir, "handler.py")
 

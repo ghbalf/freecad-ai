@@ -78,6 +78,55 @@ class TestSkillsRegistryLoad:
         skill = reg.get_skill("my-skill")
         assert skill.description == "This is the description."
 
+    def test_description_from_yaml_frontmatter(self, tmp_path, monkeypatch):
+        import freecad_ai.extensions.skills as skills_mod
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        sd = skills_dir / "fm-skill"
+        sd.mkdir()
+        (sd / "SKILL.md").write_text(
+            "---\nname: fm-skill\n"
+            "description: Create things from frontmatter.\n"
+            "---\n\n# FM Skill\n\nBody text here.\n"
+        )
+        monkeypatch.setattr(skills_mod, "SKILLS_DIR", str(skills_dir))
+
+        reg = SkillsRegistry()
+        skill = reg.get_skill("fm-skill")
+        assert skill.description == "Create things from frontmatter."
+
+    def test_frontmatter_description_preferred_over_body(self, tmp_path, monkeypatch):
+        import freecad_ai.extensions.skills as skills_mod
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        sd = skills_dir / "pref-skill"
+        sd.mkdir()
+        (sd / "SKILL.md").write_text(
+            "---\nname: pref-skill\n"
+            "description: From frontmatter\n"
+            "---\n\n# Title\n\nFrom body.\n"
+        )
+        monkeypatch.setattr(skills_mod, "SKILLS_DIR", str(skills_dir))
+
+        reg = SkillsRegistry()
+        skill = reg.get_skill("pref-skill")
+        assert skill.description == "From frontmatter"
+
+    def test_frontmatter_without_description_falls_back_to_body(self, tmp_path, monkeypatch):
+        import freecad_ai.extensions.skills as skills_mod
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        sd = skills_dir / "no-desc"
+        sd.mkdir()
+        (sd / "SKILL.md").write_text(
+            "---\nname: no-desc\n---\n\n# Title\n\nBody description.\n"
+        )
+        monkeypatch.setattr(skills_mod, "SKILLS_DIR", str(skills_dir))
+
+        reg = SkillsRegistry()
+        skill = reg.get_skill("no-desc")
+        assert skill.description == "Body description."
+
 
 class TestRegisterProgrammatic:
     def test_register_skill(self, monkeypatch):
