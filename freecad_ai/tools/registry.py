@@ -3,6 +3,10 @@
 Defines the core data structures for tool calling (ToolParam, ToolDefinition,
 ToolResult) and the ToolRegistry that manages tool registration, lookup,
 execution, and schema generation for LLM APIs.
+
+Supports deferred parameter loading via ``lazy_params`` on ToolDefinition:
+when set, the callable is invoked on first access to resolve full parameters
+(used by MCP tools to avoid eagerly fetching schemas from external servers).
 """
 
 from dataclasses import dataclass, field
@@ -23,12 +27,30 @@ class ToolParam:
 
 @dataclass
 class ToolDefinition:
-    """A registered tool with its schema and handler."""
+    """A registered tool with its schema and handler.
+
+    If ``lazy_params`` is set, ``parameters`` may initially be empty.
+    Call :meth:`resolve_params` (or access via the registry) to trigger
+    the lazy loader, which replaces ``parameters`` in place.
+    """
     name: str
     description: str
-    parameters: list[ToolParam]
+    parameters: list["ToolParam"]
     handler: Callable[..., "ToolResult"]
     category: str = "general"
+    lazy_params: Callable[[], list["ToolParam"]] | None = None
+
+    def resolve_params(self) -> list["ToolParam"]:
+        """Ensure parameters are fully loaded, invoking lazy_params if needed."""
+        if self.lazy_params is not None and not self.parameters:
+            self.parameters = self.lazy_params()
+            self.lazy_params = None  # Only load once
+        return self.parameters
+
+    @property
+    def has_deferred_params(self) -> bool:
+        """True if this tool has unresolved deferred parameters."""
+        return self.lazy_params is not None and not self.parameters
 
 
 @dataclass
@@ -58,6 +80,21 @@ class ToolRegistry:
         """List all registered tools."""
         return list(self._tools.values())
 
+    def search_tools(self, query: str) -> list[ToolDefinition]:
+        """Search tools by keyword, matching name and description.
+
+        Case-insensitive substring search. Resolves deferred params
+        for matching tools so their schemas are available.
+        """
+        query_lower = query.lower()
+        results = []
+        for tool in self._tools.values():
+            if (query_lower in tool.name.lower()
+                    or query_lower in tool.description.lower()):
+                tool.resolve_params()
+                results.append(tool)
+        return results
+
     def execute(self, name: str, params: dict) -> ToolResult:
         """Execute a tool by name with the given parameters."""
         tool = self._tools.get(name)
@@ -65,6 +102,8 @@ class ToolRegistry:
             return ToolResult(
                 success=False, output="", error=f"Unknown tool: {name}"
             )
+        # Ensure params are resolved before execution
+        tool.resolve_params()
         try:
             return tool.handler(**params)
         except TypeError as e:
@@ -77,9 +116,13 @@ class ToolRegistry:
             )
 
     def to_openai_schema(self) -> list[dict]:
-        """Convert all tools to OpenAI function calling format."""
+        """Convert all tools to OpenAI function calling format.
+
+        Resolves deferred parameters for all tools.
+        """
         result = []
         for tool in self._tools.values():
+            tool.resolve_params()
             result.append({
                 "type": "function",
                 "function": {
@@ -91,9 +134,13 @@ class ToolRegistry:
         return result
 
     def to_anthropic_schema(self) -> list[dict]:
-        """Convert all tools to Anthropic tool_use format."""
+        """Convert all tools to Anthropic tool_use format.
+
+        Resolves deferred parameters for all tools.
+        """
         result = []
         for tool in self._tools.values():
+            tool.resolve_params()
             result.append({
                 "name": tool.name,
                 "description": tool.description,
@@ -102,15 +149,19 @@ class ToolRegistry:
         return result
 
     def to_mcp_schema(self) -> list[dict]:
-        """Convert all tools to MCP tools/list format."""
-        return [
-            {
+        """Convert all tools to MCP tools/list format.
+
+        Resolves deferred parameters for all tools.
+        """
+        result = []
+        for t in self._tools.values():
+            t.resolve_params()
+            result.append({
                 "name": t.name,
                 "description": t.description,
                 "inputSchema": _params_to_json_schema(t.parameters),
-            }
-            for t in self._tools.values()
-        ]
+            })
+        return result
 
 
 def _params_to_json_schema(params: list[ToolParam]) -> dict:

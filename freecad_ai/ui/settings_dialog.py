@@ -219,10 +219,7 @@ class SettingsDialog(QDialog):
         self.mcp_list.clear()
         self._mcp_configs = list(cfg.mcp_servers)
         for entry in self._mcp_configs:
-            enabled = entry.get("enabled", True)
-            prefix = "" if enabled else "(disabled) "
-            args = " ".join(entry.get("args", []))
-            self.mcp_list.addItem(f"{prefix}{entry.get('name', '?')} — {entry.get('command', '')} {args}")
+            self.mcp_list.addItem(self._mcp_list_label(entry))
 
     def _on_provider_changed(self, index):
         """Update base URL and model when provider selection changes."""
@@ -303,6 +300,18 @@ class SettingsDialog(QDialog):
         thinking_values = ["off", "on", "extended"]
         cfg.thinking = thinking_values[self.thinking_combo.currentIndex()]
 
+    @staticmethod
+    def _mcp_list_label(entry: dict) -> str:
+        """Build display label for an MCP server entry."""
+        tags = []
+        if not entry.get("enabled", True):
+            tags.append("disabled")
+        if entry.get("deferred", True):
+            tags.append("deferred")
+        prefix = f"({', '.join(tags)}) " if tags else ""
+        args = " ".join(entry.get("args", []))
+        return f"{prefix}{entry.get('name', '?')} — {entry.get('command', '')} {args}"
+
     def _add_mcp_server(self):
         """Show a dialog to add a new MCP server configuration."""
         dlg = _AddMCPServerDialog(self)
@@ -311,8 +320,7 @@ class SettingsDialog(QDialog):
             if not hasattr(self, "_mcp_configs"):
                 self._mcp_configs = []
             self._mcp_configs.append(entry)
-            args = " ".join(entry.get("args", []))
-            self.mcp_list.addItem(f"{entry['name']} — {entry['command']} {args}")
+            self.mcp_list.addItem(self._mcp_list_label(entry))
 
     def _remove_mcp_server(self):
         """Remove the selected MCP server from the list."""
@@ -348,6 +356,16 @@ class _AddMCPServerDialog(QDialog):
         self.args_edit.setToolTip(translate("AddMCPServerDialog", "Space-separated arguments"))
         layout.addRow(translate("AddMCPServerDialog", "Args:"), self.args_edit)
 
+        self.deferred_check = QCheckBox(translate("AddMCPServerDialog", "Deferred tool loading"))
+        self.deferred_check.setChecked(True)
+        self.deferred_check.setToolTip(
+            translate("AddMCPServerDialog",
+                      "Load tool schemas lazily on first use instead of\n"
+                      "fetching all schemas eagerly on connect.\n"
+                      "Faster startup when the server exposes many tools.")
+        )
+        layout.addRow("", self.deferred_check)
+
         self.enabled_check = QCheckBox(translate("AddMCPServerDialog", "Enabled"))
         self.enabled_check.setChecked(True)
         layout.addRow("", self.enabled_check)
@@ -373,4 +391,5 @@ class _AddMCPServerDialog(QDialog):
             "args": args_text.split() if args_text else [],
             "env": {},
             "enabled": self.enabled_check.isChecked(),
+            "deferred": self.deferred_check.isChecked(),
         }
