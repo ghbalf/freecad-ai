@@ -35,9 +35,20 @@ class Conversation:
         if not self.created_at:
             self.created_at = time.time()
 
-    def add_user_message(self, content: str):
-        """Add a user message."""
-        self.messages.append({"role": "user", "content": content})
+    def add_user_message(self, content: str, images: list[dict] | None = None):
+        """Add a user message, optionally with image content blocks.
+
+        Args:
+            content: The text content of the message.
+            images: Optional list of image dicts, each with keys:
+                    type, source, media_type, data (base64).
+        """
+        if images:
+            blocks = [{"type": "text", "text": content}]
+            blocks.extend(images)
+            self.messages.append({"role": "user", "content": blocks})
+        else:
+            self.messages.append({"role": "user", "content": content})
 
     def add_assistant_message(self, content: str, tool_calls: list[dict] | None = None):
         """Add an assistant message, optionally with tool calls."""
@@ -82,7 +93,8 @@ class Conversation:
         i = len(self.messages) - 1
         while i >= 0:
             msg = self.messages[i]
-            msg_chars = len(msg.get("content", ""))
+            content = msg.get("content", "")
+            msg_chars = self._content_chars(content)
 
             # If this is a tool_result, we must also include the preceding assistant
             # message that contains the tool_call. Walk back to find the pair.
@@ -98,7 +110,7 @@ class Conversation:
                     tool_group.insert(0, self.messages[j])
                     j -= 1
 
-                group_chars = sum(len(m.get("content", "")) for m in tool_group)
+                group_chars = sum(self._content_chars(m.get("content", "")) for m in tool_group)
                 if total_chars + group_chars > max_chars and result:
                     break
                 result = tool_group + result
@@ -149,6 +161,19 @@ class Conversation:
                     ],
                 }
                 result.append(oai_msg)
+            elif isinstance(msg.get("content"), list):
+                # Content blocks (text + images)
+                oai_blocks = []
+                for block in msg["content"]:
+                    if block.get("type") == "text":
+                        oai_blocks.append({"type": "text", "text": block["text"]})
+                    elif block.get("type") == "image":
+                        data_uri = f"data:{block['media_type']};base64,{block['data']}"
+                        oai_blocks.append({
+                            "type": "image_url",
+                            "image_url": {"url": data_uri},
+                        })
+                result.append({"role": msg["role"], "content": oai_blocks})
             else:
                 result.append({"role": msg["role"], "content": msg["content"]})
         return result
@@ -180,9 +205,49 @@ class Conversation:
                         "input": tc["arguments"],
                     })
                 result.append({"role": "assistant", "content": content_blocks})
+            elif isinstance(msg.get("content"), list):
+                # Content blocks (text + images)
+                anth_blocks = []
+                for block in msg["content"]:
+                    if block.get("type") == "text":
+                        anth_blocks.append({"type": "text", "text": block["text"]})
+                    elif block.get("type") == "image":
+                        anth_blocks.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": block["media_type"],
+                                "data": block["data"],
+                            },
+                        })
+                result.append({"role": msg["role"], "content": anth_blocks})
             else:
                 result.append({"role": msg["role"], "content": msg["content"]})
         return result
+
+    @staticmethod
+    def _content_chars(content) -> int:
+        """Return character count for content (str or list of blocks)."""
+        if isinstance(content, list):
+            total = 0
+            for block in content:
+                if block.get("type") == "text":
+                    total += len(block.get("text", ""))
+                elif block.get("type") == "image":
+                    total += 1000
+            return total
+        return len(content) if content else 0
+
+    @staticmethod
+    def extract_text(content) -> str:
+        """Extract plain text from content (str or list of blocks)."""
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            return "\n".join(parts)
+        return content or ""
 
     def clear(self):
         """Clear all messages."""
@@ -190,9 +255,18 @@ class Conversation:
 
     def estimated_tokens(self) -> int:
         """Rough token estimate (chars / 4)."""
-        total_chars = sum(len(m.get("content", "")) for m in self.messages)
-        # Also count tool call arguments
+        total_chars = 0
         for m in self.messages:
+            content = m.get("content", "")
+            if isinstance(content, list):
+                for block in content:
+                    if block.get("type") == "text":
+                        total_chars += len(block.get("text", ""))
+                    elif block.get("type") == "image":
+                        total_chars += 1000  # rough estimate for image tokens
+            else:
+                total_chars += len(content)
+            # Also count tool call arguments
             for tc in m.get("tool_calls", []):
                 total_chars += len(str(tc.get("arguments", {})))
         return total_chars // 4

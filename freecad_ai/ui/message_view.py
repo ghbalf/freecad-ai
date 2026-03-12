@@ -25,12 +25,12 @@ BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 ITALIC_RE = re.compile(r"\*(.+?)\*")
 
 
-def render_message(role: str, content: str) -> str:
+def render_message(role: str, content) -> str:
     """Render a single chat message as an HTML block.
 
     Args:
         role: "user", "assistant", or "system"
-        content: The message text (may contain markdown code blocks)
+        content: The message text (str) or list of content blocks
 
     Returns:
         HTML string for insertion into QTextBrowser
@@ -48,7 +48,10 @@ def render_message(role: str, content: str) -> str:
         bg_color = "#fff3e0"
         label_color = "#e65100"
 
-    formatted_content = _format_content(content)
+    if isinstance(content, list):
+        formatted_content = _format_content_blocks(content)
+    else:
+        formatted_content = _format_content(content)
 
     return (
         f'<div style="margin: 8px 0; padding: 8px 12px; '
@@ -182,6 +185,24 @@ def _render_thinking_block(thinking_text: str) -> str:
             label=translate("MessageView", "Thinking"),
             text=escaped)
     )
+
+
+def _format_content_blocks(blocks: list) -> str:
+    """Convert a list of content blocks (text + images) to HTML."""
+    parts = []
+    for i, block in enumerate(blocks):
+        if block.get("type") == "text":
+            parts.append(_format_content(block["text"]))
+        elif block.get("type") == "image":
+            data_uri = f"data:{block['media_type']};base64,{block['data']}"
+            parts.append(
+                f'<a href="image:{i}">'
+                f'<img src="{data_uri}" '
+                f'style="max-width:150px; max-height:150px; border-radius:4px; cursor:pointer;" '
+                f'title="Click to enlarge" />'
+                f'</a>'
+            )
+    return "".join(parts)
 
 
 def _format_content(text: str) -> str:

@@ -2541,16 +2541,17 @@ def _handle_capture_viewport(
     background: str = "Current",
 ) -> ToolResult:
     """Save a screenshot of the 3D viewport to a file."""
-    import FreeCADGui as Gui
+    from ..utils.viewport import capture_viewport_image
 
-    if not Gui.ActiveDocument:
-        return ToolResult(success=False, output="", error="No active document")
+    img_bytes = capture_viewport_image(width, height, background)
+    if img_bytes is None:
+        return ToolResult(success=False, output="", error="No active document or view")
 
-    view = Gui.ActiveDocument.ActiveView
     try:
-        view.saveImage(filepath, width, height, background)
+        with open(filepath, "wb") as f:
+            f.write(img_bytes)
     except Exception as e:
-        return ToolResult(success=False, output="", error=f"Screenshot failed: {e}")
+        return ToolResult(success=False, output="", error=f"Failed to write file: {e}")
 
     return ToolResult(
         success=True,

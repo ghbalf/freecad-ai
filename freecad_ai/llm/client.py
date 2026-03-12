@@ -132,6 +132,7 @@ class LLMClient:
                     sys_content += "\n/think"
             msgs.append({"role": "system", "content": sys_content})
         msgs.extend(messages)
+
         body = {
             "model": self.model,
             "messages": msgs,
@@ -269,6 +270,34 @@ class LLMClient:
                 continue
 
         yield LLMStreamEvent(type="done")
+
+    @staticmethod
+    def _convert_ollama_images(msgs: list[dict]):
+        """Convert OpenAI-style content block arrays to Ollama's flat images field.
+
+        Ollama expects: {"role": "user", "content": "text", "images": ["base64..."]}
+        instead of content block arrays with image_url types.
+        Modifies msgs in place.
+        """
+        for msg in msgs:
+            if not isinstance(msg.get("content"), list):
+                continue
+            text_parts = []
+            images = []
+            for block in msg["content"]:
+                if block.get("type") == "text":
+                    text_parts.append(block["text"])
+                elif block.get("type") == "image_url":
+                    # Extract base64 from data URI: "data:image/png;base64,..."
+                    url = block.get("image_url", {}).get("url", "")
+                    if ";base64," in url:
+                        images.append(url.split(";base64,", 1)[1])
+                elif block.get("type") == "image":
+                    # Internal format — shouldn't reach here but handle gracefully
+                    images.append(block.get("data", ""))
+            msg["content"] = "\n".join(text_parts)
+            if images:
+                msg["images"] = images
 
     # ── Anthropic ───────────────────────────────────────────────
 

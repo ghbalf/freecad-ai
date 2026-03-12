@@ -284,6 +284,157 @@ class _CompactionWorker(QThread):
             self.finished.emit("")
 
 
+# ── Image-aware input widgets ──────────────────────────────
+
+class _ImageAwareTextEdit(QTextEdit):
+    """Text input that accepts pasted/dropped images."""
+
+    image_added = Signal(str, str)  # (media_type, base64_data)
+
+    def insertFromMimeData(self, source):
+        """Handle paste — extract image if present."""
+        if source.hasImage():
+            self._process_image_from_mime(source)
+        elif source.hasUrls():
+            for url in source.urls():
+                path = url.toLocalFile()
+                if path and self._is_image_file(path):
+                    self._process_image_file(path)
+                    return
+            super().insertFromMimeData(source)
+        else:
+            super().insertFromMimeData(source)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasImage() or event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        if mime.hasImage():
+            self._process_image_from_mime(mime)
+        elif mime.hasUrls():
+            for url in mime.urls():
+                path = url.toLocalFile()
+                if path and self._is_image_file(path):
+                    self._process_image_file(path)
+                    return
+            super().dropEvent(event)
+        else:
+            super().dropEvent(event)
+
+    def _process_image_from_mime(self, source):
+        """Extract QImage from mime data, resize, and emit."""
+        img = source.imageData()
+        if img is None or img.isNull():
+            return
+        from ..utils.viewport import resize_image_bytes, image_to_base64_png, RESOLUTION_PRESETS
+        from ..config import get_config
+        w, h = RESOLUTION_PRESETS.get(get_config().viewport_resolution, (800, 600))
+        # Convert QImage to bytes
+        buf = QtCore.QBuffer()
+        buf.open(QtCore.QIODevice.WriteOnly)
+        img.save(buf, "PNG")
+        raw = bytes(buf.data())
+        resized = resize_image_bytes(raw, w, h)
+        self.image_added.emit("image/png", image_to_base64_png(resized))
+
+    def _process_image_file(self, path: str):
+        """Read an image file, resize, and emit."""
+        from ..utils.viewport import resize_image_bytes, image_to_base64_png, RESOLUTION_PRESETS
+        from ..config import get_config
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+        except OSError:
+            return
+        w, h = RESOLUTION_PRESETS.get(get_config().viewport_resolution, (800, 600))
+        resized = resize_image_bytes(raw, w, h)
+        self.image_added.emit("image/png", image_to_base64_png(resized))
+
+    @staticmethod
+    def _is_image_file(path: str) -> bool:
+        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+        return ext in ("png", "jpg", "jpeg", "bmp", "gif", "webp")
+
+
+class _AttachmentStrip(QtWidgets.QWidget):
+    """Horizontal strip of image thumbnail previews with remove buttons."""
+
+    image_removed = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(4)
+        self._layout.addStretch()
+        self._items = []  # list of (widget, media_type, base64_data)
+        self.hide()
+
+    def add_image(self, media_type: str, base64_data: str):
+        """Add a thumbnail to the strip."""
+        import base64 as b64
+
+        container = QtWidgets.QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+
+        # Thumbnail
+        label = QLabel()
+        pixmap = QtGui.QPixmap()
+        pixmap.loadFromData(b64.b64decode(base64_data))
+        if not pixmap.isNull():
+            pixmap = pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        label.setPixmap(pixmap)
+        label.setStyleSheet("border: 1px solid #ccc; border-radius: 3px;")
+        container_layout.addWidget(label)
+
+        # Remove button
+        remove_btn = QPushButton("x")
+        remove_btn.setMaximumSize(16, 16)
+        remove_btn.setStyleSheet("font-size: 10px; padding: 0; border: none; color: #c62828;")
+        idx = len(self._items)
+        remove_btn.clicked.connect(lambda checked=False, i=idx: self._remove(i))
+        container_layout.addWidget(remove_btn, alignment=Qt.AlignCenter)
+
+        # Insert before the stretch
+        self._layout.insertWidget(self._layout.count() - 1, container)
+        self._items.append((container, media_type, base64_data))
+        self.show()
+
+    def get_images(self) -> list[dict]:
+        """Return list of image content block dicts."""
+        return [
+            {"type": "image", "source": "base64", "media_type": mt, "data": data}
+            for _, mt, data in self._items
+        ]
+
+    def clear(self):
+        """Remove all thumbnails."""
+        for widget, _, _ in self._items:
+            widget.deleteLater()
+        self._items.clear()
+        self.hide()
+
+    def _remove(self, idx: int):
+        if 0 <= idx < len(self._items):
+            widget, _, _ = self._items.pop(idx)
+            widget.deleteLater()
+            self.image_removed.emit(idx)
+            # Re-bind remaining remove buttons
+            for new_idx, (w, _, _) in enumerate(self._items):
+                btn = w.findChild(QPushButton)
+                if btn:
+                    btn.clicked.disconnect()
+                    btn.clicked.connect(lambda checked=False, i=new_idx: self._remove(i))
+            if not self._items:
+                self.hide()
+
+
 # ── Chat Dock Widget ────────────────────────────────────────
 
 class ChatDockWidget(QDockWidget):
@@ -301,6 +452,8 @@ class ChatDockWidget(QDockWidget):
         self._anchor_connected = False
         self._tool_registry = None
         self._in_thinking = False  # Whether currently rendering thinking content
+        self._capture_mode_override = None  # Session-only viewport capture override
+        self._pending_viewport_image = None  # Viewport image queued by after_changes mode
         self._mcp_connected = False
 
         self._build_ui()
@@ -330,6 +483,13 @@ class ChatDockWidget(QDockWidget):
         header.addWidget(QLabel(translate("ChatDockWidget", "Mode:")))
         header.addWidget(self.mode_combo)
 
+        # Viewport capture toggle
+        self._capture_btn = QPushButton(translate("ChatDockWidget", "Capture"))
+        self._capture_btn.setMaximumWidth(70)
+        self._capture_btn.setToolTip(translate("ChatDockWidget", "Viewport capture: off"))
+        self._capture_btn.clicked.connect(self._cycle_capture_mode)
+        header.addWidget(self._capture_btn)
+
         # Settings button
         settings_btn = QPushButton(translate("ChatDockWidget", "Settings"))
         settings_btn.setMaximumWidth(80)
@@ -349,24 +509,41 @@ class ChatDockWidget(QDockWidget):
         self.chat_display.anchorClicked.connect(self._handle_anchor_click)
         layout.addWidget(self.chat_display, 1)
 
+        # ── Attachment strip ──
+        self._attachment_strip = _AttachmentStrip()
+        layout.addWidget(self._attachment_strip)
+
         # ── Input area ──
         input_layout = QHBoxLayout()
 
-        self.input_edit = QTextEdit()
+        self.input_edit = _ImageAwareTextEdit()
         self.input_edit.setPlaceholderText(translate("ChatDockWidget", "Describe what you want to create..."))
         self.input_edit.setMaximumHeight(80)
         self.input_edit.setFont(QFont("Sans", 10))
         self.input_edit.installEventFilter(self)
+        self.input_edit.image_added.connect(self._on_image_added)
         input_layout.addWidget(self.input_edit, 1)
 
+        # Button column: attach + send
+        btn_layout = QVBoxLayout()
+        btn_layout.setSpacing(2)
+
+        self._attach_btn = QPushButton(translate("ChatDockWidget", "Attach"))
+        self._attach_btn.setMaximumHeight(20)
+        self._attach_btn.setToolTip(translate("ChatDockWidget", "Attach an image file"))
+        self._attach_btn.clicked.connect(self._attach_image)
+        btn_layout.addWidget(self._attach_btn)
+
         self.send_btn = QPushButton(translate("ChatDockWidget", "Send"))
-        self.send_btn.setMinimumHeight(40)
+        self.send_btn.setMinimumHeight(30)
         self.send_btn.setStyleSheet(
             "QPushButton { background-color: #3daee9; color: white; "
             "font-weight: bold; padding: 8px 16px; }"
         )
         self.send_btn.clicked.connect(self._send_message)
-        input_layout.addWidget(self.send_btn)
+        btn_layout.addWidget(self.send_btn)
+
+        input_layout.addLayout(btn_layout)
 
         layout.addLayout(input_layout)
 
@@ -431,9 +608,26 @@ class ChatDockWidget(QDockWidget):
             if handled:
                 return
 
+        # Collect attached images
+        images = self._attachment_strip.get_images() or None
+
+        # Auto-capture viewport if configured
+        capture_mode = getattr(self, "_capture_mode_override", None) or get_config().viewport_capture
+        if capture_mode == "every_message":
+            vp_img = self._capture_viewport_for_chat()
+            if vp_img:
+                images = (images or []) + [vp_img]
+
+        # Prepend pending viewport image (from after_changes mode)
+        if getattr(self, "_pending_viewport_image", None):
+            images = (images or []) + [self._pending_viewport_image]
+            self._pending_viewport_image = None
+
         # Add to conversation and display
-        self.conversation.add_user_message(text)
-        self._append_html(render_message("user", text))
+        self.conversation.add_user_message(text, images=images)
+        display_content = self.conversation.messages[-1]["content"]
+        self._append_html(render_message("user", display_content))
+        self._attachment_strip.clear()
 
         # Check if conversation needs compaction
         if self.conversation.needs_compaction():
@@ -441,6 +635,57 @@ class ChatDockWidget(QDockWidget):
             return
 
         self._continue_send()
+
+    def _on_image_added(self, media_type: str, base64_data: str):
+        """Handle image added via paste or drop."""
+        self._attachment_strip.add_image(media_type, base64_data)
+
+    def _attach_image(self):
+        """Open file picker to attach an image."""
+        try:
+            import FreeCADGui as Gui
+            parent = Gui.getMainWindow()
+        except ImportError:
+            parent = self
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            parent,
+            translate("ChatDockWidget", "Attach Image"),
+            "",
+            translate("ChatDockWidget", "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)"),
+        )
+        if path:
+            self.input_edit._process_image_file(path)
+
+    def _capture_viewport_for_chat(self) -> dict | None:
+        """Capture the viewport and return an image content block dict."""
+        from ..utils.viewport import capture_viewport_image, make_image_content_block, RESOLUTION_PRESETS
+        cfg = get_config()
+        w, h = RESOLUTION_PRESETS.get(cfg.viewport_resolution, (800, 600))
+        img_bytes = capture_viewport_image(w, h)
+        if img_bytes:
+            return make_image_content_block(img_bytes)
+        return None
+
+    def _cycle_capture_mode(self):
+        """Cycle viewport capture mode: off -> every_message -> after_changes -> off."""
+        modes = ["off", "every_message", "after_changes"]
+        labels = {
+            "off": translate("ChatDockWidget", "Viewport capture: off"),
+            "every_message": translate("ChatDockWidget", "Viewport capture: every message"),
+            "after_changes": translate("ChatDockWidget", "Viewport capture: after changes"),
+        }
+        current = getattr(self, "_capture_mode_override", None) or get_config().viewport_capture
+        try:
+            idx = modes.index(current)
+        except ValueError:
+            idx = 0
+        next_mode = modes[(idx + 1) % len(modes)]
+        self._capture_mode_override = next_mode
+        self._capture_btn.setToolTip(labels.get(next_mode, next_mode))
+        # Visual feedback: bold text when active
+        self._capture_btn.setStyleSheet(
+            "font-weight: bold;" if next_mode != "off" else ""
+        )
 
     def _on_mode_changed(self, index):
         """Update config when mode is toggled."""
@@ -486,8 +731,9 @@ class ChatDockWidget(QDockWidget):
                 # Get first user message as preview
                 preview = ""
                 for m in conv.messages:
-                    if m["role"] == "user" and not m["content"].startswith("["):
-                        preview = m["content"][:60].replace("\n", " ")
+                    text = Conversation.extract_text(m.get("content", ""))
+                    if m["role"] == "user" and not text.startswith("["):
+                        preview = text[:60].replace("\n", " ")
                         break
                 item_text = f"{ts} | {preview or conv_id}"
                 items.append((item_text, conv_id))
@@ -859,6 +1105,13 @@ class ChatDockWidget(QDockWidget):
             if code_blocks and mode == "act":
                 self._handle_act_mode(code_blocks)
 
+        # After-changes viewport capture: queue screenshot for next message
+        capture_mode = self._capture_mode_override or get_config().viewport_capture
+        if capture_mode == "after_changes" and self._worker and self._worker._tool_results:
+            vp_img = self._capture_viewport_for_chat()
+            if vp_img:
+                self._pending_viewport_image = vp_img
+
     @Slot(str)
     def _on_error(self, error_msg):
         """Handle LLM communication error.
@@ -1116,7 +1369,7 @@ class ChatDockWidget(QDockWidget):
                     html_parts.append(render_message(msg["role"], msg.get("content", "")))
 
                 if mode == "plan" and msg["role"] == "assistant":
-                    content = msg.get("content", "")
+                    content = Conversation.extract_text(msg.get("content", ""))
                     code_blocks = extract_code_blocks(content)
                     for code in code_blocks:
                         html_parts.append(self._make_plan_buttons_html(code))
@@ -1150,11 +1403,14 @@ class ChatDockWidget(QDockWidget):
         )
 
     def _handle_anchor_click(self, url):
-        """Handle clicks on anchor links in the chat (Execute/Copy buttons)."""
+        """Handle clicks on anchor links in the chat (Execute/Copy/Image buttons)."""
         import base64
         url_str = url.toString() if hasattr(url, "toString") else str(url)
 
-        if url_str.startswith("execute:"):
+        if url_str.startswith("image:"):
+            self._show_image_dialog(url_str)
+            return
+        elif url_str.startswith("execute:"):
             encoded = url_str[8:]
             try:
                 code = base64.b64decode(encoded).decode()
@@ -1170,14 +1426,61 @@ class ChatDockWidget(QDockWidget):
             except Exception:
                 pass
 
+    def _show_image_dialog(self, url_str: str):
+        """Show a full-size image in a dialog when a thumbnail is clicked."""
+        import base64 as b64
+        try:
+            block_idx = int(url_str.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return
+
+        # Find the most recent message with content blocks containing this index
+        for msg in reversed(self.conversation.messages):
+            content = msg.get("content")
+            if isinstance(content, list) and block_idx < len(content):
+                block = content[block_idx]
+                if block.get("type") == "image":
+                    img_data = b64.b64decode(block["data"])
+                    pixmap = QtGui.QPixmap()
+                    pixmap.loadFromData(img_data)
+                    if pixmap.isNull():
+                        return
+
+                    dlg = QtWidgets.QDialog(self)
+                    dlg.setWindowTitle("Image")
+                    dlg_layout = QVBoxLayout(dlg)
+                    label = QLabel()
+                    # Scale down if very large
+                    try:
+                        screen_size = QtWidgets.QApplication.primaryScreen().availableGeometry()
+                        max_w = int(screen_size.width() * 0.8)
+                        max_h = int(screen_size.height() * 0.8)
+                    except Exception:
+                        max_w, max_h = 1024, 768
+                    if pixmap.width() > max_w or pixmap.height() > max_h:
+                        pixmap = pixmap.scaled(max_w, max_h, Qt.KeepAspectRatio,
+                                               Qt.SmoothTransformation)
+                    label.setPixmap(pixmap)
+                    dlg_layout.addWidget(label)
+                    dlg.show()
+                    return
+
     def _set_loading(self, loading):
         """Enable/disable input while LLM is processing."""
         self.send_btn.setEnabled(not loading)
         self.input_edit.setReadOnly(loading)
         if loading:
             self.send_btn.setText("...")
+            self.send_btn.setStyleSheet(
+                "QPushButton { background-color: #f57c00; color: white; "
+                "font-weight: bold; padding: 8px 16px; }"
+            )
         else:
             self.send_btn.setText(translate("ChatDockWidget", "Send"))
+            self.send_btn.setStyleSheet(
+                "QPushButton { background-color: #3daee9; color: white; "
+                "font-weight: bold; padding: 8px 16px; }"
+            )
 
     def _update_token_count(self):
         """Update the token estimate display."""
