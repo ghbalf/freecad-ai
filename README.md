@@ -10,6 +10,7 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 - **Plan / Act modes** — review code before execution (Plan) or auto-execute (Act)
 - **Tool calling** — 33 structured FreeCAD operations (Act mode) for safer, more reliable modeling
 - **Skills** — reusable instruction sets invoked via `/command` (enclosure, gear, fastener holes, etc.)
+- **User extension tools** — register your own Python functions as LLM-callable tools (`.py` or `.FCMacro`)
 - **Thinking mode** — enable LLM reasoning for complex multi-step tasks (Off / On / Extended)
 - **Context compacting** — automatically summarizes older messages when approaching context limits
 - **Session resume** — save and load chat sessions to continue work later
@@ -160,6 +161,29 @@ The `SKILL.md` file contains instructions for the LLM. When invoked, these are i
 
 If a `handler.py` exists with an `execute(args)` function, it runs directly instead of prompting the LLM.
 
+### User Extension Tools
+
+You can register your own Python functions as tools that the LLM can call. Place `.py` or `.FCMacro` files in `~/.config/FreeCAD/FreeCADAI/tools/`. Functions with type hints are automatically discovered and registered:
+
+```python
+import math
+
+def bolt_circle(diameter: float, count: int = 8, bolt_size: float = 6.5) -> str:
+    """Create a bolt hole circle pattern on the XY plane."""
+    import Part
+    import FreeCAD as App
+    # ... create geometry ...
+    return f"Created {count} bolt holes on {diameter}mm PCD"
+```
+
+**Requirements:**
+- Public functions (no `_` prefix) with type-hinted parameters
+- Supported types: `float`, `int`, `str`, `bool`
+- Return a `str` (success message) or `dict` with `output`/`data` keys
+- Docstring first line becomes the tool description
+
+User tools are prefixed with `user_` and available to the LLM, skills, and MCP server. Manage them in Settings → User Tools (Add, Remove, Reload). Enable "Scan FreeCAD macro directory" to also pick up compatible macros from FreeCAD's macro folder.
+
 ### Thinking Mode
 
 Enable LLM reasoning in Settings (gear icon). Three levels:
@@ -249,7 +273,8 @@ freecad-ai/
 │   │   └── conversation.py    # Conversation history + compacting + save/load
 │   └── extensions/
 │       ├── agents_md.py       # AGENTS.md loader (multi-location, includes, vars)
-│       └── skills.py          # Skills registry + execution
+│       ├── skills.py          # Skills registry + execution
+│       └── user_tools.py      # User extension tools (discover, validate, register)
 ├── translations/
 │   ├── freecad_ai_de.ts       # German translation source
 │   └── update_translations.sh # Re-extract strings with pylupdate5

@@ -5,8 +5,11 @@ Provides a GUI for configuring:
   - API key, base URL, model name
   - Max tokens, temperature
   - Auto-execute toggle
+  - User extension tools
   - Test connection button
 """
+
+import os
 
 from .compat import QtWidgets, QtCore, QtGui
 from ..i18n import translate
@@ -27,6 +30,9 @@ QThread = QtCore.QThread
 QDoubleValidator = QtGui.QDoubleValidator
 
 QListWidget = QtWidgets.QListWidget
+QListWidgetItem = QtWidgets.QListWidgetItem
+QFileDialog = QtWidgets.QFileDialog
+QMessageBox = QtWidgets.QMessageBox
 
 from ..config import get_config, save_current_config, PROVIDER_PRESETS
 from ..llm.providers import get_provider_names
@@ -139,6 +145,37 @@ class SettingsDialog(QDialog):
         thinking_layout.addStretch()
         behavior_layout.addLayout(thinking_layout)
 
+        # Viewport capture settings
+        viewport_layout = QHBoxLayout()
+        viewport_layout.addWidget(QLabel(translate("SettingsDialog", "Viewport capture:")))
+        self.viewport_capture_combo = QComboBox()
+        self.viewport_capture_combo.addItems([
+            translate("SettingsDialog", "Off"),
+            translate("SettingsDialog", "Every Message"),
+            translate("SettingsDialog", "After Changes"),
+        ])
+        self.viewport_capture_combo.setToolTip(
+            translate("SettingsDialog",
+                      "Off: No auto-capture\n"
+                      "Every Message: Capture screenshot with each message\n"
+                      "After Changes: Capture after tool calls modify the document")
+        )
+        viewport_layout.addWidget(self.viewport_capture_combo)
+        viewport_layout.addStretch()
+        behavior_layout.addLayout(viewport_layout)
+
+        resolution_layout = QHBoxLayout()
+        resolution_layout.addWidget(QLabel(translate("SettingsDialog", "Capture resolution:")))
+        self.viewport_resolution_combo = QComboBox()
+        self.viewport_resolution_combo.addItems([
+            translate("SettingsDialog", "Low (400x300)"),
+            translate("SettingsDialog", "Medium (800x600)"),
+            translate("SettingsDialog", "High (1280x960)"),
+        ])
+        resolution_layout.addWidget(self.viewport_resolution_combo)
+        resolution_layout.addStretch()
+        behavior_layout.addLayout(resolution_layout)
+
         behavior_group.setLayout(behavior_layout)
         layout.addWidget(behavior_group)
 
@@ -164,6 +201,38 @@ class SettingsDialog(QDialog):
 
         mcp_group.setLayout(mcp_layout)
         layout.addWidget(mcp_group)
+
+        # User Tools group
+        user_tools_group = QGroupBox(translate("SettingsDialog", "User Tools"))
+        user_tools_layout = QVBoxLayout()
+
+        self.user_tools_list = QListWidget()
+        self.user_tools_list.setMaximumHeight(100)
+        user_tools_layout.addWidget(self.user_tools_list)
+
+        ut_btn_layout = QHBoxLayout()
+        ut_add_btn = QPushButton(translate("SettingsDialog", "Add..."))
+        ut_add_btn.clicked.connect(self._add_user_tool)
+        ut_btn_layout.addWidget(ut_add_btn)
+
+        ut_remove_btn = QPushButton(translate("SettingsDialog", "Remove"))
+        ut_remove_btn.clicked.connect(self._remove_user_tool)
+        ut_btn_layout.addWidget(ut_remove_btn)
+
+        ut_reload_btn = QPushButton(translate("SettingsDialog", "Reload"))
+        ut_reload_btn.clicked.connect(self._reload_user_tools)
+        ut_btn_layout.addWidget(ut_reload_btn)
+
+        ut_btn_layout.addStretch()
+        user_tools_layout.addLayout(ut_btn_layout)
+
+        self.scan_macros_cb = QCheckBox(
+            translate("SettingsDialog", "Also scan FreeCAD macro directory")
+        )
+        user_tools_layout.addWidget(self.scan_macros_cb)
+
+        user_tools_group.setLayout(user_tools_layout)
+        layout.addWidget(user_tools_group)
 
         # Test connection
         test_layout = QHBoxLayout()
@@ -215,11 +284,22 @@ class SettingsDialog(QDialog):
         thinking_map = {"off": 0, "on": 1, "extended": 2}
         self.thinking_combo.setCurrentIndex(thinking_map.get(cfg.thinking, 0))
 
+        capture_map = {"off": 0, "every_message": 1, "after_changes": 2}
+        self.viewport_capture_combo.setCurrentIndex(capture_map.get(cfg.viewport_capture, 0))
+
+        resolution_map = {"low": 0, "medium": 1, "high": 2}
+        self.viewport_resolution_combo.setCurrentIndex(resolution_map.get(cfg.viewport_resolution, 1))
+
         # MCP servers
         self.mcp_list.clear()
         self._mcp_configs = list(cfg.mcp_servers)
         for entry in self._mcp_configs:
             self.mcp_list.addItem(self._mcp_list_label(entry))
+
+        # User tools
+        self.scan_macros_cb.setChecked(cfg.scan_freecad_macros)
+        self._cfg = cfg
+        self._load_user_tools_list()
 
     def _on_provider_changed(self, index):
         """Update base URL and model when provider selection changes."""
@@ -251,7 +331,14 @@ class SettingsDialog(QDialog):
         thinking_values = ["off", "on", "extended"]
         cfg.thinking = thinking_values[self.thinking_combo.currentIndex()]
 
+        capture_values = ["off", "every_message", "after_changes"]
+        cfg.viewport_capture = capture_values[self.viewport_capture_combo.currentIndex()]
+
+        resolution_values = ["low", "medium", "high"]
+        cfg.viewport_resolution = resolution_values[self.viewport_resolution_combo.currentIndex()]
+
         cfg.mcp_servers = list(self._mcp_configs) if hasattr(self, "_mcp_configs") else []
+        cfg.scan_freecad_macros = self.scan_macros_cb.isChecked()
 
         save_current_config()
         self.accept()
@@ -329,6 +416,89 @@ class SettingsDialog(QDialog):
             self.mcp_list.takeItem(row)
             if row < len(self._mcp_configs):
                 self._mcp_configs.pop(row)
+
+    # --- User Tools methods ---
+
+    def _load_user_tools_list(self):
+        """Scan user tools directory and populate the list widget."""
+        from ..config import USER_TOOLS_DIR
+        from ..extensions.user_tools import validate_file
+
+        self.user_tools_list.clear()
+        self._user_tool_files = []
+
+        if not os.path.isdir(USER_TOOLS_DIR):
+            return
+
+        disabled = set(getattr(self._cfg, "user_tools_disabled", []))
+
+        for fname in sorted(os.listdir(USER_TOOLS_DIR)):
+            if not (fname.endswith(".py") or fname.endswith(".FCMacro")):
+                continue
+            fpath = os.path.join(USER_TOOLS_DIR, fname)
+            if not os.path.isfile(fpath):
+                continue
+
+            vr = validate_file(fpath)
+            self._user_tool_files.append(fname)
+
+            if not vr.valid:
+                label = f"\u2717 {fname} \u2014 {vr.error}"
+            elif vr.warnings:
+                func_names = ", ".join(f.name for f in vr.functions)
+                label = f"\u26a0 {fname} ({func_names}) \u2014 {'; '.join(vr.warnings)}"
+            else:
+                func_names = ", ".join(f.name for f in vr.functions)
+                label = f"\u2713 {fname} ({func_names})"
+
+            if fname in disabled:
+                label = f"(disabled) {label}"
+
+            self.user_tools_list.addItem(QListWidgetItem(label))
+
+    def _add_user_tool(self):
+        """Open file picker and copy selected file to user tools dir."""
+        from ..config import USER_TOOLS_DIR
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            translate("SettingsDialog", "Select Tool File"),
+            "",
+            translate("SettingsDialog", "Python Files (*.py *.FCMacro)"),
+        )
+        if not path:
+            return
+
+        import shutil
+        os.makedirs(USER_TOOLS_DIR, exist_ok=True)
+        dest = os.path.join(USER_TOOLS_DIR, os.path.basename(path))
+        if os.path.exists(dest):
+            QMessageBox.warning(
+                self,
+                translate("SettingsDialog", "File Exists"),
+                f"'{os.path.basename(path)}' already exists in tools directory.",
+            )
+            return
+        shutil.copy2(path, dest)
+        self._reload_user_tools()
+
+    def _remove_user_tool(self):
+        """Remove selected tool file from user tools dir."""
+        from ..config import USER_TOOLS_DIR
+
+        row = self.user_tools_list.currentRow()
+        if row < 0 or row >= len(self._user_tool_files):
+            return
+
+        fname = self._user_tool_files[row]
+        fpath = os.path.join(USER_TOOLS_DIR, fname)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+        self._reload_user_tools()
+
+    def _reload_user_tools(self):
+        """Re-scan and refresh the user tools list."""
+        self._load_user_tools_list()
 
 
 class _AddMCPServerDialog(QDialog):

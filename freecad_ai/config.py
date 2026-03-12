@@ -12,6 +12,7 @@ CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "FreeCAD", "FreeCA
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 CONVERSATIONS_DIR = os.path.join(CONFIG_DIR, "conversations")
 SKILLS_DIR = os.path.join(CONFIG_DIR, "skills")
+USER_TOOLS_DIR = os.path.join(CONFIG_DIR, "tools")
 
 # Provider presets
 PROVIDER_PRESETS = {
@@ -67,8 +68,12 @@ class AppConfig:
     max_retries: int = 3
     enable_tools: bool = True
     thinking: str = "off"  # "off", "on", "extended"
+    viewport_capture: str = "off"  # "off", "every_message", "after_changes"
+    viewport_resolution: str = "medium"  # "low", "medium", "high"
     mcp_servers: list = field(default_factory=list)
     # Each entry: {"name": str, "command": str, "args": list, "env": dict, "enabled": bool}
+    user_tools_disabled: list = field(default_factory=list)
+    scan_freecad_macros: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -85,7 +90,7 @@ class AppConfig:
 
 def _ensure_dirs():
     """Create config directories if they don't exist."""
-    for d in (CONFIG_DIR, CONVERSATIONS_DIR, SKILLS_DIR):
+    for d in (CONFIG_DIR, CONVERSATIONS_DIR, SKILLS_DIR, USER_TOOLS_DIR):
         os.makedirs(d, exist_ok=True)
 
 
