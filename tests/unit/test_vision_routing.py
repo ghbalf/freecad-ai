@@ -149,3 +149,106 @@ class TestFallbackDiscovery:
         ))
         from freecad_ai.mcp.manager import find_vision_fallback
         assert find_vision_fallback(registry) == "my_server__describe_image"
+
+
+class TestImageInterception:
+    """Image block replacement in get_messages_for_api."""
+
+    def _make_conversation_with_image(self):
+        from freecad_ai.core.conversation import Conversation
+        conv = Conversation()
+        conv.add_user_message("Look at this", images=[
+            {"type": "image", "source": "base64", "media_type": "image/png", "data": "abc123"},
+        ])
+        return conv
+
+    def test_no_describe_fn_keeps_images(self):
+        conv = self._make_conversation_with_image()
+        msgs = conv.get_messages_for_api(api_style="openai")
+        content = msgs[0]["content"]
+        types = [b["type"] for b in content]
+        assert "image_url" in types
+
+    def test_describe_fn_replaces_images(self):
+        conv = self._make_conversation_with_image()
+
+        def mock_describe(b64_data):
+            return f"Description of image ({len(b64_data)} bytes)"
+
+        msgs = conv.get_messages_for_api(api_style="openai", describe_fn=mock_describe)
+        content = msgs[0]["content"]
+        types = [b["type"] for b in content]
+        assert "image_url" not in types
+        assert "text" in types
+        desc_blocks = [b for b in content if "Description of image" in b.get("text", "")]
+        assert len(desc_blocks) == 1
+        assert "(6 bytes)" in desc_blocks[0]["text"]
+
+    def test_describe_fn_error_produces_error_text(self):
+        conv = self._make_conversation_with_image()
+
+        def failing_describe(b64_data):
+            raise RuntimeError("MCP server crashed")
+
+        msgs = conv.get_messages_for_api(api_style="openai", describe_fn=failing_describe)
+        content = msgs[0]["content"]
+        types = [b["type"] for b in content]
+        assert "image_url" not in types
+        desc_blocks = [b for b in content if "description unavailable" in b.get("text", "")]
+        assert len(desc_blocks) == 1
+        assert "MCP server crashed" in desc_blocks[0]["text"]
+
+    def test_describe_fn_with_anthropic_format(self):
+        conv = self._make_conversation_with_image()
+
+        def mock_describe(b64_data):
+            return "A red square"
+
+        msgs = conv.get_messages_for_api(api_style="anthropic", describe_fn=mock_describe)
+        content = msgs[0]["content"]
+        types = [b["type"] for b in content]
+        assert "image" not in types
+        desc_blocks = [b for b in content if "A red square" in b.get("text", "")]
+        assert len(desc_blocks) == 1
+
+    def test_multiple_images_all_replaced(self):
+        from freecad_ai.core.conversation import Conversation
+        conv = Conversation()
+        conv.add_user_message("Two images", images=[
+            {"type": "image", "source": "base64", "media_type": "image/png", "data": "img1"},
+            {"type": "image", "source": "base64", "media_type": "image/png", "data": "img2"},
+        ])
+        descriptions = []
+
+        def mock_describe(b64_data):
+            desc = f"Described {b64_data}"
+            descriptions.append(desc)
+            return desc
+
+        msgs = conv.get_messages_for_api(api_style="openai", describe_fn=mock_describe)
+        content = msgs[0]["content"]
+        assert len(descriptions) == 2
+        image_blocks = [b for b in content if b.get("type") == "image_url"]
+        assert len(image_blocks) == 0
+
+    def test_partial_failure_continues(self):
+        from freecad_ai.core.conversation import Conversation
+        conv = Conversation()
+        conv.add_user_message("Two images", images=[
+            {"type": "image", "source": "base64", "media_type": "image/png", "data": "img1"},
+            {"type": "image", "source": "base64", "media_type": "image/png", "data": "img2"},
+        ])
+        call_count = [0]
+
+        def flaky_describe(b64_data):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("Server timeout")
+            return "Second image described"
+
+        msgs = conv.get_messages_for_api(api_style="openai", describe_fn=flaky_describe)
+        content = msgs[0]["content"]
+        texts = [b.get("text", "") for b in content if b.get("type") == "text"]
+        full_text = " ".join(texts)
+        assert "description unavailable" in full_text
+        assert "Second image described" in full_text

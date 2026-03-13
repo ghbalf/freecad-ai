@@ -75,7 +75,8 @@ class Conversation:
         })
 
     def get_messages_for_api(self, max_chars: int = 100000,
-                             api_style: str = "openai") -> list[dict]:
+                             api_style: str = "openai",
+                             describe_fn=None) -> list[dict]:
         """Get messages formatted for the LLM API.
 
         Truncates older messages if the total content exceeds max_chars.
@@ -127,6 +128,10 @@ class Conversation:
         # Ensure the first message is a user message (API requirement)
         while result and result[0]["role"] not in ("user",):
             result.pop(0)
+
+        # Replace image blocks with text descriptions if describe_fn is provided
+        if describe_fn:
+            result = self._replace_images_with_descriptions(result, describe_fn)
 
         # Convert to provider format
         if api_style == "anthropic":
@@ -223,6 +228,39 @@ class Conversation:
                 result.append({"role": msg["role"], "content": anth_blocks})
             else:
                 result.append({"role": msg["role"], "content": msg["content"]})
+        return result
+
+    @staticmethod
+    def _replace_images_with_descriptions(messages: list[dict],
+                                          describe_fn) -> list[dict]:
+        """Replace image content blocks with text descriptions from describe_fn.
+
+        Images are processed serially. On failure, an error text block is
+        substituted so remaining images can still be processed.
+        """
+        result = []
+        for msg in messages:
+            if not isinstance(msg.get("content"), list):
+                result.append(msg)
+                continue
+            new_blocks = []
+            for block in msg["content"]:
+                if block.get("type") == "image":
+                    b64_data = block.get("data", "")
+                    try:
+                        description = describe_fn(b64_data)
+                        new_blocks.append({
+                            "type": "text",
+                            "text": f"[Image described by llm-vision-mcp: {description}]",
+                        })
+                    except Exception as e:
+                        new_blocks.append({
+                            "type": "text",
+                            "text": f"[Image: description unavailable — MCP error: {e}]",
+                        })
+                else:
+                    new_blocks.append(block)
+            result.append({**msg, "content": new_blocks})
         return result
 
     @staticmethod
