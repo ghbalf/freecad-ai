@@ -13,11 +13,12 @@ Route image handling based on LLM vision capability. Vision-capable models recei
 
 When the user clicks "Test Connection" in the settings dialog and the connection test succeeds, a second request is sent:
 
-1. Send a tiny 8x8 solid red PNG (~100 bytes) with the prompt: "What color is this image? Reply with only the color name."
-2. The probe uses a dedicated `LLMClient.vision_probe()` method that builds provider-appropriate content blocks internally (OpenAI-style `image_url` vs Anthropic-style `image` source), similar to how `Conversation.get_messages_for_api()` formats images per `api_style`.
-3. Check if the response contains "red" (case-insensitive).
-4. Set `vision_detected = True` or `False` accordingly.
-5. Show result in test output: "Vision: supported" (green) or "Vision: not supported" (gray).
+1. Generate a small image (64x32) with a random 3-digit number (100–999) rendered as text using `QPainter` on a `QImage`. This avoids false positives from non-vision LLMs guessing (~0.1% chance).
+2. Send the image with the prompt: "What number is shown in this image? Reply with only the number."
+3. The probe uses a dedicated `LLMClient.vision_probe()` method that builds provider-appropriate content blocks internally (OpenAI-style `image_url` vs Anthropic-style `image` source), similar to how `Conversation.get_messages_for_api()` formats images per `api_style`.
+4. Check if the response contains the exact 3-digit number as a substring.
+5. Set `vision_detected = True` or `False` accordingly.
+6. Show result in test output: "Vision: supported" (green) or "Vision: not supported" (gray).
 
 If the connection test itself fails, the vision probe is skipped and `vision_detected` is unchanged.
 
@@ -163,7 +164,7 @@ Connected to a slot on `ChatDockWidget` that appends a subtle system-style note 
 | `freecad_ai/config.py` | Add `vision_detected`, `vision_override` fields, `supports_vision` property |
 | `freecad_ai/ui/settings_dialog.py` | Add vision checkbox + reset button to Behavior section, vision probe in test connection flow, reset logic in save handler |
 | `freecad_ai/ui/chat_widget.py` | Gate Capture/Attach/drag-drop/paste on vision state, `vision_note` signal, hint for untested state, `_vision_hint_shown` flag, pass `describe_fn` to conversation |
-| `freecad_ai/llm/client.py` | `vision_probe()` method — builds provider-appropriate image content blocks, sends test image, returns bool |
+| `freecad_ai/llm/client.py` | `vision_probe()` method — generates random 3-digit number image via QPainter, builds provider-appropriate content blocks, sends probe, verifies number in response, returns bool |
 | `freecad_ai/mcp/manager.py` | `find_vision_fallback()` method — searches registry for `describe_image` tool |
 | `freecad_ai/core/conversation.py` | Accept optional `describe_fn` in `get_messages_for_api()`, intercept image blocks before formatting |
 | `tests/unit/test_vision_routing.py` | Unit tests for config logic, probe parsing, interception, UI gating, error handling |
