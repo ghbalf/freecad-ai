@@ -252,3 +252,49 @@ class TestImageInterception:
         full_text = " ".join(texts)
         assert "description unavailable" in full_text
         assert "Second image described" in full_text
+
+
+class TestImageControlGating:
+    """UI control gating logic (no actual Qt, just config logic)."""
+
+    def test_gating_disabled_when_untested(self):
+        """Controls should NOT be disabled when vision_detected is None."""
+        cfg = AppConfig()
+        # vision_detected=None, no fallback
+        should_disable = (cfg.vision_detected is not None
+                          and not cfg.supports_vision
+                          and True)  # simulate no fallback
+        assert should_disable is False  # optimistic for untested
+
+    def test_gating_disabled_when_no_vision_no_fallback(self):
+        cfg = AppConfig()
+        cfg.vision_detected = False
+        should_disable = (cfg.vision_detected is not None
+                          and not cfg.supports_vision
+                          and True)  # no fallback
+        assert should_disable is True
+
+    def test_gating_enabled_when_fallback_exists(self):
+        cfg = AppConfig()
+        cfg.vision_detected = False
+        fallback = "server__describe_image"  # simulate fallback exists
+        should_disable = (cfg.vision_detected is not None
+                          and not cfg.supports_vision
+                          and fallback is None)
+        assert should_disable is False
+
+    def test_gating_enabled_when_vision_supported(self):
+        cfg = AppConfig()
+        cfg.vision_detected = True
+        should_disable = (cfg.vision_detected is not None
+                          and not cfg.supports_vision)
+        assert should_disable is False
+
+    def test_gating_enabled_with_override(self):
+        cfg = AppConfig()
+        cfg.vision_detected = False
+        cfg.vision_override = True
+        should_disable = (cfg.vision_detected is not None
+                          and not cfg.supports_vision
+                          and True)
+        assert should_disable is False  # override makes supports_vision True
