@@ -82,3 +82,34 @@ class TestVisionProbe:
     def test_check_probe_response_empty(self):
         from freecad_ai.llm.client import _check_probe_response
         assert _check_probe_response("", 427) is False
+
+
+from unittest.mock import patch, MagicMock
+
+
+class TestVisionProbeMethod:
+    """LLMClient.vision_probe() integration."""
+
+    @patch("freecad_ai.llm.client._generate_probe_image")
+    def test_vision_probe_returns_true_for_correct_answer(self, mock_gen):
+        from freecad_ai.llm.client import LLMClient
+        mock_gen.return_value = (427, b'\x89PNG\r\n\x1a\nfakedata')
+        client = LLMClient("openai", "http://localhost", "", "test-model")
+        with patch.object(client, "send", return_value="427"):
+            assert client.vision_probe() is True
+
+    @patch("freecad_ai.llm.client._generate_probe_image")
+    def test_vision_probe_returns_false_for_wrong_answer(self, mock_gen):
+        from freecad_ai.llm.client import LLMClient
+        mock_gen.return_value = (427, b'\x89PNG\r\n\x1a\nfakedata')
+        client = LLMClient("openai", "http://localhost", "", "test-model")
+        with patch.object(client, "send", return_value="I cannot see images"):
+            assert client.vision_probe() is False
+
+    @patch("freecad_ai.llm.client._generate_probe_image")
+    def test_vision_probe_returns_false_on_error(self, mock_gen):
+        from freecad_ai.llm.client import LLMClient
+        mock_gen.return_value = (427, b'\x89PNG\r\n\x1a\nfakedata')
+        client = LLMClient("openai", "http://localhost", "", "test-model")
+        with patch.object(client, "send", side_effect=Exception("API error")):
+            assert client.vision_probe() is False

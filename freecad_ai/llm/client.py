@@ -166,6 +166,55 @@ class LLMClient:
         test_messages = [{"role": "user", "content": "Say 'hello' in one word."}]
         return self.send(test_messages, system="Respond briefly.")
 
+    def vision_probe(self) -> bool:
+        """Test if the model supports vision by sending an image with a number.
+
+        Returns True if the model correctly identifies the number, False otherwise.
+        """
+        try:
+            number, png_bytes = _generate_probe_image()
+            b64 = base64.b64encode(png_bytes).decode("ascii")
+
+            if self.api_style == "anthropic":
+                messages = [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": b64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": "What number is shown in this image? Reply with only the number.",
+                        },
+                    ],
+                }]
+            else:
+                # OpenAI-compatible format
+                data_uri = f"data:image/png;base64,{b64}"
+                messages = [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": data_uri},
+                        },
+                        {
+                            "type": "text",
+                            "text": "What number is shown in this image? Reply with only the number.",
+                        },
+                    ],
+                }]
+
+            response = self.send(messages, system="Respond briefly.")
+            return _check_probe_response(response, number)
+        except Exception:
+            return False
+
     # ── OpenAI-compatible ───────────────────────────────────────
 
     def _openai_url(self) -> str:
