@@ -682,10 +682,13 @@ class ChatDockWidget(QDockWidget):
         next_mode = modes[(idx + 1) % len(modes)]
         self._capture_mode_override = next_mode
         self._capture_btn.setToolTip(labels.get(next_mode, next_mode))
-        # Visual feedback: bold text when active
-        self._capture_btn.setStyleSheet(
-            "font-weight: bold;" if next_mode != "off" else ""
-        )
+        # Visual feedback: distinct colors per active mode
+        style_map = {
+            "off": "",
+            "every_message": "font-weight: bold; color: #4fc3f7;",  # light blue
+            "after_changes": "font-weight: bold; color: #aed581;",  # light green
+        }
+        self._capture_btn.setStyleSheet(style_map.get(next_mode, ""))
 
     def _on_mode_changed(self, index):
         """Update config when mode is toggled."""
