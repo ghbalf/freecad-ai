@@ -74,6 +74,17 @@ class AppConfig:
     # Each entry: {"name": str, "command": str, "args": list, "env": dict, "enabled": bool}
     user_tools_disabled: list = field(default_factory=list)
     scan_freecad_macros: bool = False
+    vision_detected: bool | None = None   # None=not tested, True/False=probe result
+    vision_override: bool | None = None   # user manual override, takes precedence
+
+    @property
+    def supports_vision(self) -> bool:
+        """Whether the current LLM supports vision (images in content blocks)."""
+        if self.vision_override is not None:
+            return self.vision_override
+        if self.vision_detected is not None:
+            return self.vision_detected
+        return False
 
     def to_dict(self) -> dict:
         return asdict(self)
