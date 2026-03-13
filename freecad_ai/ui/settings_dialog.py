@@ -39,8 +39,9 @@ from ..llm.providers import get_provider_names
 
 
 class _TestConnectionThread(QThread):
-    """Background thread for testing LLM connection."""
-    finished = Signal(bool, str)  # success, message
+    """Background thread for testing LLM connection and vision capability."""
+    finished = Signal(bool, str)        # success, message
+    vision_result = Signal(bool)        # vision probe result
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,6 +52,10 @@ class _TestConnectionThread(QThread):
             client = create_client_from_config()
             response = client.test_connection()
             self.finished.emit(True, translate("SettingsDialog", "Connected! Response: ") + response)
+
+            # Run vision probe after successful connection
+            vision_ok = client.vision_probe()
+            self.vision_result.emit(vision_ok)
         except Exception as e:
             self.finished.emit(False, str(e))
 
@@ -396,6 +401,7 @@ class SettingsDialog(QDialog):
 
         self._test_thread = _TestConnectionThread(self)
         self._test_thread.finished.connect(self._on_test_finished)
+        self._test_thread.vision_result.connect(self._on_vision_probed)
         self._test_thread.start()
 
     def _on_test_finished(self, success, message):
@@ -407,6 +413,19 @@ class SettingsDialog(QDialog):
         else:
             self.test_status.setText(translate("SettingsDialog", "Failed: ") + message)
             self.test_status.setStyleSheet("color: #c62828;")
+
+    def _on_vision_probed(self, supports_vision: bool):
+        """Handle vision probe result — persists to config immediately."""
+        cfg = get_config()
+        cfg.vision_detected = supports_vision
+        save_current_config()
+        self._update_vision_ui(cfg)
+        # Append vision status to test output
+        current = self.test_status.text()
+        if supports_vision:
+            self.test_status.setText(current + " | Vision: supported")
+        else:
+            self.test_status.setText(current + " | Vision: not supported")
 
     def _save_temp(self):
         """Temporarily apply current UI values to config (for test connection)."""
