@@ -57,15 +57,18 @@ class _LLMWorker(QThread):
     tool_call_started = Signal(str, str)   # (tool_name, call_id)
     tool_call_finished = Signal(str, str, bool, str)  # (tool_name, call_id, success, output)
     tool_exec_requested = Signal(str, str) # (tool_name, arguments_json) — dispatches to main thread
+    vision_note = Signal(str)              # Vision description status note
 
     def __init__(self, messages, system_prompt, tools=None, registry=None,
-                 api_style="openai", parent=None):
+                 api_style="openai", conversation=None, describe_fn=None, parent=None):
         super().__init__(parent)
         self.messages = list(messages)
         self.system_prompt = system_prompt
         self.tools = tools
         self.registry = registry
         self.api_style = api_style
+        self.conversation = conversation
+        self.describe_fn = describe_fn
         self._full_response = ""
         self._thinking_text = ""
         self._tool_results = []
@@ -79,6 +82,13 @@ class _LLMWorker(QThread):
             from ..llm.client import create_client_from_config
             client = create_client_from_config()
 
+            # Re-format messages with image interception on worker thread
+            if self.conversation and self.describe_fn:
+                wrapped = self._wrap_describe_fn(self.describe_fn)
+                self.messages = self.conversation.get_messages_for_api(
+                    api_style=self.api_style, describe_fn=wrapped
+                )
+
             if not self.tools:
                 # Simple non-tool streaming (backward compat)
                 self._simple_stream(client)
@@ -89,6 +99,18 @@ class _LLMWorker(QThread):
 
         except Exception as e:
             self.error_occurred.emit(str(e))
+
+    def _wrap_describe_fn(self, describe_fn):
+        """Wrap describe_fn to emit vision_note signals."""
+        def wrapped(b64_data):
+            try:
+                result = describe_fn(b64_data)
+                self.vision_note.emit("Image auto-described by llm-vision-mcp")
+                return result
+            except Exception as e:
+                self.vision_note.emit(f"Image description failed: {e}")
+                raise
+        return wrapped
 
     def _simple_stream(self, client):
         """Stream without tools (original behavior)."""
@@ -877,6 +899,26 @@ class ChatDockWidget(QDockWidget):
             self._tool_registry = None
             system_prompt = build_system_prompt(mode=mode)
 
+        # Build describe_fn for non-vision LLMs
+        describe_fn = None
+        conversation_ref = None
+        if not cfg.supports_vision:
+            fallback = getattr(self, '_vision_fallback_tool', None)
+            if fallback and self._tool_registry:
+                _reg = self._tool_registry
+                _tool = fallback
+                def _make_describe(reg, tool_name):
+                    def describe(b64_data):
+                        result = reg.execute(
+                            tool_name, {"image": b64_data, "prompt": "Describe this image in detail."}
+                        )
+                        if result.success:
+                            return result.output
+                        raise RuntimeError(result.error or "describe_image failed")
+                    return describe
+                describe_fn = _make_describe(_reg, _tool)
+                conversation_ref = self.conversation
+
         # Get messages for API
         messages = self.conversation.get_messages_for_api(api_style=api_style)
 
@@ -895,7 +937,8 @@ class ChatDockWidget(QDockWidget):
         self._worker = _LLMWorker(
             messages, system_prompt,
             tools=tools_schema, registry=self._tool_registry,
-            api_style=api_style, parent=self,
+            api_style=api_style, conversation=conversation_ref,
+            describe_fn=describe_fn, parent=self,
         )
         self._worker.token_received.connect(self._on_token)
         self._worker.thinking_received.connect(self._on_thinking)
@@ -904,6 +947,7 @@ class ChatDockWidget(QDockWidget):
         self._worker.tool_call_started.connect(self._on_tool_call_started)
         self._worker.tool_call_finished.connect(self._on_tool_call_finished)
         self._worker.tool_exec_requested.connect(self._execute_tool_call)
+        self._worker.vision_note.connect(self._on_vision_note)
         self._worker.start()
 
     def _save_session_log(self):
@@ -1174,6 +1218,13 @@ class ChatDockWidget(QDockWidget):
         self._append_html(render_tool_call(
             tool_name, call_id, started=False, success=success, output=output
         ))
+
+    def _on_vision_note(self, message: str):
+        """Show a subtle note when images are auto-described."""
+        self._append_html(
+            f'<div style="color: #888; font-size: 9pt; margin: 2px 12px;">'
+            f'{message}</div>'
+        )
 
     @Slot(str, str)
     def _execute_tool_call(self, tool_name, arguments_json):
