@@ -199,3 +199,14 @@ def get_mcp_manager() -> MCPManager:
     if _manager is None:
         _manager = MCPManager()
     return _manager
+
+
+def find_vision_fallback(registry) -> str | None:
+    """Search the tool registry for a describe_image tool (MCP vision fallback).
+
+    Returns the full tool name if found, None otherwise.
+    """
+    for tool in registry.list_tools():
+        if "describe_image" in tool.name:
+            return tool.name
+    return None

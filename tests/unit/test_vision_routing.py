@@ -113,3 +113,39 @@ class TestVisionProbeMethod:
         client = LLMClient("openai", "http://localhost", "", "test-model")
         with patch.object(client, "send", side_effect=Exception("API error")):
             assert client.vision_probe() is False
+
+
+class TestFallbackDiscovery:
+    """MCP fallback tool search."""
+
+    def test_find_vision_fallback_found(self):
+        from freecad_ai.tools.registry import ToolRegistry, ToolDefinition, ToolResult
+        registry = ToolRegistry()
+        registry.register(ToolDefinition(
+            name="llm-vision-mcp__describe_image",
+            description="Describe an image",
+            parameters=[],
+            handler=lambda **kw: ToolResult(success=True, output="test"),
+            category="mcp",
+        ))
+        from freecad_ai.mcp.manager import find_vision_fallback
+        assert find_vision_fallback(registry) == "llm-vision-mcp__describe_image"
+
+    def test_find_vision_fallback_not_found(self):
+        from freecad_ai.tools.registry import ToolRegistry
+        registry = ToolRegistry()
+        from freecad_ai.mcp.manager import find_vision_fallback
+        assert find_vision_fallback(registry) is None
+
+    def test_find_vision_fallback_partial_name_match(self):
+        from freecad_ai.tools.registry import ToolRegistry, ToolDefinition, ToolResult
+        registry = ToolRegistry()
+        registry.register(ToolDefinition(
+            name="my_server__describe_image",
+            description="Vision tool",
+            parameters=[],
+            handler=lambda **kw: ToolResult(success=True, output="test"),
+            category="mcp",
+        ))
+        from freecad_ai.mcp.manager import find_vision_fallback
+        assert find_vision_fallback(registry) == "my_server__describe_image"
