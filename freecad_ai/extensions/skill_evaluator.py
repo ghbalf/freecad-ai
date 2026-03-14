@@ -216,7 +216,30 @@ class SkillEvaluator:
         registry = create_default_registry(
             include_mcp=False, extra_tools=get_eval_tools())
         if self._tool_executor:
-            logger.info("Tool executor type: %s", type(self._tool_executor).__name__)
+            # Write diagnostics to file (survives crash)
+            import threading
+            diag_path = os.path.join(os.path.expanduser("~"), "optimizer_debug.log")
+            with open(diag_path, "a") as f:
+                f.write(f"\n--- evaluate() diagnostics ---\n")
+                f.write(f"executor type: {type(self._tool_executor).__name__}\n")
+                f.write(f"executor class MRO: {[c.__name__ for c in type(self._tool_executor).__mro__]}\n")
+                f.write(f"current thread: {threading.current_thread().name}\n")
+                try:
+                    from ..ui.compat import QtCore
+                    app = QtCore.QCoreApplication.instance()
+                    cur = QtCore.QThread.currentThread()
+                    main = app.thread() if app else None
+                    f.write(f"Qt app: {app is not None}\n")
+                    f.write(f"Qt current thread: {cur}\n")
+                    f.write(f"Qt main thread: {main}\n")
+                    f.write(f"is main thread: {app and cur == main}\n")
+                    f.write(f"has _execute_signal: {hasattr(self._tool_executor, '_execute_signal')}\n")
+                    f.write(f"has _mutex: {hasattr(self._tool_executor, '_mutex')}\n")
+                except Exception as e:
+                    f.write(f"Qt check error: {e}\n")
+                f.flush()
+            logger.info("Tool executor type: %s (diagnostics at %s)",
+                        type(self._tool_executor).__name__, diag_path)
             self._tool_executor.set_registry(registry)
         # Build schema excluding internal eval tools (not for the LLM)
         all_schema = registry.to_openai_schema() if api_style != "anthropic" \
