@@ -1,13 +1,14 @@
 """Optimize iteration tool for the skill optimizer.
 
-Provides the optimize_iteration tool that evaluates a SKILL.md by running
-the skill with test cases, collecting metrics, and computing composite scores.
+Provides the optimize_iteration tool that runs the full optimization loop:
+evaluate SKILL.md, use LLM to suggest modifications, re-evaluate, repeat.
 Also manages optimization session state (start/stop, iteration tracking,
 best-score comparison).
 """
 
 import json
 import logging
+import time
 from typing import Optional
 
 from .registry import ToolDefinition, ToolParam, ToolResult
@@ -61,68 +62,132 @@ STRATEGY_INSTRUCTIONS = {
     ),
 }
 
-# ── Prompt template ──────────────────────────────────────────────────────
+# ── Prompt template for LLM skill modification ──────────────────────────
 
-OPTIMIZATION_PROMPT_TEMPLATE = """\
-# Skill Optimization Task
-
-You are an optimization agent. Your ONLY job is to iteratively improve a SKILL.md file by calling the `optimize_iteration` tool repeatedly. You MUST run {iterations} iterations.
-
-## Skill: {skill_name}
+MODIFICATION_PROMPT = """\
+You are improving a FreeCAD AI SKILL.md file based on test results.
 
 ## Current SKILL.md
 
-```skill
-{current_skill_md}
+```
+{skill_content}
 ```
 
-## Test Cases
+## Test Results (iteration {iteration}, score: {score:.4f})
 
-{test_cases_formatted}
-
-## Configuration
-
-- Iterations: {iterations}
-- Runs per test: {runs_per_test}
-- Strategy: {strategy}
-- Enabled metrics: {enabled_metrics}
-- Tool-call budget per run: {budget}
-
-## MANDATORY WORKFLOW — Follow these steps exactly:
-
-**Step 1 — Baseline:** Call `optimize_iteration` with the current SKILL.md exactly as shown above. This establishes the baseline score.
-
-**Step 2 — Analyze:** Read the results carefully. Look at:
-- Which test cases had errors? What were the specific error messages?
-- Common patterns: "Sketch not found" means FreeCAD renamed the sketch. "not found" means wrong object name.
-- FreeCAD naming: sketches are named "Sketch", "Sketch001", "Sketch002" etc. (NOT "Sketch0", "Sketch1"). Bodies may be renamed too.
-
-**Step 3 — Modify:** Edit the SKILL.md to fix the errors. Common fixes:
-- Tell the LLM to use `get_document_state` to check actual object names before referencing them
-- Add explicit naming instructions ("name the sketch 'OuterSketch'" in create_sketch)
-- Add warnings about FreeCAD renaming objects
-- Simplify complex multi-step sequences that are error-prone
-
-**Step 4 — Re-evaluate:** Call `optimize_iteration` again with your MODIFIED SKILL.md (the complete text, not a diff).
-
-**Step 5 — Repeat:** Go back to Step 2. Keep iterating until you have done {iterations} iterations total.
-
-## CRITICAL RULES
-
-- You MUST call `optimize_iteration` at least {iterations} times total.
-- Each call MUST include the COMPLETE SKILL.md as `skill_content` (not a summary or diff).
-- After seeing results, you MUST modify the SKILL.md and call again. Do NOT just report the results.
-- The `test_cases` parameter must be the same list every time: {test_cases_json}
-- If score plateaus for 3 iterations, try a fundamentally different approach.
-- When all iterations are done, summarize what you changed and the score progression.
+{results_text}
 
 ## Strategy
 
 {strategy_instruction}
+
+## FreeCAD Naming Rules
+- Sketches are named "Sketch", "Sketch001", "Sketch002" etc. (NOT "Sketch0", "Sketch1")
+- Bodies may be renamed by FreeCAD (e.g., "Body" instead of "EnclosureBase")
+- Always tell the LLM to use `get_document_state` to check actual names before referencing objects
+- Use explicit labels in create_sketch and create_body calls
+
+## Instructions
+
+Analyze the errors above and modify the SKILL.md to fix them. Return the complete \
+modified SKILL.md between ```skill markers. Focus on fixing the specific errors shown.
+
+```skill
+(your modified SKILL.md here)
+```
+"""
+
+# ── Prompt template for inject_prompt ────────────────────────────────────
+
+OPTIMIZATION_PROMPT_TEMPLATE = """\
+# Skill Optimization Task
+
+Optimizing skill **{skill_name}** with {iterations} iterations.
+
+Test cases: {test_cases_formatted}
+
+The `optimize_iteration` tool will run the full optimization loop automatically. \
+Call it once — it handles all iterations internally.
 """
 
 
-# ── Handler ──────────────────────────────────────────────────────────────
+# ── Core optimization logic ─────────────────────────────────────────────
+
+def _evaluate_once(skill_name, skill_content, parsed_cases, runs_per_test):
+    """Run one evaluation cycle. Returns (results, score, details_text)."""
+    from ..extensions.skill_evaluator import SkillEvaluator, compute_composite_score
+
+    evaluator = SkillEvaluator(
+        config=_active_config,
+        tool_executor=_active_config.get("_tool_executor"),
+    )
+    results = evaluator.evaluate(
+        skill_name=skill_name,
+        skill_content=skill_content,
+        test_cases=parsed_cases,
+        runs_per_test=runs_per_test,
+    )
+
+    score = compute_composite_score(results, _active_config)
+
+    # Build human-readable details
+    lines = []
+    for r in results:
+        lines.append(f"Test case: {r.test_case}")
+        lines.append(f"  completed={r.completed}, tool_calls={r.tool_calls}, "
+                     f"errors={r.errors}")
+        if r.error_messages:
+            for msg in r.error_messages[:10]:
+                lines.append(f"  ERROR: {msg}")
+        if r.run_scores:
+            lines.append(f"  run_scores={r.run_scores}")
+
+    return results, score, "\n".join(lines)
+
+
+def _ask_llm_for_modification(skill_content, iteration, score, results_text,
+                               strategy_instruction):
+    """Ask the LLM to suggest a modified SKILL.md based on results."""
+    from ..llm.client import create_client_from_config
+
+    client = create_client_from_config()
+    prompt = MODIFICATION_PROMPT.format(
+        skill_content=skill_content,
+        iteration=iteration,
+        score=score,
+        results_text=results_text,
+        strategy_instruction=strategy_instruction,
+    )
+
+    try:
+        response = client.send(
+            [{"role": "user", "content": prompt}],
+            system="You are a FreeCAD AI skill optimizer. Return only the modified SKILL.md.",
+        )
+    except Exception as e:
+        logger.error("LLM modification request failed: %s", e)
+        return None
+
+    # Extract SKILL.md from ```skill ... ``` markers
+    text = response
+    if "```skill" in text:
+        start = text.index("```skill") + len("```skill")
+        end = text.index("```", start)
+        return text[start:end].strip()
+    elif "```" in text:
+        # Try generic code block
+        start = text.index("```") + 3
+        # Skip language tag if present
+        newline = text.index("\n", start)
+        start = newline + 1
+        end = text.index("```", start)
+        return text[start:end].strip()
+    else:
+        # No markers — return the full response if it looks like a SKILL.md
+        if text.strip().startswith("#"):
+            return text.strip()
+        return None
+
 
 def _handle_optimize_iteration(
     skill_name: str,
@@ -130,7 +195,7 @@ def _handle_optimize_iteration(
     test_cases: list,
     runs_per_test: int = 2,
 ) -> ToolResult:
-    """Evaluate a SKILL.md by running the skill with test cases."""
+    """Run the full optimization loop: evaluate → modify → re-evaluate → repeat."""
     global _iteration
 
     if _active_config is None:
@@ -140,10 +205,12 @@ def _handle_optimize_iteration(
             error="No active optimization session",
         )
 
-    _iteration += 1
-    iteration = _iteration
+    max_iterations = _active_config.get("iterations", 5)
+    strategy = _active_config.get("strategy", "balanced")
+    strategy_instruction = STRATEGY_INSTRUCTIONS.get(strategy, STRATEGY_INSTRUCTIONS["balanced"])
+    tolerance = _active_config.get("tolerance", 0.01)
 
-    # Parse test_cases: accept JSON strings or plain strings
+    # Parse test_cases
     parsed_cases = []
     for tc in test_cases:
         if isinstance(tc, str):
@@ -160,99 +227,87 @@ def _handle_optimize_iteration(
         else:
             parsed_cases.append({"args": str(tc)})
 
-    # Run evaluation
-    from ..extensions.skill_evaluator import SkillEvaluator, compute_composite_score
+    current_content = skill_content
+    all_output_lines = []
+    start_time = time.time()
 
-    evaluator = SkillEvaluator(
-        config=_active_config,
-        tool_executor=_active_config.get("_tool_executor"),
-    )
-    results = evaluator.evaluate(
-        skill_name=skill_name,
-        skill_content=skill_content,
-        test_cases=parsed_cases,
-        runs_per_test=runs_per_test,
-    )
+    try:
+        for i in range(max_iterations):
+            _iteration += 1
+            iteration = _iteration
+            elapsed = time.time() - start_time
 
-    # Compute composite score
-    score = compute_composite_score(results, _active_config)
+            logger.info("=== Optimization iteration %d/%d (%.0fs elapsed) ===",
+                        i + 1, max_iterations, elapsed)
 
-    # Compare against best
-    best_content, best_score = _active_state.get_best()
-    tolerance = _active_config.get("tolerance", 0.01)
+            # 1. Evaluate
+            results, score, details_text = _evaluate_once(
+                skill_name, current_content, parsed_cases, runs_per_test,
+            )
 
-    if best_score == 0.0 or score >= best_score - tolerance:
-        kept = True
-        comparison = "new_best" if score > best_score else "within_tolerance"
-    else:
-        kept = False
-        comparison = "discarded"
+            # 2. Keep/discard
+            best_content, best_score = _active_state.get_best()
+            if best_score == 0.0 or score >= best_score - tolerance:
+                kept = True
+                comparison = "new_best" if score > best_score else "within_tolerance"
+            else:
+                kept = False
+                comparison = "discarded"
 
-    # Save version
-    _active_state.save_version(
-        iteration=iteration,
-        content=skill_content,
-        score=score,
-        kept=kept,
-        config=_active_config.get("model_config", {}),
-    )
+            _active_state.save_version(
+                iteration=iteration,
+                content=current_content,
+                score=score,
+                kept=kept,
+                config=_active_config.get("model_config", {}),
+            )
 
-    # Determine strategy based on iteration count
-    total_iterations = _active_config.get("iterations", 5)
-    if iteration <= 2:
-        strategy = "failure_driven"
-    else:
-        strategy = "holistic"
+            iter_summary = (
+                f"Iteration {iteration}: score={score:.4f} "
+                f"(best={max(score, best_score):.4f}, {comparison})"
+            )
+            all_output_lines.append(iter_summary)
+            all_output_lines.append(details_text)
+            all_output_lines.append("")
 
-    # Build per-test-case details
-    case_details = []
-    for r in results:
-        detail = {
-            "test_case": r.test_case,
-            "completed": r.completed,
-            "tool_calls": r.tool_calls,
-            "errors": r.errors,
-            "retries": r.retries,
-        }
-        if r.error_messages:
-            detail["error_messages"] = r.error_messages
-        if r.visual_score is not None:
-            detail["visual_score"] = r.visual_score
-        if r.run_scores:
-            detail["run_scores"] = r.run_scores
-        case_details.append(detail)
+            logger.info(iter_summary)
 
-    output_data = {
-        "iteration": iteration,
-        "composite_score": round(score, 4),
-        "best_score": round(max(score, best_score), 4),
-        "comparison": comparison,
-        "kept": kept,
-        "strategy": strategy,
-        "results": case_details,
-    }
+            # If discarded, restore best
+            if not kept:
+                current_content, _ = _active_state.get_best()
+                all_output_lines.append("  → Restored previous best version")
 
-    # Build detailed output for the LLM (it needs to see errors to fix them)
-    output_lines = [
-        f"Iteration {iteration}: score={score:.4f} "
-        f"(best={max(score, best_score):.4f}, {comparison})",
-        "",
-    ]
-    for detail in case_details:
-        output_lines.append(f"Test case: {detail['test_case']}")
-        output_lines.append(f"  completed={detail['completed']}, "
-                           f"tool_calls={detail['tool_calls']}, "
-                           f"errors={detail['errors']}")
-        if detail.get("error_messages"):
-            for msg in detail["error_messages"][:10]:  # cap at 10
-                output_lines.append(f"  ERROR: {msg}")
-        if detail.get("run_scores"):
-            output_lines.append(f"  run_scores={detail['run_scores']}")
+            # 3. Ask LLM to modify (skip on last iteration)
+            if i < max_iterations - 1:
+                logger.info("Asking LLM for SKILL.md modifications...")
+                modified = _ask_llm_for_modification(
+                    current_content, iteration, score, details_text,
+                    strategy_instruction,
+                )
+                if modified and modified != current_content:
+                    current_content = modified
+                    all_output_lines.append("  → SKILL.md modified by LLM")
+                    logger.info("SKILL.md modified (%d chars)", len(modified))
+                else:
+                    all_output_lines.append("  → LLM returned no changes")
+                    logger.info("LLM returned no changes")
+
+    except Exception as e:
+        logger.error("Optimization loop error: %s", e, exc_info=True)
+        all_output_lines.append(f"\nOptimization stopped due to error: {e}")
+
+    # Write final best version to SKILL.md
+    _active_state.restore_best()
+    final_content, final_score = _active_state.get_best()
+
+    all_output_lines.append(f"\n=== Optimization complete ===")
+    all_output_lines.append(f"Final best score: {final_score:.4f}")
+    all_output_lines.append(f"Total iterations: {_iteration}")
+    all_output_lines.append(f"Best version saved to SKILL.md")
 
     return ToolResult(
         success=True,
-        output="\n".join(output_lines),
-        data=output_data,
+        output="\n".join(all_output_lines),
     )
 
 
@@ -263,8 +318,10 @@ def get_optimize_iteration_tool() -> ToolDefinition:
     return ToolDefinition(
         name="optimize_iteration",
         description=(
-            "Evaluate a SKILL.md by running the skill with test cases and "
-            "collecting metrics. Returns composite score and detailed results."
+            "Run the full skill optimization loop: evaluate the SKILL.md "
+            "against test cases, use the LLM to suggest improvements, "
+            "re-evaluate, and repeat for the configured number of iterations. "
+            "Returns a summary of all iterations with scores."
         ),
         parameters=[
             ToolParam(
@@ -276,13 +333,13 @@ def get_optimize_iteration_tool() -> ToolDefinition:
             ToolParam(
                 name="skill_content",
                 type="string",
-                description="Complete SKILL.md content to evaluate.",
+                description="Complete SKILL.md content to start optimizing.",
                 required=True,
             ),
             ToolParam(
                 name="test_cases",
                 type="array",
-                description="List of test case strings or JSON objects to run.",
+                description="List of test case strings to run.",
                 required=True,
                 items={"type": "string"},
             ),
@@ -297,47 +354,3 @@ def get_optimize_iteration_tool() -> ToolDefinition:
         handler=_handle_optimize_iteration,
         category="optimization",
     )
-
-
-# ── Internal eval tools (document management, not exposed to LLM) ─────
-
-def _handle_eval_create_doc(name: str) -> ToolResult:
-    """Create a fresh FreeCAD document for evaluation."""
-    import FreeCAD as App
-    doc = App.newDocument(name)
-    App.setActiveDocument(name)
-    return ToolResult(success=True, output=f"Created document: {doc.Name}")
-
-
-def _handle_eval_close_doc(name: str) -> ToolResult:
-    """Close an evaluation document."""
-    import FreeCAD as App
-    docs = App.listDocuments()
-    if name in [d.Name for d in docs.values()]:
-        App.closeDocument(name)
-        return ToolResult(success=True, output=f"Closed document: {name}")
-    return ToolResult(success=True, output=f"Document {name} not found (already closed)")
-
-
-def get_eval_tools() -> list[ToolDefinition]:
-    """Return internal tools for evaluation document management.
-
-    These are registered in the evaluator's registry but NOT exposed to the
-    LLM (they have no schema in the tools list sent to the LLM).
-    """
-    return [
-        ToolDefinition(
-            name="_eval_create_doc",
-            description="(internal) Create evaluation document",
-            parameters=[ToolParam("name", "string", "Document name")],
-            handler=_handle_eval_create_doc,
-            category="_internal",
-        ),
-        ToolDefinition(
-            name="_eval_close_doc",
-            description="(internal) Close evaluation document",
-            parameters=[ToolParam("name", "string", "Document name")],
-            handler=_handle_eval_close_doc,
-            category="_internal",
-        ),
-    ]

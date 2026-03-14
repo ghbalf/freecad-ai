@@ -13,7 +13,7 @@ class TestOptimizeIterationTool:
         assert len(tool.parameters) >= 3
 
     def test_prompt_templates_exist(self):
-        assert "SKILL.md" in OPTIMIZATION_PROMPT_TEMPLATE
+        assert "optimize_iteration" in OPTIMIZATION_PROMPT_TEMPLATE
         assert "conservative" in STRATEGY_INSTRUCTIONS
         assert "balanced" in STRATEGY_INSTRUCTIONS
         assert "aggressive" in STRATEGY_INSTRUCTIONS

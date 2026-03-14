@@ -90,24 +90,11 @@ def execute(args: str) -> dict:
         tc_lines.append(f"{i}. `{tc.get('args', '')}`")
     test_cases_formatted = "\n".join(tc_lines)
 
-    # Build test cases JSON for the tool call parameter
-    import json
-    test_cases_json = json.dumps([tc.get("args", "") for tc in config["test_cases"]])
-
     # Build inject prompt
     prompt = OPTIMIZATION_PROMPT_TEMPLATE.format(
         skill_name=skill_name,
-        current_skill_md=current_content,
         test_cases_formatted=test_cases_formatted,
-        test_cases_json=test_cases_json,
         iterations=config["iterations"],
-        runs_per_test=config["runs_per_test"],
-        strategy=config["strategy"],
-        enabled_metrics=", ".join(config["metrics"]),
-        budget=config["budget"],
-        strategy_instruction=STRATEGY_INSTRUCTIONS.get(
-            config["strategy"], STRATEGY_INSTRUCTIONS["balanced"]
-        ),
     )
 
     return {"inject_prompt": prompt}
