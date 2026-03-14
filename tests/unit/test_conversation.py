@@ -313,3 +313,31 @@ class TestPersistence:
         import freecad_ai.core.conversation as conv_mod
         monkeypatch.setattr(conv_mod, "CONVERSATIONS_DIR", "/nonexistent/path")
         assert Conversation.list_saved() == []
+
+
+class TestCompactionEnabled:
+    def test_compaction_enabled_default_true(self):
+        from freecad_ai.core.conversation import Conversation
+        conv = Conversation()
+        assert conv.compaction_enabled is True
+
+    def test_compaction_disabled_prevents_needs_compaction(self):
+        from freecad_ai.core.conversation import Conversation
+        conv = Conversation()
+        for i in range(20):
+            conv.add_user_message("x" * 5000)
+            conv.add_assistant_message("y" * 5000)
+        assert conv.needs_compaction() is True
+        conv.compaction_enabled = False
+        assert conv.needs_compaction() is False
+
+    def test_compaction_reenabled(self):
+        from freecad_ai.core.conversation import Conversation
+        conv = Conversation()
+        conv.compaction_enabled = False
+        for i in range(20):
+            conv.add_user_message("x" * 5000)
+            conv.add_assistant_message("y" * 5000)
+        assert conv.needs_compaction() is False
+        conv.compaction_enabled = True
+        assert conv.needs_compaction() is True

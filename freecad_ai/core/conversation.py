@@ -34,6 +34,7 @@ class Conversation:
             self.conversation_id = f"conv_{int(time.time() * 1000)}"
         if not self.created_at:
             self.created_at = time.time()
+        self.compaction_enabled = True
 
     def add_user_message(self, content: str, images: list[dict] | None = None):
         """Add a user message, optionally with image content blocks.
@@ -313,6 +314,8 @@ class Conversation:
 
     def needs_compaction(self, threshold_tokens: int = 20000) -> bool:
         """Check if conversation is long enough to benefit from compaction."""
+        if not self.compaction_enabled:
+            return False
         return self.estimated_tokens() > threshold_tokens and len(self.messages) > 6
 
     def compact(self, summary: str, keep_recent: int = 4):
