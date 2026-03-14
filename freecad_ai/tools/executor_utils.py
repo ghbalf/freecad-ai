@@ -12,7 +12,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 try:
-    from ..ui.compat import QtCore, Signal
+    from ..ui.compat import QtCore
+    Signal = QtCore.Signal
     QObject = QtCore.QObject
     QMutex = QtCore.QMutex
     QWaitCondition = QtCore.QWaitCondition
