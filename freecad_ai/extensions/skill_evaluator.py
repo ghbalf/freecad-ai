@@ -216,6 +216,7 @@ class SkillEvaluator:
         registry = create_default_registry(
             include_mcp=False, extra_tools=get_eval_tools())
         if self._tool_executor:
+            logger.info("Tool executor type: %s", type(self._tool_executor).__name__)
             self._tool_executor.set_registry(registry)
         # Build schema excluding internal eval tools (not for the LLM)
         all_schema = registry.to_openai_schema() if api_style != "anthropic" \

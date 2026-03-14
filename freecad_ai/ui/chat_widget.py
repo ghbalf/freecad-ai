@@ -1014,6 +1014,9 @@ class ChatDockWidget(QDockWidget):
                         from ..tools.executor_utils import (
                             MainThreadToolExecutor, _HAS_QT,
                         )
+                        import logging as _log
+                        _log.getLogger(__name__).info(
+                            "Creating tool executor: _HAS_QT=%s", _HAS_QT)
                         if _HAS_QT:
                             from ..tools.executor_utils import QtMainThreadToolExecutor
                             executor = QtMainThreadToolExecutor()

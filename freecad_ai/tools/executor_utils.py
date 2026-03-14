@@ -75,18 +75,27 @@ if _HAS_QT:
             """Call from any thread. Blocks until main thread completes."""
             import json
             app = QtCore.QCoreApplication.instance()
-            if app and QtCore.QThread.currentThread() == app.thread():
+            current = QtCore.QThread.currentThread()
+            main = app.thread() if app else None
+            is_main = app and current == main
+            logger.info(
+                "QtExecutor.execute(%s): app=%s, current=%s, main=%s, is_main=%s",
+                tool_name, app is not None, current, main, is_main,
+            )
+            if is_main:
                 # Already on main thread -- execute directly (avoids deadlock)
                 holder = {"result": None}
                 self._do_execute_sync(tool_name, args, holder)
                 return holder["result"]
             # Cross-thread dispatch via signal
+            logger.info("QtExecutor: dispatching %s to main thread via signal", tool_name)
             holder = {"result": None}
             args_json = json.dumps(args)
             self._mutex.lock()
             self._execute_signal.emit(tool_name, args_json, holder)
             self._condition.wait(self._mutex)
             self._mutex.unlock()
+            logger.info("QtExecutor: %s completed on main thread", tool_name)
             return holder["result"]
 
         def _on_execute(self, tool_name, args_json, holder):
