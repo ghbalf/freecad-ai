@@ -192,9 +192,16 @@ class _LLMWorker(QThread):
                 })
 
             # Execute each tool call on the main thread
+            # Exception: optimize_iteration runs on worker thread (long-running
+            # LLM calls would freeze the UI if dispatched to main thread).
+            # Its inner tool calls dispatch to main thread via QtMainThreadToolExecutor.
             tool_result_messages = []
             for tc in tool_calls:
-                result = self._execute_tool_on_main_thread(tc.name, tc.arguments)
+                if tc.name == "optimize_iteration" and self.registry:
+                    tr = self.registry.execute(tc.name, tc.arguments)
+                    result = {"success": tr.success, "output": tr.output, "error": tr.error}
+                else:
+                    result = self._execute_tool_on_main_thread(tc.name, tc.arguments)
                 success = result.get("success", False)
                 output = result.get("output", "")
                 error = result.get("error", "")
@@ -1004,8 +1011,14 @@ class ChatDockWidget(QDockWidget):
                     extra_tools = [get_optimize_iteration_tool()]
                     # Pass the tool executor to the active config so evaluator can dispatch
                     if _active_config is not None:
-                        from ..tools.executor_utils import MainThreadToolExecutor
-                        executor = MainThreadToolExecutor()
+                        from ..tools.executor_utils import (
+                            MainThreadToolExecutor, _HAS_QT,
+                        )
+                        if _HAS_QT:
+                            from ..tools.executor_utils import QtMainThreadToolExecutor
+                            executor = QtMainThreadToolExecutor()
+                        else:
+                            executor = MainThreadToolExecutor()
                         executor.set_registry(None)  # will be set after registry creation
                         _active_config["_tool_executor"] = executor
                 except ImportError:
