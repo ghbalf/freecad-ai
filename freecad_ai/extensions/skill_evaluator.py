@@ -227,20 +227,54 @@ class SkillEvaluator:
                 if self._cancelled:
                     break
                 logger.info("  Run %d/%d", run + 1, runs_per_test)
-                result = self._run_skill_headless(
-                    skill_content=skill_content,
-                    test_args=args,
-                    client=client,
-                    tools_schema=tools_schema,
-                    system_prompt=system,
-                    api_style=api_style,
-                )
-                result.test_case = args
-                run_results.append(result)
+                doc_name = f"OptEval_{tc_idx}_{run}"
+                self._create_document(doc_name)
+                try:
+                    result = self._run_skill_headless(
+                        skill_content=skill_content,
+                        test_args=args,
+                        client=client,
+                        tools_schema=tools_schema,
+                        system_prompt=system,
+                        api_style=api_style,
+                    )
+                    result.test_case = args
+                    run_results.append(result)
+                finally:
+                    self._close_document(doc_name)
             if run_results:
                 avg = self._average_results(run_results, args)
                 results.append(avg)
         return results
+
+    def _create_document(self, name: str):
+        """Create a fresh FreeCAD document on the main thread."""
+        if not self._tool_executor:
+            return
+        try:
+            def _create():
+                import FreeCAD as App
+                doc = App.newDocument(name)
+                App.setActiveDocument(name)
+                logger.info("Created eval document: %s", name)
+                return doc.Name
+            self._tool_executor.run_callable(_create)
+        except Exception as e:
+            logger.error("Failed to create document '%s': %s", name, e)
+
+    def _close_document(self, name: str):
+        """Close a FreeCAD document on the main thread."""
+        if not self._tool_executor:
+            return
+        try:
+            def _close():
+                import FreeCAD as App
+                if name in [d.Name for d in App.listDocuments().values()]:
+                    App.closeDocument(name)
+                    logger.info("Closed eval document: %s", name)
+            self._tool_executor.run_callable(_close)
+        except Exception as e:
+            logger.error("Failed to close document '%s': %s", name, e)
 
     def _run_skill_headless(self, skill_content: str, test_args: str,
                             client, tools_schema, system_prompt: str,
