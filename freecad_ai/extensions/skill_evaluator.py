@@ -23,6 +23,7 @@ class EvalResult:
     visual_score: Optional[float] = None
     visual_assessment: str = ""
     run_scores: list[float] = field(default_factory=list)
+    llm_error: bool = False  # True if run failed due to network/timeout (not skill quality)
 
 
 class OptimizationState:
@@ -226,16 +227,25 @@ class SkillEvaluator:
             if not t.get("function", {}).get("name", "").startswith("_eval_")
         ]
 
+        max_retries = self._config.get("max_retries", 2)
+
         results = []
         for tc_idx, tc in enumerate(test_cases):
             args = tc.get("args", "")
             logger.info("Test case %d/%d: %s", tc_idx + 1, len(test_cases), args)
-            run_results = []
-            for run in range(runs_per_test):
+            valid_results = []
+            attempt = 0
+            while len(valid_results) < runs_per_test and attempt < runs_per_test + max_retries:
                 if self._cancelled:
                     break
-                logger.info("  Run %d/%d", run + 1, runs_per_test)
-                doc_name = f"OptEval_{tc_idx}_{run}"
+                attempt += 1
+                is_retry = attempt > runs_per_test
+                if is_retry:
+                    logger.info("  Retry %d (network/timeout error on previous run)",
+                                attempt - runs_per_test)
+                else:
+                    logger.info("  Run %d/%d", attempt, runs_per_test)
+                doc_name = f"OptEval_{tc_idx}_{attempt}"
                 self._create_document(doc_name)
                 try:
                     result = self._run_skill_headless(
@@ -247,12 +257,26 @@ class SkillEvaluator:
                         api_style=api_style,
                     )
                     result.test_case = args
-                    run_results.append(result)
+                    if result.llm_error:
+                        logger.warning("  Run failed due to LLM/network error, "
+                                       "will retry (%d retries left)",
+                                       runs_per_test + max_retries - attempt)
+                    else:
+                        valid_results.append(result)
                 finally:
                     self._close_document(doc_name)
-            if run_results:
-                avg = self._average_results(run_results, args)
+            if valid_results:
+                avg = self._average_results(valid_results, args)
                 results.append(avg)
+            else:
+                # All runs failed with LLM errors — report it
+                logger.error("  All runs failed for test case '%s'", args)
+                results.append(EvalResult(
+                    test_case=args,
+                    completed=False,
+                    llm_error=True,
+                    error_messages=["All runs failed due to network/timeout errors"],
+                ))
         return results
 
     def _create_document(self, name: str):
@@ -314,7 +338,14 @@ class SkillEvaluator:
             except Exception as e:
                 logger.error("LLM call failed in eval: %s", e)
                 error_messages.append(f"LLM error: {e}")
-                break
+                return EvalResult(
+                    test_case=test_args,
+                    tool_calls=tool_calls,
+                    errors=errors,
+                    error_messages=error_messages,
+                    completed=False,
+                    llm_error=True,
+                )
 
             if not response.tool_calls:
                 conv.add_assistant_message(response.text)
