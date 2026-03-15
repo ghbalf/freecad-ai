@@ -289,6 +289,37 @@ class SettingsDialog(QDialog):
         user_tools_group.setLayout(user_tools_layout)
         layout.addWidget(user_tools_group)
 
+        # Hooks group
+        hooks_group = QGroupBox(translate("SettingsDialog", "Hooks"))
+        hooks_layout = QVBoxLayout()
+
+        self.hooks_list = QListWidget()
+        self.hooks_list.setMaximumHeight(100)
+        hooks_layout.addWidget(self.hooks_list)
+
+        hooks_btn_layout = QHBoxLayout()
+        hooks_add_btn = QPushButton(translate("SettingsDialog", "Add..."))
+        hooks_add_btn.clicked.connect(self._add_hook)
+        hooks_btn_layout.addWidget(hooks_add_btn)
+
+        hooks_edit_btn = QPushButton(translate("SettingsDialog", "Edit..."))
+        hooks_edit_btn.clicked.connect(self._edit_hook)
+        hooks_btn_layout.addWidget(hooks_edit_btn)
+
+        hooks_remove_btn = QPushButton(translate("SettingsDialog", "Remove"))
+        hooks_remove_btn.clicked.connect(self._remove_hook)
+        hooks_btn_layout.addWidget(hooks_remove_btn)
+
+        hooks_reload_btn = QPushButton(translate("SettingsDialog", "Reload"))
+        hooks_reload_btn.clicked.connect(self._reload_hooks)
+        hooks_btn_layout.addWidget(hooks_reload_btn)
+
+        hooks_btn_layout.addStretch()
+        hooks_layout.addLayout(hooks_btn_layout)
+
+        hooks_group.setLayout(hooks_layout)
+        layout.addWidget(hooks_group)
+
         # Test connection
         test_layout = QHBoxLayout()
         self.test_btn = QPushButton(translate("SettingsDialog", "Test Connection"))
@@ -361,6 +392,9 @@ class SettingsDialog(QDialog):
         self.scan_macros_cb.setChecked(cfg.scan_freecad_macros)
         self._cfg = cfg
         self._load_user_tools_list()
+
+        # Hooks
+        self._refresh_hooks_list()
 
     def _on_provider_changed(self, index):
         """Update base URL and model when provider selection changes."""
@@ -657,6 +691,96 @@ class SettingsDialog(QDialog):
         cfg = get_config()
         self._vision_override_value = None
         self._update_vision_ui(cfg)
+
+    # --- Hooks methods ---
+
+    def _refresh_hooks_list(self):
+        """Refresh the hooks list from the registry."""
+        self.hooks_list.clear()
+        try:
+            from ..hooks import get_hook_registry
+            for hook in get_hook_registry().discovered_hooks:
+                if hook["has_error"]:
+                    label = f"\u2717 {hook['name']} ({hook['error_message'][:50]})"
+                else:
+                    events = ", ".join(hook["events"])
+                    label = f"\u2713 {hook['name']} ({events})"
+                self.hooks_list.addItem(label)
+        except Exception:
+            pass
+
+    def _add_hook(self):
+        """Add a hook by copying a hook.py file into a new directory."""
+        from ..config import HOOKS_DIR
+        path, _ = QFileDialog.getOpenFileName(
+            self, translate("SettingsDialog", "Select hook.py file"), "",
+            translate("SettingsDialog", "Python files (*.py)"))
+        if not path:
+            return
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, translate("SettingsDialog", "Hook Name"),
+            translate("SettingsDialog", "Enter a name for this hook:"))
+        if not ok or not name.strip():
+            return
+        name = name.strip().lower().replace(" ", "-")
+        hook_dir = os.path.join(HOOKS_DIR, name)
+        os.makedirs(hook_dir, exist_ok=True)
+        import shutil
+        shutil.copy2(path, os.path.join(hook_dir, "hook.py"))
+        self._reload_hooks()
+
+    def _edit_hook(self):
+        """Open the selected hook's hook.py in the default editor."""
+        row = self.hooks_list.currentRow()
+        if row < 0:
+            return
+        try:
+            from ..hooks import get_hook_registry
+            hooks = get_hook_registry().discovered_hooks
+            if row >= len(hooks):
+                return
+            hook_path = os.path.join(hooks[row]["path"], "hook.py")
+            url = QtCore.QUrl.fromLocalFile(hook_path)
+            QtGui.QDesktopServices.openUrl(url)
+        except Exception:
+            pass
+
+    def _remove_hook(self):
+        """Remove the selected hook directory."""
+        row = self.hooks_list.currentRow()
+        if row < 0:
+            return
+        try:
+            from ..hooks import get_hook_registry
+            hooks = get_hook_registry().discovered_hooks
+            if row >= len(hooks):
+                return
+            hook = hooks[row]
+            if hook.get("builtin"):
+                QMessageBox.information(
+                    self, translate("SettingsDialog", "Cannot Remove"),
+                    translate("SettingsDialog",
+                              "Built-in hooks cannot be removed. You can disable them instead."))
+                return
+            reply = QMessageBox.question(
+                self, translate("SettingsDialog", "Remove Hook"),
+                translate("SettingsDialog", "Remove hook '") + hook["name"] + "'?")
+            if reply != QMessageBox.Yes:
+                return
+            import shutil
+            shutil.rmtree(hook["path"], ignore_errors=True)
+            self._reload_hooks()
+        except Exception:
+            pass
+
+    def _reload_hooks(self):
+        """Reload all hooks and refresh the list."""
+        try:
+            from ..hooks import get_hook_registry
+            get_hook_registry().reload()
+        except Exception:
+            pass
+        self._refresh_hooks_list()
 
 
 class _AddMCPServerDialog(QDialog):
