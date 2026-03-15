@@ -67,12 +67,24 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(translate("SettingsDialog", "FreeCAD AI Settings"))
         self.setMinimumWidth(500)
+        self.setMinimumHeight(400)
+        self.resize(540, 700)
         self._test_thread = None
         self._build_ui()
         self._load_from_config()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+
+        # Scrollable content area
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll_widget = QtWidgets.QWidget()
+        layout = QVBoxLayout(scroll_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        scroll.setWidget(scroll_widget)
+        outer_layout.addWidget(scroll, 1)  # stretch factor 1 — takes available space
 
         # Provider group
         provider_group = QGroupBox(translate("SettingsDialog", "LLM Provider"))
@@ -320,7 +332,7 @@ class SettingsDialog(QDialog):
         hooks_group.setLayout(hooks_layout)
         layout.addWidget(hooks_group)
 
-        # Test connection
+        # Test connection (outside scroll area)
         test_layout = QHBoxLayout()
         self.test_btn = QPushButton(translate("SettingsDialog", "Test Connection"))
         self.test_btn.clicked.connect(self._test_connection)
@@ -330,9 +342,9 @@ class SettingsDialog(QDialog):
         self.test_status.setWordWrap(True)
         test_layout.addWidget(self.test_status, 1)
 
-        layout.addLayout(test_layout)
+        outer_layout.addLayout(test_layout)
 
-        # Dialog buttons
+        # Dialog buttons (outside scroll area)
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
@@ -347,7 +359,7 @@ class SettingsDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
 
-        layout.addLayout(btn_layout)
+        outer_layout.addLayout(btn_layout)
 
     def _load_from_config(self):
         """Populate fields from the current config."""
