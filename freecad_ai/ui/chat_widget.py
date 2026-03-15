@@ -197,7 +197,17 @@ class _LLMWorker(QThread):
             # Its inner tool calls dispatch to main thread via QtMainThreadToolExecutor.
             tool_result_messages = []
             for tc in tool_calls:
-                if tc.name == "optimize_iteration" and self.registry:
+                # Pre-tool-use hook
+                from ..hooks import fire_hook as _fire_hook
+                hook_result = _fire_hook("pre_tool_use", {
+                    "tool_name": tc.name,
+                    "arguments": tc.arguments,
+                    "turn": turn,
+                })
+                if hook_result.get("block"):
+                    result = {"success": False, "output": "",
+                              "error": f"Blocked by hook: {hook_result.get('reason', '')}"}
+                elif tc.name == "optimize_iteration" and self.registry:
                     tr = self.registry.execute(tc.name, tc.arguments)
                     result = {"success": tr.success, "output": tr.output, "error": tr.error}
                 else:
@@ -208,6 +218,16 @@ class _LLMWorker(QThread):
                 result_text = output if success else f"Error: {error}"
 
                 self.tool_call_finished.emit(tc.name, tc.id, success, result_text)
+
+                # Post-tool-use hook
+                _fire_hook("post_tool_use", {
+                    "tool_name": tc.name,
+                    "arguments": tc.arguments,
+                    "success": success,
+                    "output": output,
+                    "error": error,
+                    "turn": turn,
+                })
 
                 if self.api_style == "anthropic":
                     tool_result_messages.append({
@@ -504,6 +524,10 @@ class ChatDockWidget(QDockWidget):
         self._vision_hint_shown = False      # one-time hint for untested state
         self._optimization_active = False
 
+        # Initialize hook registry on main thread (before any worker threads)
+        from ..hooks import get_hook_registry
+        get_hook_registry()
+
         self._build_ui()
         self._ensure_vision_fallback()
         self._refresh_image_controls()
@@ -657,6 +681,20 @@ class ChatDockWidget(QDockWidget):
             handled = self._handle_skill_command(text)
             if handled:
                 return
+
+        # Fire user_prompt_submit hook
+        from ..hooks import fire_hook
+        mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
+        hook_result = fire_hook("user_prompt_submit", {
+            "text": text, "images": [], "mode": mode,
+        })
+        if hook_result.get("block"):
+            from .message_view import render_message
+            self._append_html(render_message("system",
+                f"Blocked by hook: {hook_result.get('reason', 'no reason given')}"))
+            return
+        if hook_result.get("modify"):
+            text = hook_result["modify"]
 
         # Show one-time hint if vision not tested and user is sending images
         pending_images = self._attachment_strip.get_images()
@@ -1289,6 +1327,14 @@ class ChatDockWidget(QDockWidget):
 
         # Auto-save conversation for resume capability
         self.conversation.save()
+
+        # Post-response hook
+        from ..hooks import fire_hook
+        fire_hook("post_response", {
+            "response_text": full_response,
+            "tool_calls_count": len(self._worker._tool_results) if self._worker and self._worker._tool_results else 0,
+            "mode": "plan" if self.mode_combo.currentIndex() == 0 else "act",
+        })
 
         # Auto-save session log when tool calls were used
         if self._worker and self._worker._tool_results:
