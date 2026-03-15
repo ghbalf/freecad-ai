@@ -241,9 +241,10 @@ class SkillEvaluator:
                 attempt += 1
                 is_retry = attempt > runs_per_test
                 if is_retry:
-                    retry_delay = 5 * (attempt - runs_per_test)  # 5s, 10s
-                    logger.info("  Retry %d (waiting %ds before retry)",
-                                attempt - runs_per_test, retry_delay)
+                    retry_num = attempt - runs_per_test
+                    retry_delay = 5 * (2 ** (retry_num - 1))  # 5s, 10s, 20s, 40s...
+                    logger.info("  Retry %d/%d (waiting %ds before retry)",
+                                retry_num, max_retries, retry_delay)
                     time.sleep(retry_delay)
                 else:
                     logger.info("  Run %d/%d", attempt, runs_per_test)

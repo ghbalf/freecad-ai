@@ -169,6 +169,13 @@ class OptimizeSkillDialog(QDialog):
         self._tolerance_spin.setDecimals(2)
         advanced_layout.addRow(_tr("Keep tolerance:"), self._tolerance_spin)
 
+        self._retries_spin = QSpinBox()
+        self._retries_spin.setRange(0, 5)
+        self._retries_spin.setValue(2)
+        self._retries_spin.setToolTip(
+            _tr("Extra retry attempts per test case on network/timeout errors"))
+        advanced_layout.addRow(_tr("Network retries:"), self._retries_spin)
+
         self._advanced_group.setLayout(advanced_layout)
         self._advanced_group.setVisible(False)
         layout.addWidget(self._advanced_group)
@@ -282,6 +289,7 @@ class OptimizeSkillDialog(QDialog):
             "budget": self._budget_spin.value(),
             "timeout": self._timeout_spin.value(),
             "tolerance": self._tolerance_spin.value(),
+            "max_retries": self._retries_spin.value(),
             "reference_image": self._ref_image_edit.text(),
             "weights": {},
         }
