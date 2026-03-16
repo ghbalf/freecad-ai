@@ -303,6 +303,13 @@ def _handle_create_sketch(
         geo_count = 0
         if geometries:
             for geo in geometries:
+                # Some LLMs pass geometry items as JSON strings instead of dicts
+                if isinstance(geo, str):
+                    try:
+                        import json as _json
+                        geo = _json.loads(geo)
+                    except (ValueError, TypeError):
+                        continue
                 geo_type = geo.get("type", "")
                 if geo_type == "line":
                     p1 = App.Vector(geo.get("x1", 0), geo.get("y1", 0), 0)
@@ -357,6 +364,12 @@ def _handle_create_sketch(
 
         if constraints:
             for con in constraints:
+                if isinstance(con, str):
+                    try:
+                        import json as _json
+                        con = _json.loads(con)
+                    except (ValueError, TypeError):
+                        continue
                 con_type = con.get("type", "")
                 if not con_type:
                     continue
