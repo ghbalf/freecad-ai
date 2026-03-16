@@ -373,6 +373,22 @@ def build_system_prompt(mode: str = "plan", agents_md: str = "",
         sections.append(doc_ctx)
         sections.append("")
 
+    # Available skills
+    try:
+        from ..extensions.skills import SkillsRegistry
+        skill_descriptions = SkillsRegistry().get_descriptions()
+        if skill_descriptions:
+            sections.append("## Available Skills")
+            sections.append(
+                "The user can invoke these skills by typing the command in the chat. "
+                "If the user's request matches a skill (e.g., asking to create an "
+                "enclosure), suggest using the corresponding /command for best results."
+            )
+            sections.append(skill_descriptions)
+            sections.append("")
+    except Exception:
+        pass
+
     # AGENTS.md
     if not agents_md:
         agents_md = load_agents_md()
