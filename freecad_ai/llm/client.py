@@ -769,8 +769,9 @@ class LLMClient:
         if url.startswith("https") and not _HAS_SSL:
             raise LLMError(
                 "HTTPS is not available (Python _ssl module missing). "
-                "This can happen with snap-packaged FreeCAD. "
-                "Use Ollama (http://localhost:11434) or fix the snap's Python SSL support."
+                "This can happen when the host application ships a Python built "
+                "without SSL support (e.g. snap packages). "
+                "Use Ollama (http://localhost:11434) or fix that Python's SSL support."
             )
 
     def _get_retry_delay(self, error: urllib.error.HTTPError, attempt: int) -> float:

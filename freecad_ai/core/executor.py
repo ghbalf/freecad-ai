@@ -23,6 +23,8 @@ import tempfile
 import traceback
 from dataclasses import dataclass
 
+from ..branding import APP_NAME
+
 
 @dataclass
 class ExecutionResult:
@@ -279,7 +281,7 @@ try:
         for _e in _err_obs.errors:
             if _e and _e not in _seen:
                 _seen.add(_e)
-                _issues.append("FreeCAD error: " + _e)
+                _issues.append("{app_name} error: " + _e)
     _objects_state = [_snap(_obj) for _obj in doc.Objects]
     _issues.extend(_collect_object_issues(_objects_state, _baseline_bad))
 
@@ -311,6 +313,7 @@ finally:
         open_block=open_block,
         indented_code="\n".join("    " + line for line in code.splitlines()),
         result_path=result_file,
+        app_name=APP_NAME,
     )
 
     try:
@@ -334,8 +337,8 @@ finally:
             sig = -proc.returncode
             sig_name = signal.Signals(sig).name if sig in signal.Signals._value2member_map_ else str(sig)
             return False, (
-                "Sandbox: code CRASHED FreeCAD (signal {}). "
-                "This code is not safe to execute.".format(sig_name)
+                "Sandbox: code CRASHED {} (signal {}). "
+                "This code is not safe to execute.".format(APP_NAME, sig_name)
             )
 
         # Read result
@@ -500,8 +503,8 @@ def execute_code(code: str, timeout: int | None = None, sandbox: bool = True,
             success=False,
             stdout="",
             stderr=(
-                "No active document — open a document in FreeCAD or click "
-                "its tab so it is the focused window."
+                "No active document — open a document in {} or click "
+                "its tab so it is the focused window.".format(APP_NAME)
             ),
             code=code,
         )
@@ -662,9 +665,9 @@ def _validate_code(code: str) -> list[str]:
         has_arc = bool(re.search(r"ArcOfCircle|Arc\s*\(", code))
         if has_full_circle and not has_arc:
             warnings.append(
-                "Revolution with a full Part.Circle profile will crash FreeCAD. "
+                "Revolution with a full Part.Circle profile will crash {}. "
                 "Use Part.ArcOfCircle (semicircle) + a closing line instead, "
-                "or use Part.makeSphere() for spheres."
+                "or use Part.makeSphere() for spheres.".format(APP_NAME)
             )
         # Check for 360 degree revolution — always risky with sketch profiles
         if re.search(r"\.Angle\s*=\s*360", code):

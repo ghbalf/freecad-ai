@@ -14,7 +14,8 @@ Provides a GUI for configuring:
 import os
 
 from .compat import QtWidgets, QtCore, QtGui
-from ..i18n import translate
+from ..i18n import translate, translate_branded
+from ..branding import PRODUCT_NAME
 
 QDialog = QtWidgets.QDialog
 QWidget = QtWidgets.QWidget
@@ -174,7 +175,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(translate("SettingsDialog", "FreeCAD AI Settings"))
+        self.setWindowTitle(translate_branded("SettingsDialog", "%2 Settings"))
         self.setMinimumWidth(500)
         self.setMinimumHeight(400)
         self.resize(650, 700)
@@ -359,11 +360,11 @@ class SettingsDialog(QDialog):
         self.keep_dock_check = QCheckBox(
             translate("SettingsDialog", "Keep chat panel open when switching workbenches")
         )
-        self.keep_dock_check.setToolTip(translate(
+        self.keep_dock_check.setToolTip(translate_branded(
             "SettingsDialog",
-            "When enabled, the FreeCAD AI chat panel stays docked and usable "
+            "When enabled, the %2 chat panel stays docked and usable "
             "in other workbenches instead of hiding when you leave the "
-            "FreeCAD AI workbench."))
+            "%2 workbench."))
         behavior_layout.addWidget(self.keep_dock_check)
 
         # Thinking mode
@@ -677,15 +678,15 @@ class SettingsDialog(QDialog):
         # Editor group — affects Edit/New buttons in User Tools and Hooks below.
         editor_group = QGroupBox(translate("SettingsDialog", "Editor"))
         editor_layout = QVBoxLayout()
-        self.use_external_editor_cb = QCheckBox(translate(
+        self.use_external_editor_cb = QCheckBox(translate_branded(
             "SettingsDialog",
             "Open hooks and user tools in the OS-default editor "
-            "(instead of FreeCAD's docked script editor)"))
-        self.use_external_editor_cb.setToolTip(translate(
+            "(instead of %1's docked script editor)"))
+        self.use_external_editor_cb.setToolTip(translate_branded(
             "SettingsDialog",
             "When enabled, files open via the OS file association "
             "(xdg-open / Launch Services) so the Settings dialog can stay open. "
-            "When disabled, files open in FreeCAD's docked Gui::PythonEditor — "
+            "When disabled, files open in %1's docked Gui::PythonEditor — "
             "which requires closing this dialog first."))
         editor_layout.addWidget(self.use_external_editor_cb)
         editor_group.setLayout(editor_layout)
@@ -724,7 +725,7 @@ class SettingsDialog(QDialog):
         user_tools_layout.addLayout(ut_btn_layout)
 
         self.scan_macros_cb = QCheckBox(
-            translate("SettingsDialog", "Also scan FreeCAD macro directory")
+            translate_branded("SettingsDialog", "Also scan %1 macro directory")
         )
         user_tools_layout.addWidget(self.scan_macros_cb)
 
@@ -1417,7 +1418,7 @@ class SettingsDialog(QDialog):
         # Log to FreeCAD console
         try:
             import FreeCAD
-            FreeCAD.Console.PrintMessage(f"FreeCAD AI: {vision_msg}\n")
+            FreeCAD.Console.PrintMessage(f"{PRODUCT_NAME}: {vision_msg}\n")
         except ImportError:
             pass
 
@@ -1447,7 +1448,7 @@ class SettingsDialog(QDialog):
             self.test_status.setText(self.test_status.text() + "\n" + line)
             try:
                 import FreeCAD
-                FreeCAD.Console.PrintMessage(f"FreeCAD AI: {line}\n")
+                FreeCAD.Console.PrintMessage(f"{PRODUCT_NAME}: {line}\n")
             except ImportError:
                 pass
 
@@ -1841,9 +1842,9 @@ class SettingsDialog(QDialog):
         choice = QMessageBox.question(
             self,
             translate("SettingsDialog", "Open Script Editor"),
-            translate(
+            translate_branded(
                 "SettingsDialog",
-                "FreeCAD's script editor is docked behind this dialog. "
+                "%1's script editor is docked behind this dialog. "
                 "The dialog must close so you can reach it.\n\n"
                 "Save your pending settings changes first?"),
             QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,

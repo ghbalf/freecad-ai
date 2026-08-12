@@ -9,7 +9,7 @@ LLM for self-correction.
 
 from .compat import QtWidgets, QtCore, QtGui
 from .message_view import _get_theme_colors, refresh_theme_cache
-from ..i18n import translate
+from ..i18n import translate, translate_branded
 
 QDialog = QtWidgets.QDialog
 QVBoxLayout = QtWidgets.QVBoxLayout
@@ -177,9 +177,9 @@ class CodeReviewDialog(QDialog):
         btn_layout.addWidget(self.edit_btn)
 
         self.check_btn = QPushButton(translate("CodeReviewDialog", "Check"))
-        self.check_btn.setToolTip(translate(
+        self.check_btn.setToolTip(translate_branded(
             "CodeReviewDialog",
-            "Validate the code in a headless FreeCAD sandbox against a copy "
+            "Validate the code in a headless %1 sandbox against a copy "
             "of the current document without modifying anything."))
         self.check_btn.clicked.connect(self._check)
         btn_layout.addWidget(self.check_btn)

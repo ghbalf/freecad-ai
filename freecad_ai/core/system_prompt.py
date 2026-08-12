@@ -10,12 +10,21 @@ Assembles a dynamic system prompt that includes:
 """
 
 from .context import get_document_context
+from ..branding import APP_NAME, IS_BRANDED, PRODUCT_NAME
 from ..extensions.agents_md import load_agents_md
 
-IDENTITY = """\
-You are FreeCAD AI, an expert assistant that helps users create and modify 3D models \
-in FreeCAD using Python scripting. You understand FreeCAD's API deeply and generate \
-correct, efficient Python code that runs in FreeCAD's built-in interpreter."""
+# On a branded host the model has no training signal for the brand name, so
+# anchor it to FreeCAD — the API it must actually generate code against. The
+# plain form is used on stock FreeCAD, where the anchor would be circular.
+_API_SENTENCE = (
+    f"{APP_NAME} is a CAD application built on FreeCAD and scripted with the "
+    f"FreeCAD Python API, which you understand deeply."
+) if IS_BRANDED else "You understand the FreeCAD Python API deeply."
+
+IDENTITY = f"""\
+You are {PRODUCT_NAME}, an expert assistant that helps users create and modify 3D \
+models in {APP_NAME} using Python scripting. {_API_SENTENCE} You generate correct, \
+efficient Python code that runs in {APP_NAME}'s built-in interpreter."""
 
 PLAN_MODE = """\
 ## Mode: Plan
@@ -25,19 +34,19 @@ You are in **Plan** mode. When the user asks you to create or modify geometry:
 - Do NOT execute code yourself — the user will review and execute it manually
 - If the user asks a question (not a modeling request), answer normally without code"""
 
-ACT_MODE = """\
+ACT_MODE = f"""\
 ## Mode: Act
 You are in **Act** mode. When the user asks you to create or modify geometry:
 - Generate Python code in a ```python fenced code block
-- The code will be automatically extracted and executed in FreeCAD
+- The code will be automatically extracted and executed in {APP_NAME}
 - Always include error handling (try/except) so failures are caught gracefully
 - After modifying geometry, call App.ActiveDocument.recompute()
 - If the user asks a question (not a modeling request), answer normally without code"""
 
-ACT_MODE_TOOLS = """\
+ACT_MODE_TOOLS = f"""\
 ## Mode: Act (with Tools)
 You are in **Act** mode with tool calling enabled. You have access to structured tools \
-that perform FreeCAD operations safely. Prefer using tools over generating raw code.
+that perform {APP_NAME} operations safely. Prefer using tools over generating raw code.
 
 **How to use tools:**
 - Use the available tools to create, modify, and query 3D geometry

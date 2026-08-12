@@ -538,10 +538,12 @@ def _run_single_check(
                 import FreeCAD
                 import Part
             except ImportError:
+                from ..branding import APP_NAME
                 return CheckResult(
                     target=target, check=check, passed=False,
-                    expected=str(expected_area), actual="FreeCAD not available",
-                    message="section_area: FreeCAD not available",
+                    expected=str(expected_area),
+                    actual="{} not available".format(APP_NAME),
+                    message="section_area: {} not available".format(APP_NAME),
                 )
             direction = FreeCAD.Vector(*axis_map[axis_name])
             wires = obj.Shape.slice(direction, offset)

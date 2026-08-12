@@ -13,7 +13,8 @@ import json
 import time
 
 from .compat import QtWidgets, QtCore, QtGui
-from ..i18n import translate
+from ..i18n import translate, translate_branded
+from ..branding import APP_NAME, PRODUCT_NAME
 
 QDockWidget = QtWidgets.QDockWidget
 QWidget = QtWidgets.QWidget
@@ -139,7 +140,7 @@ def _freecad_log(msg: str):
     """Print a line to FreeCAD's Report View, if FreeCAD is available."""
     try:
         import FreeCAD as _App
-        _App.Console.PrintMessage("[FreeCAD AI] {}\n".format(msg))
+        _App.Console.PrintMessage("[{}] {}\n".format(PRODUCT_NAME, msg))
     except Exception:
         pass
 
@@ -811,7 +812,7 @@ class ChatDockWidget(QDockWidget):
     """Main chat dock widget for FreeCAD AI."""
 
     def __init__(self, parent=None):
-        super().__init__(translate("ChatDockWidget", "FreeCAD AI"), parent)
+        super().__init__(PRODUCT_NAME, parent)
         self.setObjectName("FreeCADAIChatDock")
         self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
 
@@ -1006,7 +1007,7 @@ class ChatDockWidget(QDockWidget):
         # ── Header bar ──
         header = QHBoxLayout()
 
-        title = QLabel("<b>{}</b>".format(translate("ChatDockWidget", "FreeCAD AI")))
+        title = QLabel("<b>{}</b>".format(PRODUCT_NAME))
         header.addWidget(title)
         header.addStretch()
 
@@ -1034,9 +1035,9 @@ class ChatDockWidget(QDockWidget):
         self.danger_toggle = QtWidgets.QCheckBox(
             translate("ChatDockWidget", "⚠ Dangerous mode"))
         self.danger_toggle.setToolTip(
-            translate("ChatDockWidget",
-                      "Disable code safety checks and allow running macros from any path. "
-                      "Session-only — resets when FreeCAD restarts."))
+            translate_branded("ChatDockWidget",
+                              "Disable code safety checks and allow running macros from any path. "
+                              "Session-only — resets when %1 restarts."))
         self.danger_toggle.toggled.connect(self._on_danger_toggled)
         header.addWidget(self.danger_toggle)
 
@@ -1165,15 +1166,15 @@ class ChatDockWidget(QDockWidget):
             box = QtWidgets.QMessageBox(self)
             box.setIcon(QtWidgets.QMessageBox.Warning)
             box.setWindowTitle(translate("ChatDockWidget", "Enable Dangerous mode?"))
-            box.setText(translate(
+            box.setText(translate_branded(
                 "ChatDockWidget",
-                "Dangerous mode disables the safety checks built into FreeCAD AI."))
-            box.setInformativeText(translate(
+                "Dangerous mode disables the safety checks built into %2."))
+            box.setInformativeText(translate_branded(
                 "ChatDockWidget",
                 "While active:\n"
                 "• AI-run code may call shell commands, delete files, and touch "
                 "anything your user account can.\n"
-                "• A macro with an infinite loop will FREEZE FreeCAD with no "
+                "• A macro with an infinite loop will FREEZE %1 with no "
                 "recovery — unsaved work will be lost.\n"
                 "• Generated code runs against your live document without the "
                 "headless sandbox pre-check.\n\n"
@@ -1972,8 +1973,8 @@ class ChatDockWidget(QDockWidget):
                 try:
                     import FreeCAD as _App
                     _App.Console.PrintMessage(
-                        "[FreeCAD AI] Reranker ({}): {} of {} tools -> {}\n".format(
-                            cfg.rerank_method, len(ranked), len(pairs),
+                        "[{}] Reranker ({}): {} of {} tools -> {}\n".format(
+                            PRODUCT_NAME, cfg.rerank_method, len(ranked), len(pairs),
                             ", ".join(ranked))
                     )
                 except Exception:
@@ -2341,7 +2342,7 @@ class ChatDockWidget(QDockWidget):
             doc = App.ActiveDocument
         except ImportError:
             self._append_html(render_message("system",
-                "FreeCAD not available \u2014 cannot validate."))
+                "{} not available \u2014 cannot validate.".format(APP_NAME)))
             return
 
         if not doc:
