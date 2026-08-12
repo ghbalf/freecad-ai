@@ -1016,6 +1016,7 @@ class ChatDockWidget(QDockWidget):
             translate("ChatDockWidget", "Plan"),
             translate("ChatDockWidget", "Act"),
         ])
+        self.mode_combo.setMinimumWidth(80)
         cfg = get_config()
         self.mode_combo.setCurrentIndex(0 if cfg.mode == "plan" else 1)
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
@@ -1024,7 +1025,7 @@ class ChatDockWidget(QDockWidget):
 
         # Viewport capture toggle
         self._capture_btn = QPushButton(translate("ChatDockWidget", "Capture"))
-        self._capture_btn.setMaximumWidth(70)
+        self._capture_btn.setMinimumWidth(self._capture_btn.sizeHint().width())
         self._capture_btn.setToolTip(translate("ChatDockWidget", "Viewport capture: off"))
         self._capture_btn.clicked.connect(self._cycle_capture_mode)
         header.addWidget(self._capture_btn)
@@ -1041,7 +1042,7 @@ class ChatDockWidget(QDockWidget):
 
         # Settings button
         settings_btn = QPushButton(translate("ChatDockWidget", "Settings"))
-        settings_btn.setMaximumWidth(80)
+        settings_btn.setMinimumWidth(settings_btn.sizeHint().width())
         settings_btn.clicked.connect(self._open_settings)
         header.addWidget(settings_btn)
 
@@ -1094,7 +1095,6 @@ class ChatDockWidget(QDockWidget):
         btn_layout.setSpacing(2)
 
         self._attach_btn = QPushButton(translate("ChatDockWidget", "Attach"))
-        self._attach_btn.setMaximumHeight(20)
         self._attach_btn.setToolTip(translate("ChatDockWidget", "Attach a file (image, text, or document)"))
         self._attach_btn.clicked.connect(self._attach_file)
         btn_layout.addWidget(self._attach_btn)
@@ -1116,18 +1116,18 @@ class ChatDockWidget(QDockWidget):
         footer = QHBoxLayout()
 
         new_chat_btn = QPushButton(translate("ChatDockWidget", "+ New Chat"))
-        new_chat_btn.setMaximumWidth(100)
+        new_chat_btn.setMinimumWidth(new_chat_btn.sizeHint().width())
         new_chat_btn.clicked.connect(self._new_chat)
         footer.addWidget(new_chat_btn)
 
         load_chat_btn = QPushButton(translate("ChatDockWidget", "Load"))
-        load_chat_btn.setMaximumWidth(60)
+        load_chat_btn.setMinimumWidth(load_chat_btn.sizeHint().width())
         load_chat_btn.setToolTip(translate("ChatDockWidget", "Load a previous chat session"))
         load_chat_btn.clicked.connect(self._load_chat)
         footer.addWidget(load_chat_btn)
 
         save_log_btn = QPushButton(translate("ChatDockWidget", "Save Log"))
-        save_log_btn.setMaximumWidth(80)
+        save_log_btn.setMinimumWidth(save_log_btn.sizeHint().width())
         save_log_btn.setToolTip(translate("ChatDockWidget", "Save session log for debugging"))
         save_log_btn.clicked.connect(self._save_session_log)
         footer.addWidget(save_log_btn)

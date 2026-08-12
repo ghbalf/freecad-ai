@@ -177,7 +177,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle(translate("SettingsDialog", "FreeCAD AI Settings"))
         self.setMinimumWidth(500)
         self.setMinimumHeight(400)
-        self.resize(540, 700)
+        self.resize(650, 700)
         self._test_thread = None
         self._last_default_prompt = ""
         self._rerank_last_model = ""
