@@ -8,6 +8,7 @@ import os
 
 from .registry import ToolParam, ToolDefinition, ToolResult
 from ..core.executor import execute_code
+from ..branding import APP_NAME
 
 
 def _coerce_str_list(value):
@@ -40,7 +41,7 @@ def _with_undo(label: str, func):
         return ToolResult(
             success=False,
             output="",
-            error="No active document — open a document in FreeCAD or select its tab.",
+            error=f"No active document — open a document in {APP_NAME} or select its tab.",
         )
     doc.openTransaction(label)
     try:
@@ -3048,7 +3049,7 @@ def _handle_list_documents() -> ToolResult:
 
 LIST_DOCUMENTS = ToolDefinition(
     name="list_documents",
-    description="List all open FreeCAD documents with object counts and active indicator.",
+    description=f"List all open {APP_NAME} documents with object counts and active indicator.",
     category="query",
     parameters=[],
     handler=_handle_list_documents,
@@ -3087,7 +3088,7 @@ def _handle_switch_document(document_name: str) -> ToolResult:
 
 SWITCH_DOCUMENT = ToolDefinition(
     name="switch_document",
-    description="Switch the active FreeCAD document by name or label.",
+    description=f"Switch the active {APP_NAME} document by name or label.",
     category="query",
     parameters=[
         ToolParam("document_name", "string", "Name or label of the document to activate"),
@@ -3613,10 +3614,10 @@ def _handle_run_macro(macro: str) -> ToolResult:
 RUN_MACRO = ToolDefinition(
     name="run_macro",
     description=(
-        "Run an EXISTING FreeCAD macro file and return its console output "
+        f"Run an EXISTING {APP_NAME} macro file and return its console output "
         "(stdout/stderr). Use this to execute a macro the user already has on "
         "disk, e.g. a test harness. In normal mode, pass a bare macro NAME "
-        "(without extension) that lives in FreeCAD's macro directory; file "
+        f"(without extension) that lives in {APP_NAME}'s macro directory; file "
         "paths are refused unless the user has enabled Dangerous mode. Use "
         "execute_code instead when you want to run code you are writing inline."
     ),

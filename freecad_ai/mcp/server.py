@@ -9,10 +9,11 @@ import logging
 from ..tools.registry import ToolRegistry
 from . import protocol
 from .transport import StdioServerTransport
+from ..branding import PRODUCT_NAME
 
 logger = logging.getLogger(__name__)
 
-SERVER_INFO = {"name": "FreeCAD AI", "version": "0.1.0"}
+SERVER_INFO = {"name": PRODUCT_NAME, "version": "0.1.0"}
 PROTOCOL_VERSION = "2025-03-26"
 
 

@@ -19,11 +19,12 @@ from .transport import (
     StreamableHTTPClientTransport,
     _LOOPBACK_HOSTS,
 )
+from ..branding import PRODUCT_NAME
 
 logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2025-03-26"
-CLIENT_INFO = {"name": "FreeCAD AI", "version": "0.1.0"}
+CLIENT_INFO = {"name": PRODUCT_NAME, "version": "0.1.0"}
 
 
 @dataclass

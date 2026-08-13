@@ -12,6 +12,7 @@ import time
 from typing import Optional
 
 from .registry import ToolDefinition, ToolParam, ToolResult
+from ..branding import PRODUCT_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ STRATEGY_INSTRUCTIONS = {
 # ── Prompt template for LLM skill modification ──────────────────────────
 
 MODIFICATION_PROMPT = """\
-You are improving a FreeCAD AI SKILL.md file based on test results.
+You are improving a {product_name} SKILL.md file based on test results.
 
 ## Current SKILL.md
 
@@ -160,6 +161,7 @@ def _ask_llm_for_modification(skill_content, iteration, score, results_text,
 
     client = create_client_from_config()
     prompt = MODIFICATION_PROMPT.format(
+        product_name=PRODUCT_NAME,
         skill_content=skill_content,
         iteration=iteration,
         score=score,
@@ -170,7 +172,8 @@ def _ask_llm_for_modification(skill_content, iteration, score, results_text,
     try:
         response = client.send(
             [{"role": "user", "content": prompt}],
-            system="You are a FreeCAD AI skill optimizer. Return only the modified SKILL.md.",
+            system=f"You are a {PRODUCT_NAME} skill optimizer. "
+                   "Return only the modified SKILL.md.",
         )
     except Exception as e:
         logger.error("LLM modification request failed: %s", e)

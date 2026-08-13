@@ -33,6 +33,8 @@ import time
 import time
 from dataclasses import dataclass, field, asdict
 
+from .branding import PRODUCT_NAME
+
 
 # Marker filename inside the active config dir. Its presence signals that
 # this version of the workbench has already migrated into this target.
@@ -149,7 +151,7 @@ def _drop_marker(target: str) -> None:
     marker = os.path.join(target, _ACTIVE_MARKER_FILE)
     with open(marker, "w") as f:
         f.write(
-            "FreeCAD AI v0.13.0+ -- active config dir.\n"
+            f"{PRODUCT_NAME} v0.13.0+ -- active config dir.\n"
             f"Created: {datetime.datetime.now().isoformat()}\n"
             "Removing this file will trigger re-migration on next launch.\n"
         )
@@ -198,7 +200,7 @@ def _sweep_stale_candidates(candidates: list[str], target: str) -> list[str]:
             renamed.append(_rename_with_collision_suffix(c, _DUPLICATE_CLEANUP_SUFFIX))
         except OSError as e:
             print(
-                f"FreeCAD AI: could not rename stale dir {c} ({e!r}); leaving in place",
+                f"{PRODUCT_NAME}: could not rename stale dir {c} ({e!r}); leaving in place",
                 file=sys.stderr,
             )
     return renamed
@@ -278,7 +280,7 @@ def _resolve_config_dir() -> str:
             _sweep_stale_candidates(candidates, target)
         except Exception as e:
             print(
-                f"FreeCAD AI: stale legacy sweep failed ({e!r}); leaving as-is",
+                f"{PRODUCT_NAME}: stale legacy sweep failed ({e!r}); leaving as-is",
                 file=sys.stderr,
             )
         return target
@@ -288,7 +290,7 @@ def _resolve_config_dir() -> str:
         return target
     except Exception as e:
         print(
-            f"FreeCAD AI: config migration to {target} failed ({e!r}); "
+            f"{PRODUCT_NAME}: config migration to {target} failed ({e!r}); "
             f"falling back to a legacy candidate",
             file=sys.stderr,
         )
@@ -465,7 +467,7 @@ class AppConfig:
     # lands at its default area every startup. We snapshot our own state
     # on dock-move events and reapply in get_chat_dock().
     # When True, the chat dock is NOT hidden when switching away from the
-    # FreeCAD AI workbench — the panel stays open and usable in any other
+    # AI workbench — the panel stays open and usable in any other
     # workbench. When False (default), leaving the workbench hides the dock.
     keep_dock_on_workbench_switch: bool = False
     chat_dock_floating: bool = False

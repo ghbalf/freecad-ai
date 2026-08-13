@@ -9,19 +9,27 @@ class FreeCADAIWorkbench(Gui.Workbench):
 
     # FreeCAD auto-translates MenuText/ToolTip using class name as context.
     # The .qm file provides translations under the "FreeCADAIWorkbench" context.
+    # MenuText is the unbranded default; __init__ replaces it with the host's
+    # branded product name.
     MenuText = "FreeCAD AI"
     ToolTip = "AI-powered assistant for 3D modeling"
 
     def __init__(self):
+        from freecad_ai.branding import PRODUCT_NAME
         from freecad_ai.paths import get_icon_path
+        # Assigned here rather than in the class body: FreeCAD exec()s this
+        # file with separate globals/locals mappings, so class and function
+        # bodies cannot see module-level names. Same reason Icon is set here.
+        self.__class__.MenuText = PRODUCT_NAME
         icon = get_icon_path()
         if icon:
             self.__class__.Icon = icon
 
     def Initialize(self):
         """Called when the workbench is first activated."""
-        self.appendToolbar("FreeCAD AI", ["FreeCADAI_OpenChat", "FreeCADAI_OpenSettings"])
-        self.appendMenu("FreeCAD AI", ["FreeCADAI_OpenChat", "FreeCADAI_OpenSettings",
+        from freecad_ai.branding import PRODUCT_NAME
+        self.appendToolbar(PRODUCT_NAME, ["FreeCADAI_OpenChat", "FreeCADAI_OpenSettings"])
+        self.appendMenu(PRODUCT_NAME, ["FreeCADAI_OpenChat", "FreeCADAI_OpenSettings",
                                        "FreeCADAI_ToggleKeepDock"])
 
     def Activated(self):
@@ -58,12 +66,13 @@ class OpenChatCommand:
     """Command to open/show the AI chat panel."""
 
     def GetResources(self):
+        from freecad_ai.branding import PRODUCT_NAME
         from freecad_ai.paths import get_icon_path
-        from freecad_ai.i18n import translate
+        from freecad_ai.i18n import translate, translate_branded
         d = {
-            "GroupName": "FreeCAD AI",
+            "GroupName": PRODUCT_NAME,
             "MenuText": translate("OpenChatCommand", "Open AI Chat"),
-            "ToolTip": translate("OpenChatCommand", "Open the FreeCAD AI chat panel"),
+            "ToolTip": translate_branded("OpenChatCommand", "Open the %2 chat panel"),
         }
         icon = get_icon_path()
         if icon:
@@ -85,11 +94,12 @@ class OpenSettingsCommand:
     """Command to open the settings dialog."""
 
     def GetResources(self):
-        from freecad_ai.i18n import translate
+        from freecad_ai.branding import PRODUCT_NAME
+        from freecad_ai.i18n import translate, translate_branded
         return {
-            "GroupName": "FreeCAD AI",
+            "GroupName": PRODUCT_NAME,
             "MenuText": translate("OpenSettingsCommand", "AI Settings"),
-            "ToolTip": translate("OpenSettingsCommand", "Configure FreeCAD AI providers and options"),
+            "ToolTip": translate_branded("OpenSettingsCommand", "Configure %2 providers and options"),
         }
 
     def Activated(self, index=0):
@@ -110,13 +120,14 @@ class ToggleKeepDockCommand:
     """
 
     def GetResources(self):
-        from freecad_ai.i18n import translate
+        from freecad_ai.branding import PRODUCT_NAME
+        from freecad_ai.i18n import translate, translate_branded
         return {
-            "GroupName": "FreeCAD AI",
+            "GroupName": PRODUCT_NAME,
             "MenuText": translate("ToggleKeepDockCommand", "Keep Chat Panel Open"),
-            "ToolTip": translate(
+            "ToolTip": translate_branded(
                 "ToggleKeepDockCommand",
-                "Toggle whether the FreeCAD AI chat panel stays open when "
+                "Toggle whether the %2 chat panel stays open when "
                 "switching to other workbenches"),
             "Checkable": True,
         }
@@ -171,15 +182,16 @@ try:
 except Exception:
     pass
 
-# Register the FreeCAD AI preferences page in Edit → Preferences. The
+# Register the preferences page in Edit → Preferences. The
 # Gui::Pref* widgets in the form auto-save to BaseApp/Preferences/Mod/FreeCADAI;
 # our config layer mirrors values from there into ~/.config/FreeCAD/FreeCADAI/config.json
 # on load so both this page and the workbench's Settings dialog stay in sync.
 try:
+    from freecad_ai.branding import PRODUCT_NAME as _pn
     from freecad_ai.paths import get_prefs_ui_path as _gpup
     _prefs_ui = _gpup()
     if _prefs_ui:
-        Gui.addPreferencePage(_prefs_ui, "FreeCAD AI")
+        Gui.addPreferencePage(_prefs_ui, _pn)
 except Exception:
     pass
 

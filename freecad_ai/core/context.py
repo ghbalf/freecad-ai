@@ -14,7 +14,8 @@ def get_document_context() -> str:
     try:
         import FreeCAD as App
     except ImportError:
-        return "(FreeCAD not available — running outside FreeCAD)"
+        from ..branding import APP_NAME
+        return "({0} not available — running outside {0})".format(APP_NAME)
 
     from .active_document import resolve_active_document, sync_app_active_document
 
