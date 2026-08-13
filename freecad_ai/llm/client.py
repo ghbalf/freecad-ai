@@ -652,7 +652,9 @@ class LLMClient:
         body = self._anthropic_body(messages, system, stream=False)
         data = self._http_post(self._anthropic_url(), self._anthropic_headers(), body)
         try:
-            return data["content"][0]["text"]
+            return "".join(
+                block["text"] for block in data["content"] if block["type"] == "text"
+            )
         except (KeyError, IndexError) as e:
             raise LLMError(f"Unexpected response format: {e}\n{json.dumps(data, indent=2)}")
 

@@ -1912,7 +1912,8 @@ class ChatDockWidget(QDockWidget):
         # won't get tools sent to it.
         use_tools = cfg.enable_tools and mode == "act" and cfg.supports_tools
         tools_schema = None
-        api_style = "openai"
+        from ..llm.providers import get_api_style
+        api_style = get_api_style(cfg.provider.name)
 
         if use_tools:
             # Connect MCP servers on first tool-enabled send
@@ -1920,7 +1921,6 @@ class ChatDockWidget(QDockWidget):
                 self._connect_mcp_servers(cfg)
 
             from ..tools.setup import create_default_registry
-            from ..llm.providers import get_api_style
 
             # Build extra tools for active optimization
             extra_tools = []
@@ -2523,15 +2523,17 @@ class ChatDockWidget(QDockWidget):
 
         from ..core.system_prompt import build_system_prompt
         from ..llm.client import should_strip_thinking
+        from ..llm.providers import get_api_style
         mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
         system_prompt = build_system_prompt(mode=mode)
         cfg = get_config()
         strip = should_strip_thinking(
             cfg.provider.model, cfg.strip_thinking_history)
+        api_style = get_api_style(cfg.provider.name)
         # This retry attached a viewport snapshot above; drop history images
         # for non-vision models so they aren't sent raw (issue #30).
         messages = self.conversation.get_messages_for_api(
-            strip_images=not cfg.supports_vision, strip_thinking=strip)
+            api_style=api_style, strip_images=not cfg.supports_vision, strip_thinking=strip)
 
         self._set_loading(True)
         self._streaming_html = ""
@@ -2543,7 +2545,7 @@ class ChatDockWidget(QDockWidget):
         )
 
         self._tool_results_stored = False
-        self._worker = _LLMWorker(messages, system_prompt, parent=self)
+        self._worker = _LLMWorker(messages, system_prompt, api_style=api_style, parent=self)
         self._worker.token_received.connect(self._on_token)
         self._worker.response_finished.connect(self._on_response_finished)
         self._worker.error_occurred.connect(self._on_error)
