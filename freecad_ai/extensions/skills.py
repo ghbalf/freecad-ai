@@ -1,6 +1,9 @@
 """Skills registry with execution support and slash command matching.
 
-Skills are user-level instruction/action sets stored under
+Skills are instruction/action sets loaded from three places, in ascending
+precedence: the built-in skills/ directory in this repo, the ai/skills/
+ai/skills/ directory of any other installed module (see
+extensions.module_assets), and
 ~/.config/FreeCAD/FreeCADAI/skills/. Each skill is a directory containing:
   - SKILL.md: LLM instructions for the skill (injected into prompt)
   - handler.py: (optional) Python handler with an execute() function
@@ -47,13 +50,26 @@ class SkillsRegistry:
     def _load_skills(self):
         """Scan skills directories and load skill definitions.
 
-        Scans both the built-in skills directory (in the repo) and the user
-        skills directory (~/.config/FreeCAD/FreeCADAI/skills/). User skills
-        take precedence over built-in skills with the same name.
+        Three tiers, scanned in ascending precedence: the built-in skills
+        directory (in the repo), any skills shipped by other installed
+        modules (Mod/<Module>/ai/skills/), and the user skills directory
+        (~/.config/FreeCAD/FreeCADAI/skills/). Later tiers overwrite earlier
+        ones by directory name, so the user always keeps the last word.
         """
-        # Load built-in first, then user (user overrides built-in)
-        for skills_dir in (BUILTIN_SKILLS_DIR, SKILLS_DIR):
+        for skills_dir in self._skill_dirs():
             self._scan_skills_dir(skills_dir)
+
+    @staticmethod
+    def _skill_dirs() -> list[str]:
+        """Skill directories in ascending precedence order."""
+        dirs = [BUILTIN_SKILLS_DIR]
+        try:
+            from .module_assets import asset_subdirs
+            dirs.extend(asset_subdirs("skills"))
+        except Exception:
+            pass  # Module asset discovery is optional
+        dirs.append(SKILLS_DIR)
+        return dirs
 
     def _scan_skills_dir(self, skills_dir: str):
         """Scan a single directory for skill definitions."""
@@ -282,39 +298,42 @@ class SkillsRegistry:
 
     @staticmethod
     def get_skill_status() -> list[dict]:
-        """Return status info for all skills across built-in and user dirs.
+        """Return status info for all skills across every source directory.
 
         Each entry: {"name", "description", "source", "has_user_copy",
-                     "is_modified", "builtin_path", "user_path"}
+                     "is_modified", "builtin_path", "module_path",
+                     "user_path"}
 
-        source: "built-in", "user", or "modified" (user copy differs from built-in)
+        source: "built-in", "module", "user", or "modified" (user copy
+        differs from the shipped version it shadows)
         """
         results = []
-        builtin_skills = {}
-        user_skills = {}
+        builtin_skills = _scan_skill_files(BUILTIN_SKILLS_DIR)
+        user_skills = _scan_skill_files(SKILLS_DIR)
 
-        # Scan built-in
-        if os.path.isdir(BUILTIN_SKILLS_DIR):
-            for entry in sorted(os.listdir(BUILTIN_SKILLS_DIR)):
-                skill_file = os.path.join(BUILTIN_SKILLS_DIR, entry, "SKILL.md")
-                if os.path.isfile(skill_file):
-                    builtin_skills[entry] = skill_file
+        module_skills = {}
+        try:
+            from .module_assets import asset_subdirs
+            for asset_dir in asset_subdirs("skills"):
+                module_skills.update(_scan_skill_files(asset_dir))
+        except Exception:
+            pass  # Module asset discovery is optional
 
-        # Scan user
-        if os.path.isdir(SKILLS_DIR):
-            for entry in sorted(os.listdir(SKILLS_DIR)):
-                skill_file = os.path.join(SKILLS_DIR, entry, "SKILL.md")
-                if os.path.isfile(skill_file):
-                    user_skills[entry] = skill_file
-
-        all_names = sorted(set(builtin_skills) | set(user_skills))
+        all_names = sorted(
+            set(builtin_skills) | set(module_skills) | set(user_skills)
+        )
 
         for name in all_names:
             b_path = builtin_skills.get(name)
+            p_path = module_skills.get(name)
             u_path = user_skills.get(name)
 
-            # Read description from whichever is active (user overrides built-in)
-            active_path = u_path or b_path
+            # The shipped version a user copy would be shadowing; another
+            # module wins over built-ins, matching _skill_dirs() order.
+            shipped_path = p_path or b_path
+
+            # Read description from whichever is active (user overrides shipped)
+            active_path = u_path or shipped_path
             description = ""
             try:
                 with open(active_path, "r", encoding="utf-8") as f:
@@ -332,11 +351,12 @@ class SkillsRegistry:
             except Exception:
                 pass
 
-            if b_path and u_path:
-                is_modified = _file_hash(b_path) != _file_hash(u_path)
-                source = "modified" if is_modified else "built-in"
-            elif b_path:
-                source = "built-in"
+            shipped_source = "module" if p_path else "built-in"
+            if shipped_path and u_path:
+                is_modified = _file_hash(shipped_path) != _file_hash(u_path)
+                source = "modified" if is_modified else shipped_source
+            elif shipped_path:
+                source = shipped_source
             else:
                 source = "user"
 
@@ -347,6 +367,7 @@ class SkillsRegistry:
                 "has_user_copy": u_path is not None,
                 "is_modified": source == "modified",
                 "builtin_path": b_path or "",
+                "module_path": p_path or "",
                 "user_path": u_path or "",
             })
 
@@ -354,20 +375,46 @@ class SkillsRegistry:
 
     @staticmethod
     def reset_to_builtin(name: str) -> bool:
-        """Delete the user copy of a skill, reverting to the built-in version.
+        """Delete the user copy of a skill, reverting to the shipped version.
 
-        Returns True if the user copy was deleted.
+        The shipped version is the built-in skill, or another module's skill
+        if one shadows it. Returns True if the user copy was deleted.
         """
         user_skill_dir = os.path.join(SKILLS_DIR, name)
-        builtin_skill = os.path.join(BUILTIN_SKILLS_DIR, name, "SKILL.md")
 
-        if not os.path.isfile(builtin_skill):
-            return False
+        if not os.path.isfile(os.path.join(BUILTIN_SKILLS_DIR, name, "SKILL.md")):
+            if not _module_skill_path(name):
+                return False
 
         if os.path.isdir(user_skill_dir):
             shutil.rmtree(user_skill_dir)
             return True
         return False
+
+
+def _scan_skill_files(skills_dir: str) -> dict:
+    """Map skill name -> SKILL.md path for one directory."""
+    found = {}
+    if not os.path.isdir(skills_dir):
+        return found
+    for entry in sorted(os.listdir(skills_dir)):
+        skill_file = os.path.join(skills_dir, entry, "SKILL.md")
+        if os.path.isfile(skill_file):
+            found[entry] = skill_file
+    return found
+
+
+def _module_skill_path(name: str) -> str:
+    """Return a module's SKILL.md path for `name`, or "" if none ships it."""
+    try:
+        from .module_assets import asset_subdirs
+        for asset_dir in asset_subdirs("skills"):
+            candidate = os.path.join(asset_dir, name, "SKILL.md")
+            if os.path.isfile(candidate):
+                return candidate
+    except Exception:
+        pass  # Module asset discovery is optional
+    return ""
 
 
 def _reference_summary(path: str) -> str:

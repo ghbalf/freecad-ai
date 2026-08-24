@@ -90,6 +90,29 @@ The `SKILL.md` file contains instructions the LLM follows using tool calls. See 
 - Specify default values for all parameters
 - Test with multiple LLM providers (tool-calling quality varies)
 
+### Assets shipped by another workbench
+
+A FreeCAD module can ship its own skills, tools and hooks instead of adding them
+here. Put them in an `ai/` directory inside the module, and they are discovered
+automatically once it is installed:
+
+```
+Mod/<YourModule>/ai/
+├── skills/<name>/SKILL.md    # same format as skills/ in this repo
+├── tools/*.py                # same format as user tools
+├── hooks/<name>/hook.py      # same format as user hooks
+└── INSTRUCTIONS.md           # (optional) appended to the system prompt
+```
+
+Precedence is built-in < module < user, so a user copy still overrides yours.
+Set `__tool_prefix__ = "yourwb_"` at the top of a tool file to namespace its
+tools instead of inheriting the default `user_` prefix. Point
+`FREECAD_AI_ASSET_DIRS` at an `ai/` directory to test one without installing.
+
+This is the right home for workbench-specific knowledge — it stays versioned and
+tested next to the code it describes. See
+`docs/superpowers/specs/2026-08-14-module-assets-design.md`.
+
 ### New Providers
 
 Adding an LLM provider is a one-file change. Add an entry to `PROVIDERS` in `freecad_ai/llm/providers.py`:

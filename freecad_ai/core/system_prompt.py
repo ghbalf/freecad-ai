@@ -436,6 +436,22 @@ def build_system_prompt(mode: str = "plan", agents_md: str = "",
     except Exception:
         pass
 
+    # Instructions shipped by other installed modules (Mod/<Module>/ai/)
+    try:
+        from ..extensions.module_assets import load_module_instructions
+        module_instructions = load_module_instructions()
+        if module_instructions:
+            sections.append("## Workbench Instructions")
+            sections.append(
+                "Instructions supplied by installed workbenches. They describe "
+                "that workbench's own objects and tools, and take precedence "
+                "over general guidance when working in it."
+            )
+            sections.append(module_instructions)
+            sections.append("")
+    except Exception:
+        pass
+
     # AGENTS.md
     if not agents_md:
         agents_md = load_agents_md()
