@@ -28,9 +28,10 @@ class FreeCADAIWorkbench(Gui.Workbench):
     def Initialize(self):
         """Called when the workbench is first activated."""
         from freecad_ai.branding import PRODUCT_NAME
-        self.appendToolbar(PRODUCT_NAME, ["FreeCADAI_OpenChat", "FreeCADAI_OpenSettings"])
+        self.appendToolbar(PRODUCT_NAME, ["FreeCADAI_OpenChat", "FreeCADAI_OpenSettings",
+                                          "FreeCADAI_ToggleMCPServer"])
         self.appendMenu(PRODUCT_NAME, ["FreeCADAI_OpenChat", "FreeCADAI_OpenSettings",
-                                       "FreeCADAI_ToggleKeepDock"])
+                                       "FreeCADAI_ToggleMCPServer","FreeCADAI_ToggleKeepDock"])
 
     def Activated(self):
         """Called when the workbench is selected."""
@@ -38,6 +39,32 @@ class FreeCADAIWorkbench(Gui.Workbench):
         dock = get_chat_dock()
         if dock:
             dock.show()
+        self._sync_command_ticks()
+
+    def _sync_command_ticks(self):
+        """Push both checkable commands' state onto their actions.
+
+        FreeCAD never asks a Python command whether it is checked, so the
+        ticks are wrong until something pushes them. Both are stale at this
+        point for real reasons: a server started from the command line or the
+        Python console is already running before this workbench was ever
+        opened, and the keep-dock flag is restored from the saved config.
+
+        Split out of ``Activated`` so it is testable without a QApplication.
+        """
+        from freecad_ai.ui.command_state import set_command_checked
+        try:
+            from freecad_ai.mcp.gui_server import get_server_controller
+            set_command_checked("FreeCADAI_ToggleMCPServer",
+                                get_server_controller().is_running())
+        except Exception:
+            pass
+        try:
+            from freecad_ai.config import get_config
+            set_command_checked("FreeCADAI_ToggleKeepDock",
+                                get_config().keep_dock_on_workbench_switch)
+        except Exception:
+            pass
 
     def Deactivated(self):
         """Called when leaving this workbench.
@@ -129,7 +156,11 @@ class ToggleKeepDockCommand:
                 "ToggleKeepDockCommand",
                 "Toggle whether the %2 chat panel stays open when "
                 "switching to other workbenches"),
-            "Checkable": True,
+            # False = starts unticked, matching the config default. FreeCAD
+            # 1.1.x reads this as the action's *initial* state rather than as
+            # "may this be checked", and never calls IsChecked(), so True
+            # showed a permanent checkmark whatever the setting said (#62).
+            "Checkable": False,
         }
 
     def Activated(self, index=0):
@@ -149,11 +180,121 @@ class ToggleKeepDockCommand:
             dock = get_chat_dock(create=False)
             if dock:
                 dock.hide()
+        self._sync_action()
+
+    def _sync_action(self):
+        """FreeCAD never calls IsChecked(), so drive the tick by hand (#62)."""
+        from freecad_ai.ui.command_state import set_command_checked
+        from freecad_ai.config import get_config
+        set_command_checked("FreeCADAI_ToggleKeepDock",
+                            get_config().keep_dock_on_workbench_switch)
 
     def IsChecked(self):
+        # Kept for a future FreeCAD that honours it; 1.1.x never calls this,
+        # so do not trust it to drive the tick — _sync_action() does that.
         try:
             from freecad_ai.config import get_config
             return bool(get_config().keep_dock_on_workbench_switch)
+        except Exception:
+            return False
+
+    def IsActive(self):
+        return True
+
+
+class ToggleMCPServerCommand:
+    """Start/stop the HTTP+SSE MCP server inside this FreeCAD process.
+
+    Checkable, and the tick is driven from the shared controller rather than
+    any state of its own — so a server started with
+    ``FreeCAD.AppImage mcp_server_http.py`` or from the Python console shows
+    as on here, and can be stopped from this button.
+
+    FreeCAD 1.1.x reads ``Checkable`` as the action's *initial* tick state —
+    the key's mere presence is what makes the action checkable — and never
+    calls ``IsChecked()`` on a Python command. So the value below must be
+    False, and the tick has to be pushed by ``_sync_action()``.
+    """
+
+    def GetResources(self):
+        from freecad_ai.i18n import translate
+        return {
+            "GroupName": "FreeCAD AI",
+            "MenuText": translate("ToggleMCPServerCommand", "MCP Server"),
+            "ToolTip": translate(
+                "ToggleMCPServerCommand",
+                "Start or stop the MCP server, letting external clients such "
+                "as Claude Code drive this FreeCAD session. The server has no "
+                "authentication; set its address in AI Settings."),
+            # False = starts unticked. FreeCAD treats this as the initial
+            # state, not as "may this action be checked"; True showed a ticked
+            # button on a fresh session with no server running.
+            "Checkable": False,
+        }
+
+    def Activated(self, index=0):
+        from freecad_ai.mcp.gui_server import (
+            get_server_controller, resolve_server_address)
+        controller = get_server_controller()
+
+        if controller.is_running():
+            controller.stop()
+            App.Console.PrintMessage("FreeCAD AI: MCP server stopped\n")
+            self._sync_action()
+            return
+
+        from freecad_ai.config import get_config
+        host, port = resolve_server_address(get_config())
+        try:
+            url = controller.start(host, port)
+        except OSError as exc:
+            self._report_failure(host, port, exc)
+            self._sync_action()  # a failed start must leave the button unticked
+            return
+
+        App.Console.PrintMessage(
+            "FreeCAD AI: MCP server listening on %s\n" % url)
+        window = Gui.getMainWindow()
+        if window:
+            window.statusBar().showMessage(
+                "MCP server listening on %s" % url, 10000)
+        self._sync_action()
+
+    def _sync_action(self):
+        """FreeCAD 1.1.x never calls IsChecked() on a Python command, so the
+        action's tick has to be driven from the controller by hand."""
+        try:
+            from freecad_ai.mcp.gui_server import get_server_controller
+            from freecad_ai.ui.command_state import set_command_checked
+            set_command_checked("FreeCADAI_ToggleMCPServer",
+                                get_server_controller().is_running())
+        except Exception:
+            pass
+
+    def _report_failure(self, host, port, exc):
+        """Modal, because the click has to visibly fail.
+
+        This used to be a traceback in a daemon thread that nothing surfaced.
+        """
+        from freecad_ai.i18n import translate
+        from freecad_ai.ui.compat import QtWidgets
+        message = translate(
+            "ToggleMCPServerCommand",
+            "Could not start the MCP server on {address}.\n\n{error}\n\n"
+            "Change the address in FreeCAD AI → AI Settings → "
+            "MCP Servers.").format(address="%s:%d" % (host, port), error=exc)
+        App.Console.PrintError("FreeCAD AI: %s\n" % message.replace("\n\n", " "))
+        QtWidgets.QMessageBox.warning(
+            Gui.getMainWindow(),
+            translate("ToggleMCPServerCommand", "MCP server failed to start"),
+            message)
+
+    def IsChecked(self):
+        # Kept for a future FreeCAD that honours it; 1.1.x never calls this,
+        # so do not trust it to drive the tick — _sync_action() does that.
+        try:
+            from freecad_ai.mcp.gui_server import get_server_controller
+            return get_server_controller().is_running()
         except Exception:
             return False
 
@@ -208,4 +349,5 @@ except Exception:
 Gui.addCommand("FreeCADAI_OpenChat", OpenChatCommand())
 Gui.addCommand("FreeCADAI_OpenSettings", OpenSettingsCommand())
 Gui.addCommand("FreeCADAI_ToggleKeepDock", ToggleKeepDockCommand())
+Gui.addCommand("FreeCADAI_ToggleMCPServer", ToggleMCPServerCommand())
 Gui.addWorkbench(FreeCADAIWorkbench())

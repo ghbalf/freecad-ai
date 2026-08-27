@@ -32,6 +32,7 @@ QLabel = QtWidgets.QLabel
 Signal = QtCore.Signal
 QThread = QtCore.QThread
 QDoubleValidator = QtGui.QDoubleValidator
+QIntValidator = QtGui.QIntValidator
 QTableWidget = QtWidgets.QTableWidget
 QTableWidgetItem = QtWidgets.QTableWidgetItem
 QHeaderView = QtWidgets.QHeaderView
@@ -672,6 +673,38 @@ class SettingsDialog(QDialog):
         mcp_btn_layout.addStretch()
         mcp_layout.addLayout(mcp_btn_layout)
 
+        # Address this addon listens on when acting AS an MCP server.
+        # A plain numeric entry, not a spinbox: no artificial 1024 floor, so
+        # the GUI reaches exactly the ports MCP_PORT does. A privileged port
+        # fails at bind time with a real message instead of being unreachable.
+        server_form = QFormLayout()
+
+        self.mcp_server_host_edit = QLineEdit()
+        self.mcp_server_host_edit.setPlaceholderText("127.0.0.1")
+        server_form.addRow(
+            translate("SettingsDialog", "Server host:"),
+            self.mcp_server_host_edit)
+
+        self.mcp_server_port_edit = QLineEdit()
+        self.mcp_server_port_edit.setValidator(QIntValidator(1, 65535, self))
+        self.mcp_server_port_edit.setPlaceholderText("3000")
+        server_form.addRow(
+            translate("SettingsDialog", "Server port:"),
+            self.mcp_server_port_edit)
+
+        mcp_layout.addLayout(server_form)
+
+        # Unconditional, not shown only for non-loopback values: the loopback
+        # default is already reachable by every local process, so hiding the
+        # warning there would imply the default is authenticated. It is not.
+        mcp_server_warning = QLabel(translate(
+            "SettingsDialog",
+            "The MCP server has no authentication. Anything that can reach "
+            "this address can run FreeCAD tools, including arbitrary Python. "
+            "Keep it on 127.0.0.1 unless you understand the exposure."))
+        mcp_server_warning.setWordWrap(True)
+        mcp_layout.addWidget(mcp_server_warning)
+
         mcp_group.setLayout(mcp_layout)
         layout.addWidget(mcp_group)
 
@@ -900,6 +933,9 @@ class SettingsDialog(QDialog):
         self._mcp_configs = list(cfg.mcp_servers)
         for entry in self._mcp_configs:
             self.mcp_list.addItem(self._mcp_list_label(entry))
+
+        self.mcp_server_host_edit.setText(cfg.mcp_server_host)
+        self.mcp_server_port_edit.setText(str(cfg.mcp_server_port))
 
         # Editor preference
         self.use_external_editor_cb.setChecked(cfg.use_external_editor)
@@ -1168,6 +1204,9 @@ class SettingsDialog(QDialog):
             cfg.thinking_detected = None
 
         cfg.mcp_servers = list(self._mcp_configs) if hasattr(self, "_mcp_configs") else []
+        cfg.mcp_server_host, cfg.mcp_server_port = self._parse_server_address(
+            self.mcp_server_host_edit.text(),
+            self.mcp_server_port_edit.text())
         cfg.use_external_editor = self.use_external_editor_cb.isChecked()
         cfg.scan_freecad_macros = self.scan_macros_cb.isChecked()
 
@@ -1196,6 +1235,14 @@ class SettingsDialog(QDialog):
             rerank_model, self._read_rerank_params_table())
 
         save_current_config()
+
+        # The menu's "Keep Chat Panel Open" tick mirrors this flag, and
+        # FreeCAD never re-asks the command for its state, so changing it here
+        # would otherwise leave the checkmark stale until FreeCAD restarts.
+        from .command_state import set_command_checked
+        set_command_checked("FreeCADAI_ToggleKeepDock",
+                            cfg.keep_dock_on_workbench_switch)
+
         self.accept()
 
     def _on_rerank_method_changed(self, index: int):
@@ -1512,6 +1559,24 @@ class SettingsDialog(QDialog):
             args = " ".join(entry.get("args", []))
             target = f"{entry.get('command', '')} {args}".strip()
         return f"{prefix}{entry.get('name', '?')} — {target}"
+
+    @staticmethod
+    def _parse_server_address(host_text, port_text):
+        """Normalise the MCP server host/port fields into (host, port).
+
+        Anything unusable falls back to the default rather than raising: the
+        dialog must always be closable. The validator already blocks
+        out-of-range typing, so this is the belt to its braces.
+        """
+        from ..mcp.gui_server import DEFAULT_HOST, DEFAULT_PORT
+        host = (host_text or "").strip() or DEFAULT_HOST
+        try:
+            port = int((port_text or "").strip())
+        except ValueError:
+            return host, DEFAULT_PORT
+        if not 1 <= port <= 65535:
+            return host, DEFAULT_PORT
+        return host, port
 
     def _add_mcp_server(self):
         """Show a dialog to add a new MCP server configuration."""

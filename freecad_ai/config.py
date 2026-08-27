@@ -415,6 +415,13 @@ class AppConfig:
     viewport_resolution: str = "medium"  # "low", "medium", "high"
     mcp_servers: list = field(default_factory=list)
     # Each entry: {"name": str, "command": str, "args": list, "env": dict, "enabled": bool}
+    # Address the addon listens on when acting AS an MCP server (the toolbar
+    # toggle and mcp_server_http.py). Host is deliberately unrestricted,
+    # including non-loopback: the server has no authentication (issue #59), so
+    # the Settings dialog warns about the exposure rather than pretending a
+    # restricted field made it safe. MCP_HOST / MCP_PORT override both.
+    mcp_server_host: str = "127.0.0.1"
+    mcp_server_port: int = 3000
     user_tools_disabled: list = field(default_factory=list)
     scan_freecad_macros: bool = False
     # Dangerous mode: relaxes executor safety layers (static pattern blocking,

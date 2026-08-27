@@ -1220,3 +1220,18 @@ def test_new_fields_roundtrip():
     restored = AppConfig.from_dict(cfg.to_dict())
     assert restored.max_tool_turns == 0
     assert restored.dangerous_skip_safety is True
+
+
+def test_mcp_server_address_defaults():
+    from freecad_ai.config import AppConfig
+    cfg = AppConfig()
+    assert cfg.mcp_server_host == "127.0.0.1"
+    assert cfg.mcp_server_port == 3000
+
+
+def test_mcp_server_address_roundtrip():
+    from freecad_ai.config import AppConfig
+    cfg = AppConfig(mcp_server_host="0.0.0.0", mcp_server_port=8080)
+    restored = AppConfig.from_dict(cfg.to_dict())
+    assert restored.mcp_server_host == "0.0.0.0"
+    assert restored.mcp_server_port == 8080

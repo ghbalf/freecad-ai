@@ -254,6 +254,38 @@ Tool calling is enabled by default. Disable it by setting `enable_tools: false` 
 | `add_part_to_assembly` | Add a part to an existing assembly |
 | `select_geometry` | Interactive viewport picking for edges, faces, vertices |
 
+### Connecting external MCP clients (Claude Code, Claude Desktop, …)
+
+These same tools can be exposed as a standalone MCP server, so any MCP-capable client can drive FreeCAD — not just this addon's own chat panel. Driving it from a client you already subscribe to means no provider API key and no per-token cost on top of it.
+
+Three ways to start it, differing in who owns the FreeCAD process:
+
+- **The toolbar** — no paths, no command line. In the **FreeCAD AI** workbench, click **MCP Server** on the toolbar (or the matching entry in the FreeCAD AI menu) to start the server inside the running FreeCAD; click again to stop it. The URL is printed to the Report view, and the address lives in **AI Settings → MCP Servers**. The button reflects the real server state, so a server started either of the ways below shows as running and can be stopped from it too.
+
+  ```bash
+  claude mcp add --transport sse freecad http://127.0.0.1:3000/sse
+  ```
+
+- **`mcp_server_http.py`** — the same HTTP/SSE server, started from the command line. FreeCAD is already running with your document open and the client attaches to it, so you watch the model change live in the viewport.
+
+  ```bash
+  /path/to/FreeCAD.AppImage /path/to/freecad-ai/mcp_server_http.py
+  claude mcp add --transport sse freecad http://127.0.0.1:3000/sse
+  ```
+
+- **`mcp_server_entry.py`** — STDIO, headless. The client spawns FreeCAD, which lives and dies with the session.
+
+  ```bash
+  claude mcp add freecad -- bash -c \
+    'exec 3>&1 1>&2 && /path/to/FreeCAD.AppImage -c /path/to/freecad-ai/mcp_server_entry.py'
+  ```
+
+> **The MCP server has no authentication.** Anything that can reach the address it is bound to can run FreeCAD tools, including arbitrary Python. On the `127.0.0.1` default that means any process on your machine. Tracked in [#59](https://github.com/ghbalf/freecad-ai/issues/59).
+
+Note that Claude Code loads MCP tools **at session start** — a server added mid-session won't appear until the next launch.
+
+Full setup, including Flatpak paths, `MCP_HOST`/`MCP_PORT`, and why the STDIO mode needs the `bash -c` wrapper: [MCP Integration](https://github.com/ghbalf/freecad-ai/wiki/MCP-Integration#mcp-server-exposing-freecad-tools) in the wiki.
+
 ### Skills
 
 Skills are reusable instruction sets stored in `<FreeCADAI dir>/skills/`. Invoke them by typing `/command` in the chat.

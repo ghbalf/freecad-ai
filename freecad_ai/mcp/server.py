@@ -6,6 +6,7 @@ transport (STDIO or HTTP/SSE).
 
 import logging
 
+from .. import __version__
 from ..tools.registry import ToolRegistry
 from . import protocol
 from .transport import StdioServerTransport
@@ -13,7 +14,9 @@ from ..branding import PRODUCT_NAME
 
 logger = logging.getLogger(__name__)
 
-SERVER_INFO = {"name": PRODUCT_NAME, "version": "0.1.0"}
+# Derived, never a literal: this was pinned at "0.1.0" for twenty releases, so
+# every MCP client reported "FreeCAD AI 0.1.0" regardless of what was installed.
+SERVER_INFO = {"name": PRODUCT_NAME, "version": __version__}
 PROTOCOL_VERSION = "2025-03-26"
 
 
