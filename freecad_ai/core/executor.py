@@ -85,6 +85,24 @@ def _find_freecad_cmd() -> str:
     """
     import glob
 
+    # 0. Ask the running FreeCAD for its own install directory and use the
+    # console binary that ships next to it. A PATH-based guess can resolve to
+    # a completely unrelated FreeCAD install (e.g. a Snap package sitting on
+    # PATH while the live session runs from a Flatpak) — that binary imports
+    # its own, incompatible Draft/Arch/PySide stack and segfaults on import,
+    # permanently blocking the sandbox pre-check for anything Arch-related.
+    # The home path is guaranteed to match the live session exactly.
+    try:
+        import FreeCAD as _App
+        home = _App.getHomePath()
+        if home:
+            for name in ("freecadcmd", "FreeCADCmd", "freecadcmd.exe", "FreeCADCmd.exe"):
+                candidate = os.path.join(home, "bin", name)
+                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                    return candidate
+    except Exception:
+        pass
+
     # 1. Look for AppImages in ~/bin (preferred — direct binary, not a wrapper script)
     appimage_patterns = [
         os.path.expanduser("~/bin/FreeCAD*.AppImage"),
@@ -215,28 +233,27 @@ try:
     except Exception:
         pass
 
-    try:
-        import FreeCADGui as Gui
-        # Console mode: Gui module exists but has no active document/view.
-        # LLM-generated code routinely ends with view-framing cosmetics
-        # (Gui.ActiveDocument.ActiveView.viewIsometric(), fitAll(),
-        # SendMsgToActiveView("ViewFit")). Headlessly FreeCADGui has no
-        # ActiveDocument, so these raise AttributeError and fail the pre-check
-        # for geometry that runs fine in the user's real GUI. Neutralize the
-        # whole Gui.ActiveDocument.* surface with a recursive no-op — any
-        # attribute access or call returns the same stub, so arbitrary view
-        # chains become harmless while the geometry is still validated (#14).
-        if not hasattr(Gui, "ActiveDocument") or Gui.ActiveDocument is None:
-            class _NoOpGui:
-                def __getattr__(self, _name):
-                    return self
-                def __call__(self, *a, **kw):
-                    return self
-            Gui.ActiveDocument = _NoOpGui()
-            Gui.SendMsgToActiveView = lambda *a, **kw: None
-            Gui.updateGui = lambda *a, **kw: None
-    except ImportError:
-        pass
+    # Console mode: install a fake FreeCADGui module instead of importing the
+    # real one. LLM-generated code routinely ends with view-framing cosmetics
+    # (Gui.ActiveDocument.ActiveView.viewIsometric(), fitAll(),
+    # SendMsgToActiveView("ViewFit")); a real headless FreeCADGui has no
+    # ActiveDocument, so these raise AttributeError and fail the pre-check for
+    # geometry that runs fine in the user's real GUI (#14). A plain no-op stub
+    # covers that. Importing the *real* FreeCADGui and then anything that
+    # touches Arch/Draft (which pull in PySide) segfaults this console
+    # binary — no display, no QApplication event loop — so the real module
+    # must never be imported here at all, not just patched afterward.
+    import types
+    class _NoOpGui:
+        def __getattr__(self, _name):
+            return self
+        def __call__(self, *a, **kw):
+            return self
+    _fake_gui = types.ModuleType("FreeCADGui")
+    _fake_gui.ActiveDocument = _NoOpGui()
+    _fake_gui.SendMsgToActiveView = lambda *a, **kw: None
+    _fake_gui.updateGui = lambda *a, **kw: None
+    sys.modules["FreeCADGui"] = _fake_gui
 {open_block}
 
     # Per-object problem snapshot — shared by the baseline (pre-code) and the

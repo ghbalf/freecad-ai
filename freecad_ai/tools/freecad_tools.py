@@ -3023,12 +3023,27 @@ def _handle_list_documents() -> ToolResult:
     active = resolve_active_document()
     active_name = active.Name if active else ""
 
+    try:
+        import FreeCADGui as Gui
+    except ImportError:
+        Gui = None
+
+    def _is_modified(doc) -> bool:
+        if Gui is None:
+            return False
+        try:
+            gdoc = Gui.getDocument(doc.Name)
+            return bool(gdoc.Modified) if gdoc else False
+        except Exception:
+            return False
+
     lines = [f"## Open Documents ({len(docs)})"]
     doc_data = []
     for doc in docs:
         obj_count = len(doc.Objects)
         marker = " (active)" if doc.Name == active_name else ""
-        modified = " *" if doc.Modified else ""
+        is_modified = _is_modified(doc)
+        modified = " *" if is_modified else ""
         path = doc.FileName or "(unsaved)"
         lines.append(
             f"- **{doc.Name}**{marker}{modified} — "
@@ -3039,7 +3054,7 @@ def _handle_list_documents() -> ToolResult:
             "label": doc.Label,
             "active": doc.Name == active_name,
             "object_count": obj_count,
-            "modified": doc.Modified,
+            "modified": is_modified,
             "path": doc.FileName,
         })
 

@@ -538,6 +538,9 @@ class SSEServerTransport:
         self._handler: Callable[[dict], dict | None] | None = None
         self._sse_wfile: Any = None
         self._sse_lock = threading.Lock()
+        self._httpd = None
+        self._serving = False
+        self._lifecycle_lock = threading.Lock()
         if allowed_hosts is None:
             allowed_hosts = _LOOPBACK_HOSTS | {host.lower()}
         self._allowed_hosts = frozenset(h.lower() for h in allowed_hosts)
@@ -561,18 +564,98 @@ class SSEServerTransport:
             return False
         return True
 
-    def run(self, handler: Callable[[dict], dict | None]):
-        """Start the HTTP server (blocking)."""
-        self._handler = handler
-        server = self._make_server()
+    def bind(self):
+        """Create and bind the listening socket. Raises OSError if unavailable.
+
+        Split out of ``run`` so a caller on the GUI thread learns about a bind
+        failure (EADDRINUSE, EACCES) synchronously. When the bind happened
+        inside the serve thread the traceback went to the console and nothing
+        else: FreeCAD carried on as if the server had started.
+
+        Idempotent — binding an already-bound transport is a no-op.
+        """
+        with self._lifecycle_lock:
+            if self._httpd is None:
+                self._httpd = self._make_server()
+
+    def serve(self, handler: Callable[[dict], dict | None] | None = None):
+        """Serve until stop(). Requires a prior bind()."""
+        with self._lifecycle_lock:
+            if handler is not None:
+                self._handler = handler
+            httpd = self._httpd
+            if httpd is None:
+                raise RuntimeError("bind() must be called before serve()")
+            self._serving = True
         logger.info("MCP SSE server listening on http://%s:%d", self._host, self._port)
-        server.serve_forever()
+        try:
+            httpd.serve_forever()
+        finally:
+            with self._lifecycle_lock:
+                self._serving = False
+
+    def stop(self):
+        """Shut down and release the socket. Safe when never bound.
+
+        ``shutdown()`` is only safe once ``serve_forever()`` is running: it
+        waits on an event that only serve_forever's exit path sets, so calling
+        it on a bound-but-never-served socket blocks forever. Bound but never
+        served therefore goes straight to ``server_close()``.
+
+        The two values are captured under the lock and then released before
+        any blocking call: holding the lock across ``shutdown()`` would
+        deadlock against ``serve()``'s ``finally`` clause, which needs the
+        same lock to clear ``_serving``.
+
+        Shutting the listening socket down does not touch an already-attached
+        SSE client: its ``process_request_thread`` sits in the keepalive loop
+        and keeps writing, so the client never learns the server went away and
+        its later POSTs are answered 202 by a transport that drops the reply.
+        Closing ``_sse_wfile`` here makes the next keepalive write fail, which
+        ends that thread and gives the client a clean EOF. Everything else
+        already treats a None ``_sse_wfile`` as "no client attached", which is
+        exactly the state left behind. Done outside ``_lifecycle_lock`` for
+        the same deadlock reason as above.
+        """
+        with self._lifecycle_lock:
+            httpd, self._httpd = self._httpd, None
+            serving = self._serving
+
+        with self._sse_lock:
+            wfile, self._sse_wfile = self._sse_wfile, None
+        if wfile is not None:
+            try:
+                wfile.close()
+            except Exception:
+                pass
+
+        if httpd is None:
+            return
+        if serving:
+            httpd.shutdown()
+        httpd.server_close()
+
+    def run(self, handler: Callable[[dict], dict | None]):
+        """Start the HTTP server (blocking). Unchanged: bind, then serve."""
+        self._handler = handler
+        self.bind()
+        self.serve()
 
     def _make_server(self):
         """Build the threaded HTTP server (split out for testability)."""
         transport = self
 
         class RequestHandler(BaseHTTPRequestHandler):
+            # Without a timeout the connection socket blocks forever, and
+            # ``_write_locked`` holds ``_sse_lock`` across its write: a client
+            # that stops reading would pin that lock and freeze ``stop()`` —
+            # which runs on the Qt main thread — hanging all of FreeCAD (#63).
+            # ``StreamRequestHandler.setup()`` applies this via settimeout().
+            # Generous enough that a merely slow client is not dropped; a
+            # timed-out write surfaces as ``socket.timeout``, which is
+            # ``TimeoutError`` and so already handled as a dropped client.
+            timeout = 30
+
             def log_message(self, fmt, *args):
                 logger.debug(fmt, *args)
 

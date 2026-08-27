@@ -1,10 +1,11 @@
 """Tests for code execution engine — extract, validate, and safety checks."""
 
 import os
+import sys
 
 import pytest
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from freecad_ai.core import executor
 from freecad_ai.core.executor import (
@@ -567,3 +568,117 @@ class TestAutoSave:
         doc = _FakeDoc("")
         self._run(doc, str(tmp_path))
         assert doc.saved_paths == []
+
+
+class TestFindFreecadCmd:
+    """Regression tests for console-binary discovery (#58).
+
+    A PATH/glob-based guess can resolve to a completely unrelated FreeCAD
+    install — a Snap package on PATH while the live session runs from a
+    Flatpak. That foreign binary imports its own incompatible Draft/Arch/PySide
+    stack and segfaults, permanently blocking the sandbox pre-check for
+    anything BIM-related. The running session's own ``FreeCAD.getHomePath()``
+    is the only source guaranteed to match.
+    """
+
+    @staticmethod
+    def _make_home(tmp_path, name="freecadcmd"):
+        """Build a fake FreeCAD home with an executable console binary."""
+        bin_dir = tmp_path / "usr" / "bin"
+        bin_dir.mkdir(parents=True)
+        binary = bin_dir / name
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        return str(tmp_path / "usr"), str(binary)
+
+    @staticmethod
+    def _app_module(home):
+        app = MagicMock()
+        app.getHomePath.return_value = home
+        return app
+
+    def test_prefers_running_sessions_own_console_binary(self, tmp_path):
+        # A decoy AppImage is present and would win under the old glob-first
+        # ordering; the live session's binary must take precedence.
+        home, binary = self._make_home(tmp_path)
+        with patch.dict(sys.modules, {"FreeCAD": self._app_module(home)}), patch(
+            "glob.glob", return_value=["/home/someone/bin/FreeCAD_9.9.9.AppImage"]
+        ):
+            assert executor._find_freecad_cmd() == binary
+
+    def test_accepts_capitalised_binary_name(self, tmp_path):
+        home, binary = self._make_home(tmp_path, name="FreeCADCmd")
+        with patch.dict(sys.modules, {"FreeCAD": self._app_module(home)}), patch(
+            "glob.glob", return_value=[]
+        ):
+            assert executor._find_freecad_cmd() == binary
+
+    def test_non_executable_binary_is_ignored(self, tmp_path):
+        home, binary = self._make_home(tmp_path)
+        os.chmod(binary, 0o644)
+        decoy = "/home/someone/bin/FreeCAD_9.9.9.AppImage"
+        with patch.dict(sys.modules, {"FreeCAD": self._app_module(home)}), patch(
+            "glob.glob", return_value=[decoy]
+        ):
+            assert executor._find_freecad_cmd() == decoy
+
+    def test_falls_back_when_home_has_no_console_binary(self, tmp_path):
+        # Some builds ship no freecadcmd next to the GUI binary — the existing
+        # AppImage/PATH chain must still be reachable.
+        (tmp_path / "usr" / "bin").mkdir(parents=True)
+        decoy = "/home/someone/bin/FreeCAD_9.9.9.AppImage"
+        with patch.dict(
+            sys.modules, {"FreeCAD": self._app_module(str(tmp_path / "usr"))}
+        ), patch("glob.glob", return_value=[decoy]):
+            assert executor._find_freecad_cmd() == decoy
+
+    def test_falls_back_when_freecad_is_not_importable(self, tmp_path):
+        # Unit-test context, or any process without FreeCAD on sys.path.
+        decoy = "/home/someone/bin/FreeCAD_9.9.9.AppImage"
+        with patch.dict(sys.modules, {"FreeCAD": None}), patch(
+            "glob.glob", return_value=[decoy]
+        ):
+            assert executor._find_freecad_cmd() == decoy
+
+
+class TestSandboxGuiStub:
+    """Regression tests for the headless FreeCADGui stub (#58).
+
+    Importing the *real* FreeCADGui in the console sandbox and then anything
+    that pulls in Arch segfaults — no display, no QApplication event loop. The
+    crash happens during the import itself, so patching attributes afterwards
+    is too late; the real module must never be imported at all.
+    """
+
+    def _generated_script(self):
+        """Run _sandbox_test far enough to capture the generated harness."""
+        captured = {}
+        real_open = open
+
+        def spy_open(path, mode="r", *a, **kw):
+            handle = real_open(path, mode, *a, **kw)
+            if "w" in mode and str(path).endswith(".py"):
+                original_write = handle.write
+
+                def write(text):
+                    captured["src"] = text
+                    return original_write(text)
+
+                handle.write = write
+            return handle
+
+        with patch("freecad_ai.core.executor._find_freecad_cmd", return_value="/bin/true"), \
+                patch("builtins.open", spy_open), \
+                patch("subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            executor._sandbox_test("pass", timeout=1)
+        return captured.get("src", "")
+
+    def test_harness_installs_a_fake_gui_module(self):
+        src = self._generated_script()
+        assert 'sys.modules["FreeCADGui"]' in src
+
+    def test_harness_never_imports_the_real_gui_module(self):
+        # `import FreeCADGui` is the exact statement that segfaults.
+        src = self._generated_script()
+        assert "import FreeCADGui" not in src

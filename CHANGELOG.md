@@ -5,6 +5,92 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.22.0-alpha] - 2026-08-23
+
+### Added
+
+- **Start and stop the MCP server from the toolbar** — a checkable **MCP Server**
+  command in the FreeCAD AI toolbar and menu starts the HTTP/SSE server in the
+  running FreeCAD, so external clients no longer need a command-line launch or a
+  pasted `exec(open(...))` snippet. Suggested by @s-light on
+  [#55](https://github.com/ghbalf/freecad-ai/issues/55).
+  The button reports the true state: a server started via
+  `FreeCAD.AppImage mcp_server_http.py` or from the Python console shows as
+  running and can be stopped from the button, because all three routes now share
+  one controller.
+  Host and port are configurable under **AI Settings → MCP Servers**, with
+  `MCP_HOST`/`MCP_PORT` still taking precedence. Note the server has **no
+  authentication** — see [#59](https://github.com/ghbalf/freecad-ai/issues/59).
+
+### Fixed
+
+- **A failed MCP server start was silent** — the listening socket was created
+  inside the server thread, so a port conflict raised `OSError` in a daemon
+  thread and vanished: no dialog, no log the user would see, FreeCAD carrying on
+  as though the server were up. `mcp_server_http.py` compounded it by printing
+  `MCP SSE server running on ...` *before* attempting the bind. The bind now
+  happens before anything is announced, and failures reach the caller.
+- **The MCP server could not be stopped** — `SSEServerTransport` never kept a
+  handle on its HTTP server, so the only way to stop it was to quit FreeCAD. It
+  now has a `stop()` that shuts down and releases the port.
+- **MCP server reported a stale version to every client** — `SERVER_INFO` in
+  `freecad_ai/mcp/server.py` hardcoded `"0.1.0"`, so `claude mcp list`, Claude
+  Desktop and any other client displayed "FreeCAD AI 0.1.0" no matter which
+  release was installed. It now derives from `freecad_ai.__version__`. Cosmetic,
+  but actively misleading when diagnosing someone else's setup — and the value
+  had been wrong for twenty releases. Found while verifying the external-client
+  docs for #55; `MCPServer` had no test coverage at all, which is why nobody
+  caught it.
+- **"Keep Chat Panel Open" always showed a checkmark** — the menu entry's tick
+  was pinned on from the moment the workbench loaded and never moved, whatever
+  the setting actually was. FreeCAD 1.1.x reads a command's `Checkable`
+  resource as the action's *initial* state rather than as "this action may be
+  checked", and never calls a Python command's `IsChecked()`, so the tick has
+  to be pushed by hand. It now is — from the command itself, from workbench
+  activation, and from the Settings dialog.
+  [#62](https://github.com/ghbalf/freecad-ai/issues/62)
+- **A stuck MCP client could freeze FreeCAD** — SSE writes are serialized under
+  a lock that `stop()` also needs, and the connection had no timeout, so a
+  client that stopped reading could block the write indefinitely and hang the
+  Stop button on the Qt main thread. The connection now times out, which drops
+  the wedged client instead of freezing the GUI.
+  [#63](https://github.com/ghbalf/freecad-ai/issues/63)
+
+## [0.21.2-alpha] - 2026-08-15
+
+### Fixed
+
+- **`list_documents` raised AttributeError on every FreeCAD 1.1.x session**
+  (#57, reported and fixed by @s-light in #56) — the handler read
+  `doc.Modified`, but `App.Document` has no such property; the dirty flag lives
+  on the *Gui* document. The tool failed for all users on 1.1.x, not just the
+  Flatpak build it was reported against — confirmed locally against 1.1.1
+  (AppImage). The flag now comes from `Gui.getDocument(name).Modified`, falling
+  back to `False` when there is no GUI (the STDIO MCP server entry point runs
+  headless) or when the document is unknown to the Gui layer.
+- **Sandbox pre-check picked the wrong FreeCAD install** (#58, by @s-light) —
+  `_find_freecad_cmd()` guessed from `~/bin` AppImages and `PATH`, which could
+  resolve to a completely unrelated install (a Snap package on `PATH` while the
+  live session runs from a Flatpak). That foreign binary loads its own
+  incompatible Draft/Arch/PySide stack and segfaults. The console binary is now
+  resolved from the running session's own `FreeCAD.getHomePath()` first, which
+  is guaranteed to match; the existing AppImage/`PATH` chain remains as a
+  fallback for builds that ship no `freecadcmd`.
+- **Sandbox segfaulted on any code importing Arch/BIM** (#58, by @s-light) —
+  the harness imported the real `FreeCADGui` and then patched `ActiveDocument`
+  to a no-op. But the crash happens *during* the import: the real module pulls
+  in PySide/Qt, and anything that later touches Arch dies in C++ where no
+  Python handler can catch it — there is no display and no `QApplication` event
+  loop. The harness now installs a fake `FreeCADGui` module into `sys.modules`
+  instead, so the real one is never imported. Same view-cosmetics
+  neutralisation as before (#14), without the crash. Note that the fake module
+  defines only `ActiveDocument`, `SendMsgToActiveView` and `updateGui`; the
+  no-op absorption applies *below* `Gui.ActiveDocument`, not to the module
+  itself. Any other `Gui` attribute — notably `Gui.Selection` and
+  `Gui.getDocument`, which the real module provides — now raises
+  `AttributeError` in the pre-check, so code that reads the selection fails the
+  pre-check while running fine live.
+
 ## [0.21.1-alpha] - 2026-08-05
 
 ### Fixed

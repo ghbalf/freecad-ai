@@ -28,7 +28,6 @@ Environment variables:
 import os
 import sys
 import logging
-import threading
 
 logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
 
@@ -46,23 +45,20 @@ import FreeCAD
 if not FreeCAD.ActiveDocument:
     FreeCAD.newDocument("Unnamed")
 
-from freecad_ai.tools.setup import create_default_registry
-from freecad_ai.tools.executor_utils import QtMainThreadToolExecutor
-from freecad_ai.mcp.server import MCPServer
-from freecad_ai.mcp.transport import SSEServerTransport
+from freecad_ai.mcp.gui_server import get_server_controller, resolve_server_address
 
-registry = create_default_registry(include_mcp=False)
+# Config is only a fallback here; MCP_HOST / MCP_PORT still win. Reading it
+# can fail outside a configured install, which must not stop the server.
+try:
+    from freecad_ai.config import get_config
+    _cfg = get_config()
+except Exception:
+    _cfg = None
 
-executor = QtMainThreadToolExecutor()
-executor.set_registry(registry)
+host, port = resolve_server_address(_cfg)
 
-host = os.environ.get("MCP_HOST", "127.0.0.1")
-port = int(os.environ.get("MCP_PORT", "3000"))
+# start() binds before returning, so this line can no longer announce a
+# server that never came up.
+url = get_server_controller().start(host, port)
 
-transport = SSEServerTransport(host=host, port=port)
-server = MCPServer(registry, transport=transport, executor=executor)
-
-server_thread = threading.Thread(target=server.run, daemon=True)
-server_thread.start()
-
-print(f"MCP SSE server running on http://{host}:{port}/sse", flush=True)
+print(f"MCP SSE server running on {url}", flush=True)
