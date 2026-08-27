@@ -1,13 +1,15 @@
 """User extension tools — discover, validate, and register user-authored tool functions.
 
-Scans .py and .FCMacro files from USER_TOOLS_DIR, validates with ast,
-imports and introspects functions, and wraps each as a ToolDefinition.
+Scans .py and .FCMacro files from USER_TOOLS_DIR and any provider tool
+directories, validates with ast, imports and introspects functions, and wraps
+each as a ToolDefinition.
 """
 
 import ast
 import importlib.machinery
 import importlib.util
 import os
+import textwrap
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -20,9 +22,28 @@ _TYPE_MAP = {
     "int": "integer",
     "str": "string",
     "bool": "boolean",
+    "list[str]": "array",
+    "list[float]": "array",
+    "list[int]": "array",
+}
+
+# Array types additionally need "items" — strict providers (OpenAI's
+# marketplace API) reject an "array" property without it, see
+# tests/unit/test_registry.py::test_every_array_property_has_items.
+_ITEMS_MAP = {
+    "list[str]": {"type": "string"},
+    "list[float]": {"type": "number"},
+    "list[int]": {"type": "integer"},
 }
 
 SUPPORTED_TYPES = set(_TYPE_MAP.keys())
+
+# Module-level string a tool file may define to choose its own tool-name
+# prefix. Provider modules use it to namespace their tools by workbench
+# instead of inheriting the "user_" prefix.
+TOOL_PREFIX_ATTR = "__tool_prefix__"
+
+DEFAULT_TOOL_PREFIX = "user_"
 
 
 @dataclass
@@ -32,6 +53,7 @@ class FuncParam:
     type_name: str
     required: bool = True
     default: Any = None
+    description: str = ""
 
 
 @dataclass
@@ -49,6 +71,7 @@ class ValidationResult:
     functions: list[FuncInfo] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     error: str = ""
+    prefix: str = DEFAULT_TOOL_PREFIX
 
 
 def validate_file(path: str) -> ValidationResult:
@@ -60,7 +83,7 @@ def validate_file(path: str) -> ValidationResult:
     - Warns on missing docstrings, unsupported param types
     """
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             source = f.read()
     except OSError as e:
         return ValidationResult(valid=False, error=f"Cannot read file: {e}")
@@ -72,12 +95,18 @@ def validate_file(path: str) -> ValidationResult:
 
     functions: list[FuncInfo] = []
     warnings: list[str] = []
+    prefix = _extract_tool_prefix(tree)
 
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, ast.FunctionDef):
             continue
         if node.name.startswith("_"):
             continue
+
+        # Parse the docstring first — the model reads the tool description and
+        # per-parameter descriptions to decide how to call the tool, so both
+        # come from prose the author already wrote.
+        description, param_docs = _parse_docstring(node)
 
         # Extract type-hinted parameters
         params: list[FuncParam] = []
@@ -92,15 +121,9 @@ def validate_file(path: str) -> ValidationResult:
         for i, arg in enumerate(args.args):
             if arg.arg == "self":
                 continue
-            annotation = arg.annotation
-            if annotation is None:
+            type_name = _annotation_name(arg.annotation)
+            if not type_name:
                 continue  # skip untyped params
-
-            type_name = ""
-            if isinstance(annotation, ast.Name):
-                type_name = annotation.id
-            elif isinstance(annotation, ast.Attribute):
-                type_name = annotation.attr
 
             if type_name not in SUPPORTED_TYPES:
                 has_unsupported = True
@@ -122,19 +145,14 @@ def validate_file(path: str) -> ValidationResult:
                 type_name=type_name,
                 required=not has_default,
                 default=default_val,
+                description=param_docs.get(arg.arg, ""),
             ))
 
-        if not params:
-            continue  # no typed params — skip this function
-
-        # Extract docstring
-        description = ""
-        if (node.body
-                and isinstance(node.body[0], ast.Expr)
-                and isinstance(node.body[0].value, ast.Constant)
-                and isinstance(node.body[0].value.value, str)):
-            raw = node.body[0].value.value
-            description = raw.strip().split("\n")[0]
+        # A function that declares no parameters at all is a legitimate tool - "list
+        # what is available" needs no arguments. Only skip functions whose parameters
+        # exist but are all untyped, since there is no schema to build from those.
+        if not params and node.args.args:
+            continue
 
         if not description:
             warnings.append(f"{node.name}(): missing docstring")
@@ -150,9 +168,12 @@ def validate_file(path: str) -> ValidationResult:
             valid=False,
             warnings=warnings,
             error="No valid tool functions found (need public functions with type hints)",
+            prefix=prefix,
         )
 
-    return ValidationResult(valid=True, functions=functions, warnings=warnings)
+    return ValidationResult(
+        valid=True, functions=functions, warnings=warnings, prefix=prefix
+    )
 
 
 def load_user_tools(
@@ -204,7 +225,7 @@ def load_user_tools(
                 continue
 
             for func_info in vr.functions:
-                tool_name = f"user_{func_info.name}"
+                tool_name = f"{vr.prefix}{func_info.name}"
                 if tool_name in registered_names:
                     continue  # primary dir takes precedence
 
@@ -216,9 +237,10 @@ def load_user_tools(
                     ToolParam(
                         name=fp.name,
                         type=_TYPE_MAP[fp.type_name],
-                        description=f"Parameter: {fp.name}",
+                        description=fp.description or f"Parameter: {fp.name}",
                         required=fp.required,
                         default=fp.default,
+                        items=_ITEMS_MAP.get(fp.type_name),
                     )
                     for fp in func_info.params
                 ]
@@ -267,6 +289,94 @@ def _make_handler(func):
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))
     return handler
+
+
+def _annotation_name(annotation) -> str:
+    """Return a canonical type name for a parameter annotation.
+
+    Handles the plain scalar forms (``float``, ``module.Thing``) plus the
+    single-argument generic ``list[str]``, which is written back out in the
+    same ``list[x]`` spelling used as the _TYPE_MAP key.
+    """
+    if annotation is None:
+        return ""
+    if isinstance(annotation, ast.Name):
+        return annotation.id
+    if isinstance(annotation, ast.Attribute):
+        return annotation.attr
+    if isinstance(annotation, ast.Subscript):
+        container = _annotation_name(annotation.value)
+        item = _annotation_name(annotation.slice)
+        if container and item:
+            return f"{container}[{item}]"
+        return container
+    return ""
+
+
+def _parse_docstring(node: ast.FunctionDef) -> tuple[str, dict]:
+    """Split a function docstring into a description and per-parameter docs.
+
+    Recognises the Google-style ``Args:`` block used throughout this codebase.
+    The description keeps every line before ``Args:`` (not just the summary),
+    because a tool's description is the model's only account of what the tool
+    does and when to reach for it. ``Returns:``/``Raises:`` sections are
+    dropped — they describe the handler's return value, which the model sees
+    directly in the tool result.
+    """
+    raw = ast.get_docstring(node)
+    if not raw:
+        return "", {}
+
+    lines = textwrap.dedent(raw).strip().splitlines()
+    section = "description"
+    description_lines: list[str] = []
+    param_docs: dict[str, str] = {}
+    current_param = ""
+
+    for line in lines:
+        stripped = line.strip()
+        heading = stripped.rstrip(":").lower()
+        if stripped.endswith(":") and heading in ("args", "arguments", "parameters"):
+            section = "args"
+            current_param = ""
+            continue
+        if stripped.endswith(":") and heading in (
+            "returns", "return", "raises", "yields", "examples", "example", "note", "notes"
+        ):
+            section = "other"
+            current_param = ""
+            continue
+
+        if section == "description":
+            description_lines.append(stripped)
+        elif section == "args":
+            name, sep, text = stripped.partition(":")
+            # "name (type): text" is also valid Google style.
+            name = name.split("(")[0].strip()
+            if sep and name.isidentifier():
+                current_param = name
+                param_docs[current_param] = text.strip()
+            elif current_param and stripped:
+                # Continuation of the previous parameter's description.
+                param_docs[current_param] = (
+                    f"{param_docs[current_param]} {stripped}".strip()
+                )
+
+    description = "\n".join(description_lines).strip()
+    return description, param_docs
+
+
+def _extract_tool_prefix(tree: ast.Module) -> str:
+    """Return the module's __tool_prefix__ value, or the default."""
+    for node in ast.iter_child_nodes(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == TOOL_PREFIX_ATTR:
+                value = _extract_constant(node.value)
+                if isinstance(value, str):
+                    return value
+    return DEFAULT_TOOL_PREFIX
 
 
 def _extract_constant(node: ast.expr) -> Any:

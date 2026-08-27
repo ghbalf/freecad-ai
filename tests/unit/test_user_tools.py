@@ -315,3 +315,243 @@ class TestScanMacros:
         assert len(tools) == 1
         result = tools[0].handler(x=1)
         assert result.output == "primary"
+
+
+class TestSequenceParams:
+    def test_list_types_become_arrays_with_items(self, tmp_path):
+        """list[...] params emit "array" plus the "items" strict providers need."""
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "seq.py").write_text(
+            "def pick(names: list[str], sizes: list[float], counts: list[int]) -> str:\n"
+            '    """Pick things."""\n'
+            '    return "ok"\n'
+        )
+        tool = load_user_tools(str(tmp_path))[0]
+        params = {p.name: p for p in tool.parameters}
+
+        assert params["names"].type == "array"
+        assert params["names"].items == {"type": "string"}
+        assert params["sizes"].items == {"type": "number"}
+        assert params["counts"].items == {"type": "integer"}
+
+    def test_scalar_params_have_no_items(self, tmp_path):
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "scalar.py").write_text(
+            'def one(size: float) -> str:\n    """One."""\n    return "ok"\n'
+        )
+        tool = load_user_tools(str(tmp_path))[0]
+        assert tool.parameters[0].items is None
+
+    def test_list_param_schema_is_strict_compliant(self, tmp_path):
+        """The same guard test_registry applies to built-ins, for user tools."""
+        from freecad_ai.extensions.user_tools import load_user_tools
+        from freecad_ai.tools.registry import _params_to_json_schema
+
+        (tmp_path / "seq.py").write_text(
+            'def pick(names: list[str]) -> str:\n    """Pick."""\n    return "ok"\n'
+        )
+        schema = _params_to_json_schema(load_user_tools(str(tmp_path))[0].parameters)
+        assert schema["properties"]["names"] == {
+            "type": "array",
+            "description": "Parameter: names",
+            "items": {"type": "string"},
+        }
+
+    def test_unsupported_generics_warn_and_are_dropped(self, tmp_path):
+        """An unsupported generic names itself in the warning, not "None"."""
+        from freecad_ai.extensions.user_tools import validate_file
+
+        f = tmp_path / "weird.py"
+        f.write_text(
+            "def my_tool(data: dict[str, int], odd: tuple[int], size: float) -> str:\n"
+            '    """Process."""\n'
+            '    return "ok"\n'
+        )
+        result = validate_file(str(f))
+        assert result.valid  # size is still usable
+        assert result.warnings == [
+            "my_tool(): param 'data' has unsupported type 'dict'",
+            "my_tool(): param 'odd' has unsupported type 'tuple[int]'",
+        ]
+        assert [p.name for p in result.functions[0].params] == ["size"]
+
+    def test_list_arg_reaches_the_function(self, tmp_path):
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "seq.py").write_text(
+            "def join_names(names: list[str]) -> str:\n"
+            '    """Join."""\n'
+            '    return ",".join(names)\n'
+        )
+        tool = load_user_tools(str(tmp_path))[0]
+        result = tool.handler(names=["a", "b"])
+        assert result.success
+        assert result.output == "a,b"
+
+
+class TestToolPrefix:
+    def test_default_prefix(self, tmp_path):
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "t.py").write_text(
+            'def thing(x: int) -> str:\n    """Thing."""\n    return "ok"\n'
+        )
+        assert load_user_tools(str(tmp_path))[0].name == "user_thing"
+
+    def test_module_can_choose_its_prefix(self, tmp_path):
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "t.py").write_text(
+            '__tool_prefix__ = "acme_"\n\n'
+            'def thing(x: int) -> str:\n    """Thing."""\n    return "ok"\n'
+        )
+        assert load_user_tools(str(tmp_path))[0].name == "acme_thing"
+
+    def test_empty_prefix_keeps_the_bare_name(self, tmp_path):
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "t.py").write_text(
+            '__tool_prefix__ = ""\n\n'
+            'def thing(x: int) -> str:\n    """Thing."""\n    return "ok"\n'
+        )
+        assert load_user_tools(str(tmp_path))[0].name == "thing"
+
+    def test_non_string_prefix_falls_back_to_default(self, tmp_path):
+        from freecad_ai.extensions.user_tools import validate_file
+
+        f = tmp_path / "t.py"
+        f.write_text(
+            "__tool_prefix__ = 42\n\n"
+            'def thing(x: int) -> str:\n    """Thing."""\n    return "ok"\n'
+        )
+        assert validate_file(str(f)).prefix == "user_"
+
+
+class TestDocstringParsing:
+    SOURCE = (
+        "def build(width: float, tags: list[str], deep: bool = False) -> str:\n"
+        '    """Build a thing from a profile.\n'
+        "\n"
+        "    Use this when the caller already knows the profile width; it does\n"
+        "    not compute one.\n"
+        "\n"
+        "    Args:\n"
+        "        width: Profile width in mm. Must be positive.\n"
+        "        tags (list[str]): Labels to attach, in order.\n"
+        "        deep: Whether to recurse into children.\n"
+        "\n"
+        "    Returns:\n"
+        "        A summary string.\n"
+        '    """\n'
+        '    return "ok"\n'
+    )
+
+    def test_description_keeps_full_prose_before_args(self, tmp_path):
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "t.py").write_text(self.SOURCE)
+        tool = load_user_tools(str(tmp_path))[0]
+
+        assert tool.description.startswith("Build a thing from a profile.")
+        assert "does\nnot compute one." in tool.description
+        assert "Args:" not in tool.description
+        assert "A summary string" not in tool.description
+
+    def test_args_block_supplies_param_descriptions(self, tmp_path):
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "t.py").write_text(self.SOURCE)
+        params = {p.name: p for p in load_user_tools(str(tmp_path))[0].parameters}
+
+        assert params["width"].description == "Profile width in mm. Must be positive."
+        assert params["tags"].description == "Labels to attach, in order."
+        assert params["deep"].description == "Whether to recurse into children."
+
+    def test_continuation_lines_join_the_previous_param(self, tmp_path):
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "t.py").write_text(
+            "def build(width: float) -> str:\n"
+            '    """Build.\n'
+            "\n"
+            "    Args:\n"
+            "        width: Profile width in mm,\n"
+            "            measured across the flange.\n"
+            '    """\n'
+            '    return "ok"\n'
+        )
+        param = load_user_tools(str(tmp_path))[0].parameters[0]
+        assert param.description == "Profile width in mm, measured across the flange."
+
+    def test_undocumented_param_keeps_the_placeholder(self, tmp_path):
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "t.py").write_text(
+            "def build(width: float, height: float) -> str:\n"
+            '    """Build.\n'
+            "\n"
+            "    Args:\n"
+            "        width: The width.\n"
+            '    """\n'
+            '    return "ok"\n'
+        )
+        params = {p.name: p for p in load_user_tools(str(tmp_path))[0].parameters}
+        assert params["height"].description == "Parameter: height"
+
+    def test_single_line_docstring_still_works(self, tmp_path):
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "t.py").write_text(
+            'def build(width: float) -> str:\n    """Build a thing."""\n    return "ok"\n'
+        )
+        tool = load_user_tools(str(tmp_path))[0]
+        assert tool.description == "Build a thing."
+        assert tool.parameters[0].description == "Parameter: width"
+
+
+class TestZeroArgumentTools:
+    ZERO_ARG = (
+        'def list_things() -> str:\n'
+        '    """List the things."""\n'
+        '    return "a, b"\n'
+    )
+
+    def test_a_function_with_no_parameters_is_a_tool(self, tmp_path):
+        # A "list what is available" tool is a real tool and takes no arguments.
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "t.py").write_text(self.ZERO_ARG)
+        tools = load_user_tools(str(tmp_path))
+
+        assert [t.name for t in tools] == ["user_list_things"]
+        assert tools[0].parameters == []
+        assert tools[0].description == "List the things."
+
+    def test_zero_argument_tool_executes(self, tmp_path):
+        from freecad_ai.extensions.user_tools import load_user_tools
+
+        (tmp_path / "t.py").write_text(self.ZERO_ARG)
+        result = load_user_tools(str(tmp_path))[0].handler()
+
+        assert result.success
+        assert result.output == "a, b"
+
+    def test_zero_argument_schema_is_valid(self, tmp_path):
+        from freecad_ai.extensions.user_tools import load_user_tools
+        from freecad_ai.tools.registry import _params_to_json_schema
+
+        (tmp_path / "t.py").write_text(self.ZERO_ARG)
+        schema = _params_to_json_schema(load_user_tools(str(tmp_path))[0].parameters)
+
+        assert schema == {"type": "object", "properties": {}}
+
+    def test_only_untyped_params_is_still_skipped(self, tmp_path):
+        # Without annotations there is no schema to build, so it cannot be a tool.
+        from freecad_ai.extensions.user_tools import validate_file
+
+        f = tmp_path / "t.py"
+        f.write_text('def helper(x, y):\n    """Helper."""\n    return x\n')
+
+        assert not validate_file(str(f)).valid

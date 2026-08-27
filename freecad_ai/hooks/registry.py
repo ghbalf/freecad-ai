@@ -25,6 +25,23 @@ def _get_disabled() -> list:
         return []
 
 
+def _hook_dirs() -> list:
+    """Hook directories in descending precedence order.
+
+    Unlike skills, the first directory to define a hook name wins (see the
+    dedup check in _load_hooks), so built-ins come first and the user
+    directory last.
+    """
+    dirs = [BUILTIN_HOOKS_DIR]
+    try:
+        from ..extensions.module_assets import asset_subdirs
+        dirs.extend(asset_subdirs("hooks"))
+    except Exception:
+        pass  # Module asset discovery is optional
+    dirs.append(HOOKS_DIR)
+    return dirs
+
+
 class HookRegistry:
     def __init__(self):
         self._hooks: dict[str, list[tuple[str, callable]]] = {}
@@ -36,7 +53,7 @@ class HookRegistry:
         info = []
         disabled = _get_disabled()
 
-        for hooks_dir in (BUILTIN_HOOKS_DIR, HOOKS_DIR):
+        for hooks_dir in _hook_dirs():
             if not os.path.isdir(hooks_dir):
                 continue
             for entry in sorted(os.listdir(hooks_dir)):

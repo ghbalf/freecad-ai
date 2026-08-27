@@ -20,7 +20,7 @@ def create_default_registry(include_mcp: bool = True, extra_tools: list | None =
     for tool in ALL_TOOLS:
         registry.register(tool)
 
-    # Load user extension tools
+    # Load user extension tools, plus any shipped by other installed modules
     try:
         from ..config import USER_TOOLS_DIR, get_config
         from ..extensions.user_tools import load_user_tools
@@ -32,6 +32,11 @@ def create_default_registry(include_mcp: bool = True, extra_tools: list | None =
             )
             if os.path.isdir(fc_macro_dir):
                 extra_dirs.append(fc_macro_dir)
+        try:
+            from ..extensions.module_assets import asset_subdirs
+            extra_dirs.extend(asset_subdirs("tools"))
+        except Exception:
+            pass  # Module asset discovery is optional
         user_tools = load_user_tools(
             USER_TOOLS_DIR,
             disabled=cfg.user_tools_disabled,
