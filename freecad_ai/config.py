@@ -496,6 +496,16 @@ class AppConfig:
     # is naturally bounded by the number of distinct documents ever edited.
     max_backups: int = 0
 
+    # OpenCode bar: last selected model and variant (persisted across sessions)
+    oc_last_model: str = ""
+    oc_last_variant: str = ""
+
+    # Opt-in fallback to unverified TLS (ssl._create_unverified_context) for
+    # environments where the system trust store is unavailable or broken
+    # (snap sandboxes, stripped cert bundles). Default False: certificate
+    # verification failures abort the request instead of silently downgrading.
+    allow_insecure_ssl: bool = False
+
     @property
     def supports_vision(self) -> bool:
         """Whether the current LLM supports vision (images in content blocks)."""
@@ -593,6 +603,7 @@ def save_config(config: AppConfig):
 _PARAM_PROVIDERS = [
     "anthropic", "openai", "ollama", "gemini", "openrouter",
     "moonshot", "deepseek", "qwen", "groq", "mistral", "together",
+    "opencodezen", "opencodego",
 ]
 _PARAM_MODES = ["plan", "act"]
 _PARAM_THINKING = ["off", "on", "extended"]

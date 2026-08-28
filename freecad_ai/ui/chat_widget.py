@@ -10,7 +10,11 @@ tool calls on the main thread, feed results back to the LLM.
 """
 
 import json
+import os
 import time
+import threading
+import urllib.request
+import urllib.error
 
 from .compat import QtWidgets, QtCore, QtGui
 from ..i18n import translate
@@ -244,13 +248,22 @@ class _LLMWorker(QThread):
         self._tool_timeline = []  # timing data for summary visualization
         self._response_truncated = False  # response hit the output-token limit
 
+        # Streaming deltas are batched before emission. Emitting one queued
+        # signal per tiny chunk saturates the GUI event loop (every queued
+        # delivery is still processed there), which froze the UI during fast
+        # reasoning traces. Batching to a character threshold keeps the signal
+        # rate low enough that paint/hover events stay responsive.
+        self._text_buf = ""
+        self._think_buf = ""
+        self._EMIT_BATCH = 512
+
     def run(self):
         try:
             from ..llm.client import create_client_from_config, should_strip_thinking
             from ..config import get_config as _get_config
-            client = create_client_from_config()
+            self._client = create_client_from_config()
             self._strip_thinking = should_strip_thinking(
-                client.model, _get_config().strip_thinking_history)
+                self._client.model, _get_config().strip_thinking_history)
 
             # Re-format messages with image interception on worker thread
             if self.conversation and self.describe_fn:
@@ -262,11 +275,11 @@ class _LLMWorker(QThread):
 
             if not self.tools:
                 # Simple non-tool streaming (backward compat)
-                self._simple_stream(client)
+                self._simple_stream(self._client)
                 return
 
             # Agentic tool loop
-            self._tool_loop(client)
+            self._tool_loop(self._client)
 
         except Exception as e:
             self.error_occurred.emit(str(e))
@@ -289,7 +302,13 @@ class _LLMWorker(QThread):
             if self.isInterruptionRequested():
                 break
             self._full_response += chunk
-            self.token_received.emit(chunk)
+            self._text_buf += chunk
+            if len(self._text_buf) >= self._EMIT_BATCH:
+                self.token_received.emit(self._text_buf)
+                self._text_buf = ""
+        if self._text_buf:
+            self.token_received.emit(self._text_buf)
+            self._text_buf = ""
         self._response_truncated = client.response_truncated
         self.response_finished.emit(self._full_response)
 
@@ -312,11 +331,17 @@ class _LLMWorker(QThread):
                 if event.type == "text_delta":
                     text_parts.append(event.text)
                     self._full_response += event.text
-                    self.token_received.emit(event.text)
+                    self._text_buf += event.text
+                    if len(self._text_buf) >= self._EMIT_BATCH:
+                        self.token_received.emit(self._text_buf)
+                        self._text_buf = ""
                 elif event.type == "thinking_delta":
                     thinking_parts.append(event.text)
                     self._thinking_text += event.text
-                    self.thinking_received.emit(event.text)
+                    self._think_buf += event.text
+                    if len(self._think_buf) >= self._EMIT_BATCH:
+                        self.thinking_received.emit(self._think_buf)
+                        self._think_buf = ""
                 elif event.type == "tool_call_start":
                     if event.tool_call:
                         self.tool_call_started.emit(event.tool_call.name, event.tool_call.id)
@@ -325,6 +350,15 @@ class _LLMWorker(QThread):
                         tool_calls.append(event.tool_call)
                 elif event.type == "done":
                     break
+
+            # Flush any buffered deltas so the user sees this turn's text/thinking
+            # before tool execution or the final response is emitted.
+            if self._think_buf:
+                self.thinking_received.emit(self._think_buf)
+                self._think_buf = ""
+            if self._text_buf:
+                self.token_received.emit(self._text_buf)
+                self._text_buf = ""
 
             turn_text = "".join(text_parts)
             turn_thinking = "".join(thinking_parts)
@@ -513,6 +547,17 @@ class _LLMWorker(QThread):
         self._pending_result = result
         self._tool_result_wait.wakeAll()
         self._tool_result_ready.unlock()
+
+    def cancel(self):
+        """Cancel the in-flight LLM request by closing the HTTP response.
+
+        This breaks the blocking readline() in the stream generator so
+        the worker thread can exit promptly when interrupted.
+        """
+        self.requestInterruption()
+        client = getattr(self, '_client', None)
+        if client is not None:
+            client.cancel()
 
 
 class _CompactionWorker(QThread):
@@ -810,6 +855,11 @@ class _AttachmentStrip(QtWidgets.QWidget):
 class ChatDockWidget(QDockWidget):
     """Main chat dock widget for FreeCAD AI."""
 
+    # Emitted from the background model-fetch thread with the list of model ids.
+    oc_models_ready = Signal(list)
+    # Emitted when per-model metadata has been fetched and cached off-thread.
+    oc_meta_ready = Signal()
+
     def __init__(self, parent=None):
         super().__init__(translate("ChatDockWidget", "FreeCAD AI"), parent)
         self.setObjectName("FreeCADAIChatDock")
@@ -822,6 +872,17 @@ class ChatDockWidget(QDockWidget):
                                               # _set_input_text() to guard a
                                               # future textChanged-based reset
         self._streaming_html = ""
+        # Streaming deltas are buffered and flushed on a timer rather than
+        # inserted one-by-one. A high-frequency token/thinking stream (e.g.
+        # xhigh reasoning) can emit thousands of tiny deltas; queuing each as
+        # a separate GUI-thread insertText saturates the event loop and makes
+        # the app appear frozen during long reasoning traces.
+        self._pending_think = ""
+        self._pending_text = ""
+        self._flush_timer = QtCore.QTimer(self)
+        self._flush_timer.setInterval(40)
+        self._flush_timer.setSingleShot(False)
+        self._flush_timer.timeout.connect(self._flush_stream)
         self._retry_count = 0
         self._anchor_connected = False
         self._tool_registry = None
@@ -855,6 +916,10 @@ class ChatDockWidget(QDockWidget):
         self.topLevelChanged.connect(self._save_dock_state)
         # visibilityChanged catches tabify when our dock becomes a background tab
         self.visibilityChanged.connect(self._save_dock_state)
+
+        # OpenCode model list fetched off the GUI thread; results arrive here.
+        self.oc_models_ready.connect(self._populate_oc_model_dropdown)
+        self.oc_meta_ready.connect(self._on_oc_meta_loaded)
 
         # Debounced save for tabify-by-drag. Tabification emits no dedicated
         # Qt signal, but the dock's geometry changes when it joins a tab group,
@@ -1066,7 +1131,46 @@ class ChatDockWidget(QDockWidget):
         self.chat_display.setFont(QFont("Sans", 10))
         self.chat_display.setStyleSheet(get_chat_display_stylesheet())
         self.chat_display.anchorClicked.connect(self._handle_anchor_click)
+        self._auto_scroll = True  # track whether to follow new content
+        self.chat_display.verticalScrollBar().valueChanged.connect(
+            self._on_scrollbar_value_changed)
         layout.addWidget(self.chat_display, 1)
+
+        # ── OpenCode status bar (model + variant + context/cost) ──
+        self._opencode_bar = QWidget()
+        ob = QHBoxLayout(self._opencode_bar)
+        ob.setContentsMargins(4, 2, 4, 2)
+        ob.setSpacing(8)
+
+        ob.addWidget(QLabel(translate("ChatDockWidget", "Model:")))
+        self._oc_model_combo = QComboBox()
+        self._oc_model_combo.setMinimumContentsLength(15)
+        self._oc_model_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self._oc_model_combo.currentIndexChanged.connect(self._on_oc_model_changed)
+        ob.addWidget(self._oc_model_combo, 1)
+
+        ob.addWidget(QLabel(translate("ChatDockWidget", "Variant:")))
+        self._oc_variant_combo = QComboBox()
+        self._oc_variant_combo.setMinimumWidth(100)
+        self._oc_variant_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self._oc_variant_combo.currentIndexChanged.connect(self._on_oc_variant_changed)
+        ob.addWidget(self._oc_variant_combo)
+
+        self._oc_context_label = QLabel("")
+        _oc_color = _get_theme_colors()['thinking_text']
+        self._oc_context_label.setStyleSheet(f"color: {_oc_color}; font-size: 11px;")
+        ob.addWidget(self._oc_context_label)
+
+        self._oc_cost_label = QLabel("")
+        self._oc_cost_label.setStyleSheet(f"color: {_oc_color}; font-size: 11px;")
+        ob.addWidget(self._oc_cost_label)
+
+        self._opencode_bar.setVisible(False)
+        layout.addWidget(self._opencode_bar)
+
+        # Model metadata cache: {provider_id: {model_id: {...}}}
+        self._oc_model_meta = {}
+        self._oc_current_variant = ""
 
         # ── Attachment strip ──
         self._attachment_strip = _AttachmentStrip()
@@ -1153,8 +1257,9 @@ class ChatDockWidget(QDockWidget):
         self.setWidget(container)
 
         # Sync banner/toggle with current dangerous-mode state
-        # (shows banner at startup if dangerous_skip_safety was hand-edited in config.json)
         self._update_danger_banner()
+
+        # OpenCode bar updated in showEvent when widget becomes visible
 
     # ── Dangerous-mode toggle ──────────────────────────────
 
@@ -1207,10 +1312,11 @@ class ChatDockWidget(QDockWidget):
     # ── Theme refresh on show ──────────────────────────────
 
     def showEvent(self, event):
-        """Refresh theme colors when the widget becomes visible."""
+        """Refresh theme colors and OpenCode bar when widget becomes visible."""
         super().showEvent(event)
         refresh_theme_cache()
         self._apply_theme()
+        self._update_opencode_bar()
 
     def _resolve_stylesheet_conflict(self, theme_name: str):
         """OpenDark/OpenLight theme packs inject global QPushButton styles that
@@ -1380,7 +1486,7 @@ class ChatDockWidget(QDockWidget):
             # Button is in "Stop" state — interrupt the in-flight run instead
             # of sending. Input is usually empty here, so this must run before
             # the empty-text guard below.
-            self._worker.requestInterruption()
+            self._worker.cancel()
             return
 
         text = self.input_edit.toPlainText().strip()
@@ -1390,6 +1496,7 @@ class ChatDockWidget(QDockWidget):
         self.input_edit.clear()
         self._retry_count = 0  # Reset retries for new user message
         self._active_skill_name = ""
+        self._auto_scroll = True  # Follow new content after sending
 
         # Check for --validate flag
         self._validate_pending = False
@@ -2026,11 +2133,17 @@ class ChatDockWidget(QDockWidget):
         # Start streaming
         self._set_loading(True)
         self._streaming_html = ""
+        self._pending_think = ""
+        self._pending_text = ""
+        self._flush_timer.stop()
         self._append_html(
-            '<div style="margin: 8px 0; padding: 8px 12px; '
-            'background-color: #f5f5f5; border-radius: 6px;">'
-            '<div style="font-weight: bold; color: #2e7d32; margin-bottom: 4px;">AI</div>'
-            '<div style="white-space: pre-wrap;">'
+            '<div style="clear: both; margin: 16px 0 8px 0; padding: 8px 12px; '
+            'background-color: {}; border-radius: 6px;">'
+            '<div style="font-weight: bold; color: {}; margin-bottom: 4px;">AI</div>'
+            '<div style="white-space: pre-wrap;">'.format(
+                _get_theme_colors()['assistant_bg'],
+                _get_theme_colors()['assistant_label'],
+            )
         )
 
         self._in_thinking = False
@@ -2142,53 +2255,77 @@ class ChatDockWidget(QDockWidget):
 
     @Slot(str)
     def _on_thinking(self, chunk):
-        """Handle a thinking/reasoning delta — render dimmed."""
-        import html as html_mod
+        """Handle a thinking/reasoning delta — buffer for throttled insert."""
         if not self._in_thinking:
             self._in_thinking = True
+            colors = _get_theme_colors()
             # Start a thinking block
             cursor = self.chat_display.textCursor()
             cursor.movePosition(QTextCursor.End)
             cursor.insertHtml(
                 '<div style="margin: 4px 0; padding: 4px 8px; '
-                'background-color: #f0f0f0; border-left: 2px solid #ccc; '
-                'font-size: 11px; color: #888; font-style: italic;">'
-                '<span style="color: #aaa;">{}</span><br>'.format(
-                    translate("ChatDockWidget", "Thinking..."))
+                'background-color: {bg}; border-left: 2px solid {border}; '
+                'font-size: 11px; color: {text}; font-style: italic;">'
+                '<span style="color: {label};">{}</span><br>'.format(
+                    translate("ChatDockWidget", "Thinking..."),
+                    bg=colors['thinking_bg'],
+                    border=colors['thinking_border'],
+                    text=colors['thinking_text'],
+                    label=colors['thinking_label'],
+                )
             )
             self.chat_display.setTextCursor(cursor)
 
-        escaped = html_mod.escape(chunk)
-        escaped = escaped.replace("\n", "<br>")
-
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertHtml(f'<span style="color: #999; font-size: 11px;">{escaped}</span>')
-        self.chat_display.setTextCursor(cursor)
-        self.chat_display.ensureCursorVisible()
+        self._pending_think += chunk
+        if not self._flush_timer.isActive():
+            self._flush_timer.start()
 
     @Slot(str)
     def _on_token(self, chunk):
-        """Handle a streamed token — append to the display."""
-        import html as html_mod
-
-        # Close thinking block if transitioning from thinking to regular content
+        """Handle a streamed token — buffer for throttled insert."""
+        # Mark that thinking has ended; the flush closes the thinking div.
         if self._in_thinking:
             self._in_thinking = False
+
+        self._streaming_html += chunk
+        self._pending_text += chunk
+        if not self._flush_timer.isActive():
+            self._flush_timer.start()
+
+    def _flush_stream(self):
+        """Flush buffered thinking/text deltas at a throttled rate.
+
+        Inserting every streamed delta individually queues one GUI-thread
+        insertText per delta. At high token rates (xhigh reasoning) that
+        floods the event loop and freezes the UI; batching into ~25 flushes/sec
+        keeps the interface responsive while preserving correct spacing/text.
+        """
+        flushed = False
+        if self._pending_think:
             cursor = self.chat_display.textCursor()
             cursor.movePosition(QTextCursor.End)
-            cursor.insertHtml('</div>')
+            cursor.insertText(self._pending_think)
             self.chat_display.setTextCursor(cursor)
-
-        escaped = html_mod.escape(chunk)
-        escaped = escaped.replace("\n", "<br>")
-        self._streaming_html += chunk
-
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertHtml(escaped)
-        self.chat_display.setTextCursor(cursor)
-        self.chat_display.ensureCursorVisible()
+            self._pending_think = ""
+            flushed = True
+        if self._pending_text:
+            # Thinking ended — close its div before appending normal text.
+            if self._in_thinking:
+                cursor = self.chat_display.textCursor()
+                cursor.movePosition(QTextCursor.End)
+                cursor.insertHtml('</div>')
+                self.chat_display.setTextCursor(cursor)
+                self._in_thinking = False
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertText(self._pending_text)
+            self.chat_display.setTextCursor(cursor)
+            self._pending_text = ""
+            flushed = True
+        if flushed:
+            self._scroll_to_bottom_if_needed()
+        if not self._pending_think and not self._pending_text:
+            self._flush_timer.stop()
 
     def _store_tool_results(self, full_response=""):
         """Store tool results from worker into conversation. Idempotent — skips if already stored."""
@@ -2231,12 +2368,23 @@ class ChatDockWidget(QDockWidget):
     @Slot(str)
     def _on_response_finished(self, full_response):
         """Handle completion of LLM response."""
+        # Flush any buffered deltas (and close the thinking div) before we
+        # close the streaming wrapper and re-render.
+        self._flush_stream()
+        self._flush_timer.stop()
+        if self._in_thinking:
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertHtml('</div>')
+            self.chat_display.setTextCursor(cursor)
+            self._in_thinking = False
         self._set_loading(False)
 
         # Close the streaming div
         cursor = self.chat_display.textCursor()
         cursor.movePosition(QTextCursor.End)
         cursor.insertHtml("</div></div>")
+        self.chat_display.setTextCursor(cursor)
 
         # Store in conversation - include any tool call info from the worker
         self._store_tool_results(full_response)
@@ -2258,7 +2406,11 @@ class ChatDockWidget(QDockWidget):
         if self._worker and self._worker._tool_results:
             self._auto_save_log()
 
-        # Re-render the full chat to get proper code block formatting
+        # Re-render the full chat to get proper code block formatting,
+        # markdown (bold/italic/inline code) and Plan-mode Execute/Copy
+        # buttons. The stored conversation text carries correct spaces;
+        # setHtml() renders it faithfully. Live streaming used insertText()
+        # so the user never sees missing spaces while tokens arrive.
         self._rerender_chat()
 
         # Warn when the model ran out of output budget mid-answer. Without this
@@ -2374,6 +2526,16 @@ class ChatDockWidget(QDockWidget):
         without re-rendering (to keep the streaming HTML intact).
         """
         self._set_loading(False)
+
+        # Flush any buffered deltas and close the thinking div first
+        self._flush_stream()
+        self._flush_timer.stop()
+        if self._in_thinking:
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertHtml('</div>')
+            self.chat_display.setTextCursor(cursor)
+            self._in_thinking = False
 
         # Close the streaming div
         cursor = self.chat_display.textCursor()
@@ -2535,11 +2697,17 @@ class ChatDockWidget(QDockWidget):
 
         self._set_loading(True)
         self._streaming_html = ""
+        self._pending_think = ""
+        self._pending_text = ""
+        self._flush_timer.stop()
         self._append_html(
-            '<div style="margin: 8px 0; padding: 8px 12px; '
-            'background-color: #f5f5f5; border-radius: 6px;">'
-            '<div style="font-weight: bold; color: #2e7d32; margin-bottom: 4px;">AI</div>'
-            '<div style="white-space: pre-wrap;">'
+            '<div style="clear: both; margin: 16px 0 8px 0; padding: 8px 12px; '
+            'background-color: {}; border-radius: 6px;">'
+            '<div style="font-weight: bold; color: {}; margin-bottom: 4px;">AI</div>'
+            '<div style="white-space: pre-wrap;">'.format(
+                _get_theme_colors()['assistant_bg'],
+                _get_theme_colors()['assistant_label'],
+            )
         )
 
         self._tool_results_stored = False
@@ -2635,16 +2803,349 @@ class ChatDockWidget(QDockWidget):
 
     # ── UI helpers ──────────────────────────────────────────
 
+    def _on_scrollbar_value_changed(self, value):
+        """Track whether the user is at the bottom of the chat."""
+        sb = self.chat_display.verticalScrollBar()
+        # Consider "at bottom" if within 40px of the end
+        self._auto_scroll = (sb.maximum() - value) < 40
+
+    def _scroll_to_bottom_if_needed(self):
+        """Scroll to bottom only if the user was already near the bottom."""
+        if self._auto_scroll:
+            sb = self.chat_display.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
     def _append_html(self, html_str):
-        """Append HTML to the chat display and scroll to bottom."""
+        """Append HTML to the chat display and scroll to bottom if at bottom."""
         cursor = self.chat_display.textCursor()
         cursor.movePosition(QTextCursor.End)
+        cursor.insertBlock()
         cursor.insertHtml(html_str)
         self.chat_display.setTextCursor(cursor)
-        self.chat_display.ensureCursorVisible()
+        self._scroll_to_bottom_if_needed()
+
+    # ── OpenCode status bar helpers ──────────────────────────
+
+    _OC_PROVIDERS = {"opencodezen", "opencodego"}
+
+    _MODELS_API = {
+        "opencodezen": "https://opencode.ai/zen/v1/models",
+        "opencodego": "https://opencode.ai/zen/go/v1/models",
+    }
+
+    def _is_opencode_provider(self) -> bool:
+        cfg = get_config()
+        return cfg.provider.name in self._OC_PROVIDERS
+
+    def _update_opencode_bar(self):
+        """Show/hide and populate the OpenCode bar based on current provider."""
+        if self._is_opencode_provider():
+            self._opencode_bar.setVisible(True)
+            self._fetch_oc_models_from_api()
+        else:
+            self._opencode_bar.setVisible(False)
+
+    def _fetch_oc_models_from_api(self):
+        """Fetch model list from the OpenCode API endpoint.
+
+        Runs the (potentially slow / blocking) network call on a background
+        thread so the UI never freezes while DNS/TLS is in flight. Results are
+        delivered to the GUI thread via the ``oc_models_ready`` signal.
+        """
+        cfg = get_config()
+        api_url = self._MODELS_API.get(cfg.provider.name)
+        if not api_url:
+            return
+        api_key = cfg.provider.api_key
+        threading.Thread(
+            target=self._fetch_oc_models_from_api_thread,
+            args=(api_url, api_key),
+            daemon=True,
+        ).start()
+
+    def _fetch_oc_models_from_api_thread(self, api_url, api_key):
+        """Background thread: fetch the OpenCode model list (network call)."""
+        try:
+            headers = {"Content-Type": "application/json", "User-Agent": "FreeCAD-AI"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            req = urllib.request.Request(api_url, headers=headers)
+            ctx = None
+            if api_url.startswith("https"):
+                import ssl
+                cfg = get_config()
+                ctx = (ssl._create_unverified_context() if cfg.allow_insecure_ssl
+                       else ssl.create_default_context())
+            resp = urllib.request.urlopen(req, context=ctx, timeout=5)
+            try:
+                data = json.loads(resp.read().decode("utf-8"))
+            finally:
+                resp.close()
+
+            models = sorted([m["id"] for m in data.get("data", []) if m.get("id")])
+            if models:
+                # _populate_oc_model_dropdown touches GUI widgets — marshal to
+                # the main thread via the signal (auto-queued across threads).
+                self.oc_models_ready.emit(models)
+        except Exception:
+            pass
+
+    def _populate_oc_model_dropdown(self, models: list[str]):
+        """Populate the OpenCode model combo from API model list."""
+        self._oc_model_combo.blockSignals(True)
+        self._oc_model_combo.clear()
+        cfg = get_config()
+
+        for mid in models:
+            self._oc_model_combo.addItem(mid, mid)
+
+        # Restore last selected model
+        saved = cfg.oc_last_model
+        if saved:
+            for i in range(self._oc_model_combo.count()):
+                if self._oc_model_combo.itemData(i) == saved:
+                    self._oc_model_combo.setCurrentIndex(i)
+                    break
+        elif self._oc_model_combo.count() > 0:
+            self._oc_model_combo.setCurrentIndex(0)
+
+        self._oc_model_combo.blockSignals(False)
+        self._update_oc_variants()
+        self._fetch_oc_model_meta()
+        self._update_oc_context_cost(self.conversation.estimated_tokens())
+
+    def _fetch_oc_model_meta(self):
+        """Fetch metadata for the selected model from models.dev."""
+        model_id = self._oc_model_combo.currentData()
+        if not model_id:
+            return
+        # Check cache
+        if model_id in self._oc_model_meta.get("opencode", {}):
+            self._update_oc_variants()
+            self._update_oc_context_cost(self.conversation.estimated_tokens())
+            return
+        threading.Thread(
+            target=self._fetch_oc_model_meta_thread,
+            args=(model_id,),
+            daemon=True,
+        ).start()
+
+    def _fetch_oc_model_meta_thread(self, model_id: str):
+        """Background thread: fetch single model metadata from models.dev."""
+        try:
+            # Sanitize model_id to prevent path traversal
+            safe_id = model_id.replace("..", "").replace("/", "_").replace("\\", "_")
+            if not safe_id or len(safe_id) > 200:
+                return
+
+            # Try the direct model endpoint first
+            url = f"https://models.dev/models/{safe_id}.json"
+            req = urllib.request.Request(url, headers={"User-Agent": "FreeCAD-AI"})
+            import ssl
+            from ..config import get_config as _get_cfg
+            ctx = (ssl._create_unverified_context() if _get_cfg().allow_insecure_ssl
+                   else ssl.create_default_context())
+            try:
+                with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                    # Limit response size to 1MB to prevent memory exhaustion
+                    data = resp.read(1_000_000)
+                    mdata = json.loads(data.decode("utf-8"))
+                if mdata and mdata.get("name"):
+                    self._oc_model_meta.setdefault("opencode", {})[model_id] = mdata
+                    self.oc_meta_ready.emit()
+                    return
+            except Exception:
+                pass
+
+            # Fallback: search the catalog (use disk cache if available)
+            import tempfile
+            cache_path = os.path.join(tempfile.gettempdir(), "freecad_ai_models_dev.json")
+            catalog = None
+            try:
+                if os.path.exists(cache_path):
+                    with open(cache_path) as f:
+                        catalog = json.load(f)
+            except Exception:
+                pass
+
+            if catalog is None:
+                req2 = urllib.request.Request(
+                    "https://models.dev/catalog.json",
+                    headers={"User-Agent": "FreeCAD-AI"},
+                )
+                with urllib.request.urlopen(req2, context=ctx, timeout=30) as resp:
+                    # Limit catalog size to 10MB
+                    data = resp.read(10_000_000)
+                    catalog = json.loads(data.decode("utf-8"))
+                try:
+                    with open(cache_path, "w") as f:
+                        json.dump(catalog, f)
+                except Exception:
+                    pass
+
+            # Search all providers for this model
+            for pid, prov in catalog.get("providers", {}).items():
+                if model_id in prov.get("models", {}):
+                    self._oc_model_meta.setdefault("opencode", {})[model_id] = \
+                        prov["models"][model_id]
+                    self.oc_meta_ready.emit()
+                    return
+        except Exception:
+            pass
+
+    def _on_oc_meta_loaded(self):
+        """Called on main thread after metadata is fetched."""
+        self._update_oc_variants()
+        self._update_oc_context_cost(self.conversation.estimated_tokens())
+
+    def _update_oc_variants(self):
+        """Update the variant combo based on the selected model's metadata."""
+        self._oc_variant_combo.blockSignals(True)
+        self._oc_variant_combo.clear()
+        cfg = get_config()
+
+        model_id = self._oc_model_combo.currentData()
+        provider_models = self._oc_model_meta.get("opencode", {})
+        mdata = provider_models.get(model_id, {})
+
+        # Build variant list from reasoning_options
+        variants = []
+        reasoning_opts = mdata.get("reasoning_options", [])
+        for ro in reasoning_opts:
+            if ro.get("type") == "effort":
+                for v in ro.get("values", []):
+                    variants.append(v)
+
+        if not variants:
+            variants = ["none", "low", "medium", "high", "xhigh"]
+
+        self._oc_variant_combo.addItems(variants)
+
+        # Restore last selected variant
+        saved = cfg.oc_last_variant
+        if saved and saved in variants:
+            self._oc_variant_combo.setCurrentText(saved)
+        else:
+            default_v = "xhigh" if "xhigh" in variants else variants[len(variants) // 2]
+            self._oc_variant_combo.setCurrentText(default_v)
+
+        self._oc_variant_combo.blockSignals(False)
+        self._oc_current_variant = self._oc_variant_combo.currentText()
+
+    def _on_oc_model_changed(self, index):
+        """Handle model selection change in the OpenCode bar."""
+        cfg = get_config()
+        model_id = self._oc_model_combo.currentData()
+        if model_id:
+            cfg.provider.model = model_id
+            cfg.oc_last_model = model_id
+            save_current_config()
+        self._update_oc_variants()
+        self._fetch_oc_model_meta()
+        self._update_oc_context_cost(self.conversation.estimated_tokens())
+
+    def _on_oc_variant_changed(self, index):
+        """Handle variant selection change — apply variant's full settings."""
+        variant = self._oc_variant_combo.currentText()
+        if not variant:
+            return
+        self._oc_current_variant = variant
+        cfg = get_config()
+        cfg.oc_last_variant = variant
+
+        # Map variant to thinking mode
+        variant_to_thinking = {
+            "none": "off", "low": "on", "medium": "on",
+            "high": "extended", "xhigh": "extended",
+        }
+        cfg.thinking = variant_to_thinking.get(variant, "on")
+
+        # Look up variant's sampling params from models.dev metadata
+        model_id = self._oc_model_combo.currentData()
+        provider_models = self._oc_model_meta.get("opencode", {})
+        mdata = provider_models.get(model_id, {})
+        variant_params = mdata.get("variants", {}).get(variant, {})
+
+        model = cfg.provider.model
+        cfg.model_params.setdefault(model, {})
+
+        # Apply reasoning effort
+        variant_to_effort = {
+            "none": "none", "low": "low", "medium": "medium",
+            "high": "high", "xhigh": "xhigh",
+        }
+        cfg.model_params[model]["reasoning_effort"] = \
+            variant_to_effort.get(variant, "medium")
+
+        # Apply sampling params from variant (camelCase → snake_case)
+        camel_to_snake = {
+            "temperature": "temperature",
+            "topP": "top_p",
+            "topK": "top_k",
+            "minP": "min_p",
+            "presencePenalty": "presence_penalty",
+            "frequencyPenalty": "frequency_penalty",
+        }
+        for camel, snake in camel_to_snake.items():
+            if camel in variant_params:
+                cfg.model_params[model][snake] = variant_params[camel]
+
+        save_current_config()
+
+    def _update_oc_context_cost(self, current_tokens=0):
+        """Update context size and estimated cost labels."""
+        model_id = self._oc_model_combo.currentData()
+        if not model_id:
+            return
+
+        provider_models = self._oc_model_meta.get("opencode", {})
+        mdata = provider_models.get(model_id, {})
+
+        # Context window
+        limit = mdata.get("limit", {})
+        ctx = limit.get("context", 0)
+        out = limit.get("output", 0)
+        if ctx:
+            if ctx >= 1_000_000:
+                ctx_str = f"{ctx / 1_000_000:.0f}M"
+            elif ctx >= 1000:
+                ctx_str = f"{ctx // 1000}K"
+            else:
+                ctx_str = str(ctx)
+            # Show usage if we have tokens
+            if current_tokens:
+                pct = (current_tokens / ctx) * 100
+                self._oc_context_label.setText(
+                    f"Context: {current_tokens // 1000}k / {ctx_str} ({pct:.0f}%)")
+            else:
+                self._oc_context_label.setText(f"Context: {ctx_str}")
+        else:
+            self._oc_context_label.setText("")
+
+        # Cost estimate based on current tokens
+        cost = mdata.get("cost", {})
+        cost_in = cost.get("input", 0)
+        cost_out = cost.get("output", 0)
+        if current_tokens and (cost_in or cost_out):
+            # Rough estimate: assume ~80% input, ~20% output
+            est_in = current_tokens * 0.8
+            est_out = current_tokens * 0.2
+            est_cost = (est_in * cost_in + est_out * cost_out) / 1_000_000
+            self._oc_cost_label.setText(f"~${est_cost:.4f}")
+        elif cost_in or cost_out:
+            self._oc_cost_label.setText(
+                f"${cost_in:.2f} / ${cost_out:.2f} / 1M")
+        else:
+            self._oc_cost_label.setText("Free")
 
     def _rerender_chat(self):
-        """Re-render the entire chat history with proper formatting."""
+        """Re-render the entire chat history with proper formatting.
+
+        Uses append() instead of setHtml() to avoid destroying the streaming
+        HTML that was built via insertHtml(). setHtml() re-parses accumulated
+        HTML and normalizes whitespace differently than insertHtml(), causing
+        spaces to disappear in the final render.
+        """
         try:
             html_parts = []
             mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
@@ -2677,10 +3178,26 @@ class ChatDockWidget(QDockWidget):
                         html_parts.append(render_plan_buttons(partial, allow_execute=False))
 
             full_html = "".join(html_parts)
+            # setHtml() resets the document; while it rebuilds (and during the
+            # layout pass that follows), the scrollbar emits valueChanged with
+            # value=0 against a growing maximum, which would flip _auto_scroll
+            # to False and skip the follow-scroll. Capture the intent up front,
+            # keep the tracking signal blocked across rebuild + layout, and
+            # only re-enable it once we've restored the position.
+            should_scroll = self._auto_scroll
+            scrollbar = self.chat_display.verticalScrollBar()
+            scrollbar.blockSignals(True)
             self.chat_display.setHtml(full_html)
 
-            scrollbar = self.chat_display.verticalScrollBar()
-            scrollbar.setValue(scrollbar.maximum())
+            if should_scroll:
+                def _restore_scroll():
+                    sb = self.chat_display.verticalScrollBar()
+                    sb.setValue(sb.maximum())
+                    sb.blockSignals(False)
+                    self._auto_scroll = True
+                QtCore.QTimer.singleShot(0, _restore_scroll)
+            else:
+                scrollbar.blockSignals(False)
         except Exception:
             pass  # Keep existing display content on error
 
@@ -2774,6 +3291,9 @@ class ChatDockWidget(QDockWidget):
         else:
             self.token_label.setText(
                 translate("ChatDockWidget", "tokens: ~{}").format(tokens))
+        # Update OpenCode cost estimate with actual token count
+        if self._is_opencode_provider():
+            self._update_oc_context_cost(tokens)
 
     def _connect_mcp_servers(self, cfg, *, only_deferred=None):
         """Connect to configured MCP servers.

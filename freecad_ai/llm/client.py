@@ -32,6 +32,19 @@ from .providers import get_api_style
 ANTHROPIC_API_VERSION = "2023-06-01"
 
 
+def _insecure_ssl_allowed() -> bool:
+    """Read the user's opt-in flag for unverified TLS fallback.
+
+    Import is deferred so this module stays importable without config
+    (e.g. headless tests). Any failure resolves to False (secure default).
+    """
+    try:
+        from ..config import get_config
+        return bool(get_config().allow_insecure_ssl)
+    except Exception:
+        return False
+
+
 @dataclass
 class ToolCall:
     """A tool call requested by the LLM."""
@@ -160,10 +173,19 @@ class LLMClient:
             try:
                 self._ssl_ctx = ssl.create_default_context()
             except Exception:
-                # Cert store unavailable (e.g. snap sandbox)
-                self._ssl_ctx = ssl._create_unverified_context()
+                # Cert store unavailable (e.g. snap sandbox). Only fall back
+                # to unverified TLS when the user explicitly opted in via
+                # Settings → allow_insecure_ssl; otherwise keep verification
+                # (urlopen with context=None uses the default verified ctx).
+                if _insecure_ssl_allowed():
+                    self._ssl_ctx = ssl._create_unverified_context()
+                else:
+                    self._ssl_ctx = None
         else:
             self._ssl_ctx = None
+
+        # Active HTTP response — closed by cancel() to break blocking reads
+        self._current_response = None
 
     # ── API key resolution ─────────────────────────────────────
 
@@ -413,7 +435,15 @@ class LLMClient:
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
-        # OpenAI reasoning models (o1, o3, etc.)
+
+        # Reasoning effort — sent for both tool and non-tool modes so
+        # OpenCode Zen/Go reasoning models get the effort level even
+        # when function calling is active.
+        # Check model_params first (set by variant slider), then fall
+        # back to thinking config.
+        effort_from_params = self.model_params.get("reasoning_effort")
+        if effort_from_params:
+            body["reasoning_effort"] = effort_from_params
         elif self.thinking != "off":
             effort_map = {"on": "medium", "extended": "high"}
             body["reasoning_effort"] = effort_map.get(self.thinking, "medium")
@@ -825,6 +855,7 @@ class LLMClient:
             req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
             try:
                 resp = urllib.request.urlopen(req, context=ctx, timeout=timeout)
+                self._current_response = resp
                 break
             except urllib.error.HTTPError as e:
                 if e.code == 429 and attempt < self._MAX_RETRIES:
@@ -870,8 +901,26 @@ class LLMClient:
                             yield json.loads(json_str)
                         except json.JSONDecodeError:
                             continue
+        except (AttributeError, ValueError):
+            # Response was closed by cancel() — buffer is None or
+            # the underlying socket was shut down. Exit gracefully.
+            return
         finally:
             resp.close()
+            self._current_response = None
+
+    def cancel(self):
+        """Cancel any in-flight streaming request by closing the HTTP response.
+
+        This breaks the blocking readline() in _http_stream so the worker
+        thread can check isInterruptionRequested() and exit promptly.
+        """
+        resp = self._current_response
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
 
 
 # Models that require thinking content to be stripped from conversation

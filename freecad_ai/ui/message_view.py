@@ -264,7 +264,7 @@ def render_message(role: str, content) -> str:
         formatted_content = _format_content(content)
 
     return (
-        f'<div style="margin: 8px 0; padding: 8px 12px; '
+        f'<div style="clear: both; margin: 8px 0; padding: 8px 12px; '
         f'background-color: {bg_color}; border-radius: 6px;">'
         f'<div style="font-weight: bold; color: {label_color}; '
         f'margin-bottom: 4px;">{label}</div>'
@@ -533,11 +533,13 @@ def _format_content_blocks(blocks: list) -> str:
         elif block.get("type") == "image":
             data_uri = f"data:{block['media_type']};base64,{block['data']}"
             parts.append(
+                f'<div style="margin: 4px 0;">'
                 f'<a href="image:{i}">'
                 f'<img src="{data_uri}" '
                 f'style="max-width:150px; max-height:150px; border-radius:4px; cursor:pointer;" '
                 f'title="Click to enlarge" />'
                 f'</a>'
+                f'</div>'
             )
     return "".join(parts)
 

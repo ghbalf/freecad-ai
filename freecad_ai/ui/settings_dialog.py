@@ -11,7 +11,11 @@ Provides a GUI for configuring:
   - Test connection button
 """
 
+import json
 import os
+import threading
+import urllib.request
+import urllib.error
 
 from .compat import QtWidgets, QtCore, QtGui
 from ..i18n import translate
@@ -42,7 +46,7 @@ QFileDialog = QtWidgets.QFileDialog
 QMessageBox = QtWidgets.QMessageBox
 
 from ..config import get_config, save_current_config, PROVIDER_PRESETS
-from ..llm.providers import get_provider_names
+from ..llm.providers import get_provider_names, PROVIDERS
 
 
 class _TestConnectionThread(QThread):
@@ -203,7 +207,10 @@ class SettingsDialog(QDialog):
         provider_layout = QFormLayout()
 
         self.provider_combo = QComboBox()
-        self.provider_combo.addItems([n.capitalize() for n in get_provider_names()])
+        self.provider_combo.addItems([
+            PROVIDERS.get(n, {}).get("display_name", n.capitalize())
+            for n in get_provider_names()
+        ])
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         provider_layout.addRow(translate("SettingsDialog", "Provider:"), self.provider_combo)
 
@@ -219,13 +226,27 @@ class SettingsDialog(QDialog):
         ))
         provider_layout.addRow(translate("SettingsDialog", "API Key:"), self.api_key_edit)
 
+        self.allow_insecure_ssl_check = QCheckBox(
+            translate("SettingsDialog", "Bypass SSL certificate verification (insecure)"))
+        self.allow_insecure_ssl_check.setToolTip(translate(
+            "SettingsDialog",
+            "Only enable this if your system trust store is unavailable or broken "
+            "(e.g. some sandboxed installs) and HTTPS requests fail certificate "
+            "verification. Disables server identity checks — connections remain "
+            "encrypted but are vulnerable to man-in-the-middle attacks. "
+            "Default: off."))
+        provider_layout.addRow(self.allow_insecure_ssl_check)
+
         self.base_url_edit = QLineEdit()
         self.base_url_edit.setPlaceholderText("https://api.example.com/v1")
         provider_layout.addRow(translate("SettingsDialog", "Base URL:"), self.base_url_edit)
 
-        self.model_edit = QLineEdit()
-        self.model_edit.setPlaceholderText(translate("SettingsDialog", "Model name"))
-        self.model_edit.editingFinished.connect(self._on_model_changed)
+        self.model_edit = QComboBox()
+        self.model_edit.setEditable(True)
+        self.model_edit.setInsertPolicy(QComboBox.NoInsert)
+        self.model_edit.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.model_edit.setMinimumContentsLength(20)
+        self.model_edit.currentTextChanged.connect(self._on_model_changed)
         self._last_model_name = ""  # track model name for param save/load
         provider_layout.addRow(translate("SettingsDialog", "Model:"), self.model_edit)
 
@@ -546,7 +567,8 @@ class SettingsDialog(QDialog):
         self.rerank_llm_provider_combo.addItem(
             translate("SettingsDialog", "(same as main)"), "")
         for name in get_provider_names():
-            self.rerank_llm_provider_combo.addItem(name.capitalize(), name)
+            display = PROVIDERS.get(name, {}).get("display_name", name.capitalize())
+            self.rerank_llm_provider_combo.addItem(display, name)
         llm_form.addRow(translate("SettingsDialog", "Provider:"),
                         self.rerank_llm_provider_combo)
 
@@ -867,7 +889,15 @@ class SettingsDialog(QDialog):
 
         self.api_key_edit.setText(cfg.provider.api_key)
         self.base_url_edit.setText(cfg.provider.base_url)
-        self.model_edit.setText(cfg.provider.model)
+        self._populate_model_combo(cfg.provider.name)
+        # Set the saved model — try combo match first, fall back to edit text
+        saved = cfg.provider.model
+        if saved:
+            idx = self.model_edit.findText(saved)
+            if idx >= 0:
+                self.model_edit.setCurrentIndex(idx)
+            else:
+                self.model_edit.setEditText(saved)
         self.max_tokens_spin.setValue(cfg.max_tokens)
         self.context_window_spin.setValue(cfg.context_window)
         self.max_tool_turns_spin.setValue(cfg.max_tool_turns)
@@ -878,6 +908,7 @@ class SettingsDialog(QDialog):
 
         self.enable_tools_check.setChecked(cfg.enable_tools)
         self.auto_execute_check.setChecked(cfg.auto_execute)
+        self.allow_insecure_ssl_check.setChecked(cfg.allow_insecure_ssl)
         self.keep_dock_check.setChecked(cfg.keep_dock_on_workbench_switch)
 
         # Tool reranking
@@ -953,6 +984,129 @@ class SettingsDialog(QDialog):
         # Hooks
         self._refresh_hooks_list()
 
+    # ── Model list helpers ─────────────────────────────────────
+
+    # Hardcoded fallback models for OpenCode providers (used when API
+    # fetch fails or as instant-populate during dialog load).
+    _MODELS_FALLBACK = {
+        "opencodezen": [
+            "deepseek-v4-pro", "deepseek-v4-flash",
+            "kimi-k3", "kimi-k2.7-code", "kimi-k2.6",
+            "glm-5.2", "glm-5.1", "glm-5",
+            "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus",
+            "minimax-m3", "minimax-m2.7",
+            "mimo-v2.5-free", "hy3-free", "big-pickle",
+            "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
+            "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+            "claude-sonnet-4-6", "claude-opus-4-5",
+            "gemini-3.5-flash", "gemini-3.1-pro",
+        ],
+        "opencodego": [
+            "deepseek-v4-pro", "deepseek-v4-flash",
+            "kimi-k3", "kimi-k2.7-code", "kimi-k2.6",
+            "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1",
+            "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
+            "minimax-m3", "minimax-m2.7",
+            "mimo-v2.5", "mimo-v2.5-pro",
+            "hy3", "longcat-2.0",
+            "grok-4.6", "gpt-5.6-luna",
+            "muse-spark-1.2-contributor",
+        ],
+    }
+
+    # Provider-specific model list API endpoints
+    _MODELS_API = {
+        "opencodezen": "https://opencode.ai/zen/v1/models",
+        "opencodego": "https://opencode.ai/zen/go/v1/models",
+    }
+
+    def _populate_model_combo(self, provider_name: str):
+        """Fill the model combo box for the given provider.
+
+        Uses hardcoded fallback lists instantly, then tries to fetch the
+        live model list from the provider API in a background thread.
+        """
+        self.model_edit.blockSignals(True)
+        current = self.model_edit.currentText()
+
+        # Clear and add fallback models
+        self.model_edit.clear()
+        fallback = self._MODELS_FALLBACK.get(provider_name, [])
+        if fallback:
+            self.model_edit.addItems(fallback)
+
+        # Restore previous selection if still in list
+        if current:
+            idx = self.model_edit.findText(current)
+            if idx >= 0:
+                self.model_edit.setCurrentIndex(idx)
+            else:
+                self.model_edit.setEditText(current)
+
+        self.model_edit.blockSignals(False)
+
+        # Fetch live list in background if endpoint exists
+        api_url = self._MODELS_API.get(provider_name)
+        if api_url:
+            api_key = self.api_key_edit.text().strip()
+            threading.Thread(
+                target=self._fetch_models_thread,
+                args=(api_url, api_key, provider_name),
+                daemon=True,
+            ).start()
+
+    def _fetch_models_thread(self, api_url: str, api_key: str,
+                              provider_name: str):
+        """Background thread: fetch model list from provider API."""
+        try:
+            headers = {"Content-Type": "application/json", "User-Agent": "FreeCAD-AI"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            req = urllib.request.Request(api_url, headers=headers)
+            ctx = None
+            if api_url.startswith("https"):
+                import ssl
+                ctx = (ssl._create_unverified_context() if get_config().allow_insecure_ssl
+                       else ssl.create_default_context())
+            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            models = []
+            # OpenAI-compatible /v1/models format: {"data": [{"id": "model-name", ...}]}
+            for m in data.get("data", []):
+                mid = m.get("id", "")
+                if mid:
+                    models.append(mid)
+
+            if models:
+                models.sort()
+                # Update combo on the main thread
+                QtCore.QTimer.singleShot(
+                    0, lambda: self._apply_fetched_models(models, provider_name))
+        except Exception:
+            pass  # fallback list is already populated
+
+    def _apply_fetched_models(self, models: list[str], provider_name: str):
+        """Apply fetched model list to the combo (runs on main thread)."""
+        # Verify provider hasn't changed while we were fetching
+        names = get_provider_names()
+        idx = self.provider_combo.currentIndex()
+        current_provider = names[idx] if 0 <= idx < len(names) else ""
+        if current_provider != provider_name:
+            return
+
+        self.model_edit.blockSignals(True)
+        current = self.model_edit.currentText()
+        self.model_edit.clear()
+        self.model_edit.addItems(models)
+        if current:
+            idx = self.model_edit.findText(current)
+            if idx >= 0:
+                self.model_edit.setCurrentIndex(idx)
+            else:
+                self.model_edit.setEditText(current)
+        self.model_edit.blockSignals(False)
+
     def _on_provider_changed(self, index):
         """Update base URL, model, and default params when provider changes."""
         names = get_provider_names()
@@ -967,13 +1121,22 @@ class SettingsDialog(QDialog):
             new_base_url = preset.get("base_url", "")
             if new_base_url:
                 self.base_url_edit.setText(new_base_url)
+
+            # Populate model dropdown for this provider
+            self._populate_model_combo(name)
+
+            # Set default model from preset
             new_model = preset.get("default_model", "")
             if new_model:
-                self.model_edit.setText(new_model)
+                idx = self.model_edit.findText(new_model)
+                if idx >= 0:
+                    self.model_edit.setCurrentIndex(idx)
+                else:
+                    self.model_edit.setEditText(new_model)
 
             # Load saved params for the (possibly preserved) model
             cfg = get_config()
-            self._load_model_params_table(self.model_edit.text(), cfg)
+            self._load_model_params_table(self.model_edit.currentText(), cfg)
 
             # Apply provider-recommended reranker settings only when the
             # reranker UI is still at its factory default (off + top_n 15).
@@ -1035,7 +1198,7 @@ class SettingsDialog(QDialog):
 
     def _on_model_changed(self):
         """Save current params under the old model, load params for the new one."""
-        new_model = self.model_edit.text().strip()
+        new_model = self.model_edit.currentText().strip()
         if new_model == self._last_model_name or not new_model:
             return
         # Save current table under old model name (in-memory only)
@@ -1150,14 +1313,14 @@ class SettingsDialog(QDialog):
         cfg.provider.name = names[idx] if 0 <= idx < len(names) else "anthropic"
         cfg.provider.api_key = self.api_key_edit.text()
         cfg.provider.base_url = self.base_url_edit.text()
-        cfg.provider.model = self.model_edit.text()
+        cfg.provider.model = self.model_edit.currentText()
         cfg.max_tokens = self.max_tokens_spin.value()
         cfg.context_window = self.context_window_spin.value()
         cfg.max_tool_turns = self.max_tool_turns_spin.value()
         cfg.execution_timeout = self.execution_timeout_spin.value()
 
         # Save model parameters for the current model
-        model_name = self.model_edit.text().strip()
+        model_name = self.model_edit.currentText().strip()
         if model_name:
             params = self._read_model_params_table()
             if params:
@@ -1169,6 +1332,7 @@ class SettingsDialog(QDialog):
 
         cfg.enable_tools = self.enable_tools_check.isChecked()
         cfg.auto_execute = self.auto_execute_check.isChecked()
+        cfg.allow_insecure_ssl = self.allow_insecure_ssl_check.isChecked()
         cfg.keep_dock_on_workbench_switch = self.keep_dock_check.isChecked()
 
         thinking_values = ["off", "on", "extended"]
@@ -1368,7 +1532,7 @@ class SettingsDialog(QDialog):
         api_key = self.rerank_llm_api_key_edit.text().strip() \
             or self.api_key_edit.text().strip()
         model = self.rerank_llm_model_edit.text().strip() \
-            or self.model_edit.text().strip()
+            or self.model_edit.currentText().strip()
         # Effective params: use the reranker table (reflects current state
         # for both inherit and override modes).
         model_params = self._read_rerank_params_table()
@@ -1506,7 +1670,7 @@ class SettingsDialog(QDialog):
         cfg.provider.name = names[idx] if 0 <= idx < len(names) else "anthropic"
         cfg.provider.api_key = self.api_key_edit.text()
         cfg.provider.base_url = self.base_url_edit.text()
-        cfg.provider.model = self.model_edit.text()
+        cfg.provider.model = self.model_edit.currentText()
 
         try:
             cfg.max_tokens = self.max_tokens_spin.value()
@@ -1522,7 +1686,7 @@ class SettingsDialog(QDialog):
             pass
 
         # Apply model params temporarily for test connection
-        model_name = self.model_edit.text().strip()
+        model_name = self.model_edit.currentText().strip()
         if model_name:
             params = self._read_model_params_table()
             if params:

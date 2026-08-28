@@ -20,7 +20,7 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 - **Thinking mode** — enable LLM reasoning for complex multi-step tasks (Off / On / Extended)
 - **Context compacting** — automatically summarizes older messages when approaching context limits
 - **Session resume** — save and load chat sessions to continue work later
-- **20 LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere, SambaNova, MiniMax, Llama, GitHub Models, HuggingFace, Zhipu, plus any OpenAI-compatible endpoint via Custom
+- **22 LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere, SambaNova, MiniMax, Llama, GitHub Models, HuggingFace, Zhipu, OpenCode (Zen/Go), plus any OpenAI-compatible endpoint via Custom
 - **Context-aware** — automatically includes document state (objects, properties, selection) in prompts
 - **Error self-correction** — failed code is sent back to the LLM for automatic retry (up to 3 attempts)
 - **AGENTS.md support** — project-level instructions with include directives and variable substitution
@@ -173,6 +173,8 @@ To populate the stores once:
 | GitHub | Yes (PAT) | GitHub Models marketplace |
 | HuggingFace | Yes (`hf_...`) | Serverless inference API |
 | Zhipu | Yes | GLM models (z.ai international) |
+| OpenCode Zen | Yes | Pay-as-you-go via opencode.ai; dynamic model list, reasoning variants |
+| OpenCode Go | Yes | $10/mo subscription via opencode.ai; dynamic model list, reasoning variants |
 | Custom | Varies | Any OpenAI-compatible endpoint |
 
 ### Model Parameters

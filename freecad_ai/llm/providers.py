@@ -144,6 +144,20 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "opencodezen": {
+        "base_url": "https://opencode.ai/zen/v1",
+        "default_model": "deepseek-v4-pro",
+        "api_style": "openai",
+        "supports_tools": True,
+        "display_name": "OpenCode Zen",
+    },
+    "opencodego": {
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "default_model": "deepseek-v4-pro",
+        "api_style": "openai",
+        "supports_tools": True,
+        "display_name": "OpenCode Go",
+    },
     "custom": {
         "base_url": "",
         "default_model": "",
