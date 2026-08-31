@@ -275,7 +275,7 @@ class TestHooksIntegration:
 class TestModRoots:
     """_mod_roots is the one part discovery cannot fake, so it gets its own tests.
 
-    A branded build can return a getResourceDir() that is not the module root - RioD's
+    A branded build can return a getResourceDir() that is not the module root - App's
     points at a data/ subdirectory holding only per-module Resources - so probing that
     alone finds nothing and the whole feature silently does nothing.
     """

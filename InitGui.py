@@ -217,14 +217,15 @@ class ToggleMCPServerCommand:
     """
 
     def GetResources(self):
-        from freecad_ai.i18n import translate
+        from freecad_ai.branding import PRODUCT_NAME
+        from freecad_ai.i18n import translate, translate_branded
         return {
-            "GroupName": "FreeCAD AI",
+            "GroupName": PRODUCT_NAME,
             "MenuText": translate("ToggleMCPServerCommand", "MCP Server"),
-            "ToolTip": translate(
+            "ToolTip": translate_branded(
                 "ToggleMCPServerCommand",
                 "Start or stop the MCP server, letting external clients such "
-                "as Claude Code drive this FreeCAD session. The server has no "
+                "as Claude Code drive this %1 session. The server has no "
                 "authentication; set its address in AI Settings."),
             # False = starts unticked. FreeCAD treats this as the initial
             # state, not as "may this action be checked"; True showed a ticked
@@ -239,7 +240,9 @@ class ToggleMCPServerCommand:
 
         if controller.is_running():
             controller.stop()
-            App.Console.PrintMessage("FreeCAD AI: MCP server stopped\n")
+            from freecad_ai.branding import PRODUCT_NAME
+            App.Console.PrintMessage(
+                "%s: MCP server stopped\n" % PRODUCT_NAME)
             self._sync_action()
             return
 
@@ -252,8 +255,9 @@ class ToggleMCPServerCommand:
             self._sync_action()  # a failed start must leave the button unticked
             return
 
+        from freecad_ai.branding import PRODUCT_NAME
         App.Console.PrintMessage(
-            "FreeCAD AI: MCP server listening on %s\n" % url)
+            "%s: MCP server listening on %s\n" % (PRODUCT_NAME, url))
         window = Gui.getMainWindow()
         if window:
             window.statusBar().showMessage(
@@ -276,14 +280,16 @@ class ToggleMCPServerCommand:
 
         This used to be a traceback in a daemon thread that nothing surfaced.
         """
-        from freecad_ai.i18n import translate
+        from freecad_ai.branding import PRODUCT_NAME
+        from freecad_ai.i18n import translate_branded
         from freecad_ai.ui.compat import QtWidgets
-        message = translate(
+        message = translate_branded(
             "ToggleMCPServerCommand",
             "Could not start the MCP server on {address}.\n\n{error}\n\n"
-            "Change the address in FreeCAD AI → AI Settings → "
+            "Change the address in %2 → AI Settings → "
             "MCP Servers.").format(address="%s:%d" % (host, port), error=exc)
-        App.Console.PrintError("FreeCAD AI: %s\n" % message.replace("\n\n", " "))
+        App.Console.PrintError(
+            "%s: %s\n" % (PRODUCT_NAME, message.replace("\n\n", " ")))
         QtWidgets.QMessageBox.warning(
             Gui.getMainWindow(),
             translate("ToggleMCPServerCommand", "MCP server failed to start"),

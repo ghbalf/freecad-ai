@@ -50,19 +50,19 @@ def restore_branding():
 
 class TestAppNameResolution:
     def test_reads_exe_name(self, monkeypatch):
-        b = _reload_branding(monkeypatch, {"ExeName": "RioD", "Application": "RioD"})
-        assert b.APP_NAME == "RioD"
-        assert b.PRODUCT_NAME == "RioD AI"
+        b = _reload_branding(monkeypatch, {"ExeName": "Acme", "Application": "Acme"})
+        assert b.APP_NAME == "Acme"
+        assert b.PRODUCT_NAME == "Acme AI"
         assert b.IS_BRANDED is True
 
     def test_falls_through_to_application(self, monkeypatch):
         """An unbranded ExeName still lets the Application key win."""
-        b = _reload_branding(monkeypatch, {"ExeName": "", "Application": "RioD"})
-        assert b.APP_NAME == "RioD"
+        b = _reload_branding(monkeypatch, {"ExeName": "", "Application": "Acme"})
+        assert b.APP_NAME == "Acme"
 
     def test_strips_whitespace(self, monkeypatch):
-        b = _reload_branding(monkeypatch, {"ExeName": "  RioD \n"})
-        assert b.APP_NAME == "RioD"
+        b = _reload_branding(monkeypatch, {"ExeName": "  Acme \n"})
+        assert b.APP_NAME == "Acme"
 
     def test_empty_config_falls_back(self, monkeypatch):
         """ConfigGet returns "" for unknown keys rather than raising."""
@@ -72,7 +72,7 @@ class TestAppNameResolution:
         assert b.IS_BRANDED is False
 
     def test_config_get_raising_falls_back(self, monkeypatch):
-        b = _reload_branding(monkeypatch, {"ExeName": "RioD"}, raises=True)
+        b = _reload_branding(monkeypatch, {"ExeName": "Acme"}, raises=True)
         assert b.APP_NAME == "FreeCAD"
 
     def test_no_freecad_module_falls_back(self, monkeypatch):
@@ -84,21 +84,21 @@ class TestAppNameResolution:
 
 class TestTranslateBranded:
     def test_substitutes_both_placeholders(self, monkeypatch):
-        _reload_branding(monkeypatch, {"ExeName": "RioD"})
+        _reload_branding(monkeypatch, {"ExeName": "Acme"})
         import freecad_ai.i18n as i18n
         out = i18n.translate_branded("Ctx", "%2 runs inside %1.")
-        assert out == "RioD AI runs inside RioD."
+        assert out == "Acme AI runs inside Acme."
 
     def test_leaves_text_without_placeholders_alone(self, monkeypatch):
-        _reload_branding(monkeypatch, {"ExeName": "RioD"})
+        _reload_branding(monkeypatch, {"ExeName": "Acme"})
         import freecad_ai.i18n as i18n
         assert i18n.translate_branded("Ctx", "Open AI Chat") == "Open AI Chat"
 
     def test_repeated_placeholder(self, monkeypatch):
-        _reload_branding(monkeypatch, {"ExeName": "RioD"})
+        _reload_branding(monkeypatch, {"ExeName": "Acme"})
         import freecad_ai.i18n as i18n
         out = i18n.translate_branded("Ctx", "Leave the %2 workbench to hide %2.")
-        assert out == "Leave the RioD AI workbench to hide RioD AI."
+        assert out == "Leave the Acme AI workbench to hide Acme AI."
 
 
 class TestInitGuiUnderExecScoping:
@@ -112,7 +112,7 @@ class TestInitGuiUnderExecScoping:
     this.
     """
 
-    def _exec_initgui(self, monkeypatch, app_name="RioD"):
+    def _exec_initgui(self, monkeypatch, app_name="Acme"):
         _reload_branding(monkeypatch, {"ExeName": app_name})
 
         recorded = {"toolbars": [], "menus": [], "commands": {}, "prefs_page": None,
@@ -152,17 +152,18 @@ class TestInitGuiUnderExecScoping:
         wb = rec["workbench"]
         wb.Initialize()
 
-        assert wb.MenuText == "RioD AI"
-        assert rec["toolbars"] == ["RioD AI"]
-        assert rec["menus"] == ["RioD AI"]
-        assert rec["prefs_page"] == "RioD AI"
+        assert wb.MenuText == "Acme AI"
+        assert rec["toolbars"] == ["Acme AI"]
+        assert rec["menus"] == ["Acme AI"]
+        assert rec["prefs_page"] == "Acme AI"
 
         assert set(rec["commands"]) == {
             "FreeCADAI_OpenChat", "FreeCADAI_OpenSettings", "FreeCADAI_ToggleKeepDock",
+            "FreeCADAI_ToggleMCPServer",
         }
         for cmd in rec["commands"].values():
             res = cmd.GetResources()
-            assert res["GroupName"] == "RioD AI"
+            assert res["GroupName"] == "Acme AI"
             assert "FreeCAD" not in res["ToolTip"]
 
     def test_command_ids_are_not_rebranded(self, monkeypatch):
@@ -174,10 +175,10 @@ class TestInitGuiUnderExecScoping:
 class TestSystemPromptAnchor:
     def test_branded_prompt_anchors_to_freecad(self, monkeypatch):
         """The model has no training signal for the brand — keep the API anchor."""
-        _reload_branding(monkeypatch, {"ExeName": "RioD"})
+        _reload_branding(monkeypatch, {"ExeName": "Acme"})
         import freecad_ai.core.system_prompt as sp
         importlib.reload(sp)
-        assert "You are RioD AI" in sp.IDENTITY
+        assert "You are Acme AI" in sp.IDENTITY
         assert "built on FreeCAD" in sp.IDENTITY
         assert "FreeCAD Python API" in sp.IDENTITY
 

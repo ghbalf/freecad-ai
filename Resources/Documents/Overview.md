@@ -1,6 +1,6 @@
-# RioD AI
+# FreeCAD AI
 
-An AI-powered assistant workbench for RioD that creates and modifies
+An AI-powered assistant workbench for FreeCAD that creates and modifies
 3D models from natural language descriptions.
 
 ## Features
@@ -19,12 +19,12 @@ An AI-powered assistant workbench for RioD that creates and modifies
 
 ## Requirements
 
-- RioD (or FreeCAD 1.0+)
+- FreeCAD 1.0+
 - An LLM provider (local Ollama, or a cloud API key)
 
 ## Getting Started
 
 1. Clone or symlink this repository into `~/.local/share/FreeCAD/Mod/freecad-ai` (see README for OS-specific paths). The workbench isn't in the FreeCAD Addon Manager registry yet.
-2. Switch to the **RioD AI** workbench
+2. Switch to the **FreeCAD AI** workbench
 3. Open settings (gear icon) and configure your LLM provider
 4. Start chatting — ask it to create geometry, modify parts, or explain modeling concepts

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <package format="1">
-    <name>RioD AI</name>
-    <description>AI-powered assistant for 3D modeling in RioD. Supports multiple LLM providers with Plan/Act modes, structured tool calling, skills, and MCP integration.</description>
+    <name>FreeCAD AI</name>
+    <description>AI-powered assistant for 3D modeling in FreeCAD. Supports multiple LLM providers with Plan/Act modes, structured tool calling, skills, and MCP integration.</description>
     <version>0.21.1-alpha</version>
     <date>2026-08-27</date>
     <maintainer email="alfred@mickautsch.de">Alfred Mickautsch</maintainer>
