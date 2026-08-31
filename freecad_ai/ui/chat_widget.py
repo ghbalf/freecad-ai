@@ -36,7 +36,14 @@ QTextCursor = QtGui.QTextCursor
 from ..config import LOGS_DIR, get_config, prune_oldest_files, save_current_config
 from ..core.conversation import Conversation
 from ..core.executor import extract_code_blocks, extract_truncated_block, execute_code
-from ..core.loop_control import resolve_turn_outcome, should_continue_loop
+from ..core.loop_control import (
+    call_signature,
+    repeat_intervention,
+    repeat_nudge,
+    resolve_turn_outcome,
+    should_continue_loop,
+    update_failure_streak,
+)
 from ..core.input_history import InputHistory
 from .message_view import (
     _get_theme_colors,
@@ -299,6 +306,10 @@ class _LLMWorker(QThread):
         messages = list(self.messages)
 
         turn = 0
+        # (signature, count) of the current run of byte-identical failing calls,
+        # and the tool that tripped the hard stop once one does.
+        failure_streak = ("", 0)
+        looping_tool = ""
         while should_continue_loop(self._max_tool_turns, turn, self.isInterruptionRequested()):
             text_parts = []
             thinking_parts = []
@@ -417,6 +428,20 @@ class _LLMWorker(QThread):
                 error = result.get("error", "")
                 result_text = output if success else f"Error: {error}"
 
+                # Nothing else in this loop notices a model re-sending the same
+                # failing call, so it repeats until the turn limit. Nudge first,
+                # since that usually breaks the pattern; stop if it does not.
+                failure_streak = update_failure_streak(
+                    failure_streak,
+                    call_signature(tc.name, tc.arguments),
+                    not success,
+                )
+                intervention = repeat_intervention(failure_streak[1])
+                if intervention:
+                    result_text += repeat_nudge(tc.name, failure_streak[1])
+                if intervention == "abort":
+                    looping_tool = tc.name
+
                 # Track timing for summary
                 self._tool_timeline.append({
                     "name": tc.name, "success": success,
@@ -464,6 +489,20 @@ class _LLMWorker(QThread):
                     for tc, r in zip(tool_calls, tool_result_messages)
                 ],
             })
+
+            if looping_tool:
+                stop_msg = "\n\n[{}]".format(
+                    translate(
+                        "ChatDockWidget",
+                        "Stopped: the same {} call kept failing unchanged. "
+                        "The last error is above.",
+                    ).format(looping_tool)
+                )
+                self._full_response += stop_msg
+                self.token_received.emit(stop_msg)
+                self.response_finished.emit(self._full_response)
+                return
+
             turn += 1
 
         # If a tool was interrupted mid-wait, the user already saw a tool-failure
