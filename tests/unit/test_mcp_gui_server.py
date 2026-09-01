@@ -17,6 +17,7 @@ from freecad_ai.mcp.gui_server import (
     ServerController,
     get_server_controller,
     resolve_allowed_hosts,
+    resolve_auth_token,
     resolve_server_address,
 )
 
@@ -137,6 +138,64 @@ def test_allowed_hosts_rejects_a_wildcard_entry_from_config(monkeypatch):
     cfg = type("Cfg", (), {"mcp_server_allowed_hosts": ["*"]})()
     with pytest.raises(ValueError, match=r"\*"):
         resolve_allowed_hosts(cfg)
+
+
+# --- auth-token resolution --------------------------------------------------
+#
+# Unset must resolve to None, not "". The transport's own auth_token is None
+# branch is what leaves the server unauthenticated, and "" would either be
+# handed through as a token nobody can ever present (see the transport-level
+# test for why that must not happen) or rely on every caller normalising it.
+
+def test_auth_token_is_none_when_nothing_is_configured(monkeypatch):
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    assert resolve_auth_token(None) is None
+
+
+def test_auth_token_is_none_when_the_config_value_is_empty(monkeypatch):
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    cfg = type("Cfg", (), {"mcp_server_auth_token": ""})()
+    assert resolve_auth_token(cfg) is None
+
+
+def test_auth_token_prefers_config_over_default(monkeypatch):
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    cfg = type("Cfg", (), {"mcp_server_auth_token": "from-config"})()
+    assert resolve_auth_token(cfg) == "from-config"
+
+
+def test_auth_token_prefers_env_over_config(monkeypatch):
+    monkeypatch.setenv("MCP_AUTH_TOKEN", "from-env")
+    cfg = type("Cfg", (), {"mcp_server_auth_token": "from-config"})()
+    assert resolve_auth_token(cfg) == "from-env"
+
+
+# --- auth token reaches the transport ---------------------------------------
+
+def test_start_with_an_auth_token_requires_it_on_the_transport():
+    controller = _controller()
+    port = _free_port()
+    try:
+        controller.start("127.0.0.1", port, auth_token="s3cr3t")
+        transport = controller._transport
+        assert transport._request_allowed(
+            "127.0.0.1:%d" % port, None, None) is False
+        assert transport._request_allowed(
+            "127.0.0.1:%d" % port, None, "Bearer s3cr3t") is True
+    finally:
+        controller.stop()
+
+
+def test_start_without_an_auth_token_keeps_the_server_unauthenticated():
+    controller = _controller()
+    port = _free_port()
+    try:
+        controller.start("127.0.0.1", port)
+        transport = controller._transport
+        assert transport._request_allowed(
+            "127.0.0.1:%d" % port, None, None) is True
+    finally:
+        controller.stop()
 
 
 # --- allowed hosts reach the transport -------------------------------------
