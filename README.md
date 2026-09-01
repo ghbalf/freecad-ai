@@ -280,7 +280,7 @@ Three ways to start it, differing in who owns the FreeCAD process:
     'exec 3>&1 1>&2 && /path/to/FreeCAD.AppImage -c /path/to/freecad-ai/mcp_server_entry.py'
   ```
 
-> **The MCP server has no authentication.** Anything that can reach the address it is bound to can run FreeCAD tools, including arbitrary Python. On the `127.0.0.1` default that means any process on your machine. Tracked in [#59](https://github.com/ghbalf/freecad-ai/issues/59).
+> **The MCP server is unauthenticated by default.** Anything that can reach the address it is bound to can run FreeCAD tools, including arbitrary Python. On the `127.0.0.1` default that means any process on your machine. Set a bearer token in the **AI Settings** MCP Servers section (or `MCP_AUTH_TOKEN`) to require `Authorization: Bearer <token>` on every request; clients pass it as a header (e.g. `claude mcp add --transport http freecad http://127.0.0.1:3000/mcp -H "Authorization: Bearer <token>"`).
 
 Note that Claude Code loads MCP tools **at session start** — a server added mid-session won't appear until the next launch.
 
