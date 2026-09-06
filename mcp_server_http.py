@@ -31,8 +31,10 @@ Environment variables:
     MCP_ALLOWED_HOSTS — comma-separated Host headers the server answers to
                         (default: loopback only). Needed when binding a
                         non-loopback address: clients send the address they
-                        dialled, so it must be named here. "*" is refused —
-                        the server has no authentication.
+                        dialled, so it must be named here. "*" is refused.
+    MCP_AUTH_TOKEN: optional bearer token. Unset (the default) leaves the
+                    server unauthenticated, as before. When set, every
+                    request must carry "Authorization: Bearer <token>".
 """
 
 import os
@@ -58,6 +60,7 @@ if not FreeCAD.ActiveDocument:
 from freecad_ai.mcp.gui_server import (
     get_server_controller,
     resolve_allowed_hosts,
+    resolve_auth_token,
     resolve_server_address,
 )
 
@@ -71,9 +74,14 @@ except Exception:
 
 host, port = resolve_server_address(_cfg)
 allowed_hosts = resolve_allowed_hosts(_cfg)
+auth_token = resolve_auth_token(_cfg)
 
 # start() binds before returning, so this line can no longer announce a
 # server that never came up.
-url = get_server_controller().start(host, port, allowed_hosts=allowed_hosts)
+url = get_server_controller().start(host, port, allowed_hosts=allowed_hosts,
+                                    auth_token=auth_token)
 
 print(f"MCP server running on {url}", flush=True)
+if auth_token:
+    print("MCP server requires a bearer token (Authorization: Bearer ...)",
+          flush=True)

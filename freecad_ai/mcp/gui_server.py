@@ -78,12 +78,42 @@ def resolve_allowed_hosts(cfg=None):
     hosts = [h.strip() for h in hosts if h and h.strip()]
     if any(h == "*" for h in hosts):
         raise ValueError(
-            "'*' is not accepted in the MCP allowed-hosts list. The server "
-            "has no authentication (issue #59), and this allowlist is the "
-            "only thing keeping a wildcard bind from serving arbitrary "
-            "Python to anything that can reach it. Name the concrete hosts "
-            "clients dial instead.")
+            "'*' is not accepted in the MCP allowed-hosts list. This "
+            "allowlist is the only thing keeping a wildcard bind from "
+            "serving arbitrary Python to anything that can reach it. Name "
+            "the concrete hosts clients dial instead.")
     return hosts or None
+
+
+def resolve_auth_token(cfg=None):
+    """Return the bearer token every request must present, or ``None`` to
+    leave the server unauthenticated: the historical default (#59).
+
+    Env beats config, matching MCP_HOST / MCP_PORT / MCP_ALLOWED_HOSTS. An
+    empty string from either source means "no token configured", not "an
+    empty token is required": the transport must never be handed a token it
+    would enforce against a header nobody can send.
+
+    Raises ValueError on a non-ASCII token: ``hmac.compare_digest`` (used to
+    check it on every request) raises ``TypeError`` on a non-ASCII operand,
+    so a token that cannot be compared must fail loudly here, at start-up,
+    rather than on every request the server ever receives.
+    """
+    token = os.environ.get("MCP_AUTH_TOKEN")
+    if not token and cfg is not None:
+        token = getattr(cfg, "mcp_server_auth_token", "")
+    token = token or None
+    if token is not None:
+        try:
+            token.encode("ascii")
+        except UnicodeEncodeError:
+            raise ValueError(
+                "The MCP bearer token must be ASCII: it is compared with "
+                "hmac.compare_digest() on every request, which raises "
+                "TypeError on a non-ASCII operand. Use the Settings "
+                "dialog's Generate button, or set MCP_AUTH_TOKEN to an "
+                "ASCII value.")
+    return token
 
 
 def _default_backend():
@@ -121,7 +151,7 @@ class ServerController:
     def url(self):
         return self._url if self.is_running() else None
 
-    def start(self, host, port, allowed_hosts=None):
+    def start(self, host, port, allowed_hosts=None, auth_token=None):
         """Start serving and return the URL.
 
         Raises OSError if the bind fails, or if ``host`` is a wildcard address
@@ -145,7 +175,8 @@ class ServerController:
         from .transport import HTTPServerTransport
 
         transport = HTTPServerTransport(host=host, port=port,
-                                        allowed_hosts=allowed_hosts)
+                                        allowed_hosts=allowed_hosts,
+                                        auth_token=auth_token)
         transport.bind()  # raises OSError on the caller's thread — the point
 
         if self._registry is None or self._executor is None:

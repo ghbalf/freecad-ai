@@ -5,6 +5,7 @@ StdioServerTransport — reads stdin / writes stdout (server side).
 HTTPServerTransport — serves MCP over HTTP: Streamable HTTP and HTTP+SSE.
 """
 
+import hmac
 import json
 import logging
 import subprocess
@@ -556,10 +557,17 @@ class HTTPServerTransport:
     does, so this blocks browser drive-by tool invocation without breaking the
     documented local client. ``allowed_hosts``/``allowed_origins`` widen the
     policy for advanced (e.g. deliberately LAN-exposed) deployments.
+
+    Neither check is access control: any local process can send a loopback
+    ``Host`` and no ``Origin``, so anything already running on the machine can
+    call every tool. ``auth_token``, when set, closes that gap by also
+    requiring ``Authorization: Bearer <token>`` on every request (#59).
+    Unset (the default) leaves the server exactly as before: no token is
+    required, matching every currently documented start-up recipe.
     """
 
     def __init__(self, host: str = "127.0.0.1", port: int = 3000,
-                 allowed_hosts=None, allowed_origins=()):
+                 allowed_hosts=None, allowed_origins=(), auth_token=None):
         self._host = host
         self._port = port
         self._handler: Callable[[dict], dict | None] | None = None
@@ -568,6 +576,10 @@ class HTTPServerTransport:
         self._httpd = None
         self._serving = False
         self._lifecycle_lock = threading.Lock()
+        # Falsy (None or "") means "no token configured": never enforce an
+        # empty token, which would reject every request with no way to admit
+        # one.
+        self._auth_token = auth_token or None
         if allowed_hosts is None:
             if host.lower() in _WILDCARD_BIND_HOSTS:
                 raise OSError(
@@ -591,13 +603,64 @@ class HTTPServerTransport:
             return value[1:].split("]", 1)[0].lower()
         return value.split(":", 1)[0].lower()
 
-    def _request_allowed(self, host_header, origin_header) -> bool:
-        """Authorize a request by its Host (DNS-rebinding) and Origin (CSRF)."""
+    def _request_allowed(self, host_header, origin_header,
+                          authorization_header=None) -> bool:
+        """Authorize a request by Host (DNS-rebinding), Origin (CSRF), and,
+        when configured, a bearer token (access control, #59)."""
+        return self._classify_request(
+            host_header, origin_header, authorization_header) == "ok"
+
+    def _classify_request(self, host_header, origin_header,
+                           authorization_header=None) -> str:
+        """Like ``_request_allowed``, but distinguishes *why* a request is
+        denied so the HTTP handler can answer 403 vs 401.
+
+        "denied": Host/Origin rejected the request (DNS-rebinding/CSRF),
+        meaning this caller is not allowed here at all, regardless of
+        credentials. "unauthorized": a bearer token is configured and the
+        one presented is missing or wrong, meaning the caller may retry
+        with a credential. "ok": request may proceed.
+        """
         if self._hostname_of(host_header) not in self._allowed_hosts:
-            return False
+            return "denied"
         if origin_header is not None and origin_header not in self._allowed_origins:
+            return "denied"
+        if self._auth_token is not None and not self._token_matches(authorization_header):
+            return "unauthorized"
+        return "ok"
+
+    def _token_matches(self, authorization_header) -> bool:
+        """Constant-time compare of the presented bearer token.
+
+        ``hmac.compare_digest`` raises ``TypeError`` when either ``str``
+        argument contains a non-ASCII character. HTTP headers are decoded
+        latin-1 by ``http.client.parse_headers``, so any byte >= 0x80 in
+        ``Authorization`` produces exactly that: an unauthenticated caller
+        could otherwise crash the handler thread on every request, with no
+        response sent at all.
+        """
+        try:
+            return hmac.compare_digest(
+                self._bearer_token_of(authorization_header),
+                self._auth_token)
+        except TypeError:
             return False
-        return True
+
+    @staticmethod
+    def _bearer_token_of(authorization_header) -> str:
+        """Extract the token from an ``Authorization: Bearer <token>`` header.
+
+        Returns ``""`` for a missing header or any other scheme, which
+        ``hmac.compare_digest`` then compares against the real token in
+        constant time: a plain ``==`` would leak the token's length and
+        prefix through response timing.
+        """
+        if not authorization_header:
+            return ""
+        scheme, _, value = authorization_header.partition(" ")
+        if scheme.lower() != "bearer":
+            return ""
+        return value.strip()
 
     def bind(self):
         """Create and bind the listening socket. Raises OSError if unavailable.
@@ -701,10 +764,19 @@ class HTTPServerTransport:
                 return self.path.split("?")[0].rstrip("/")
 
             def _authorized(self):
-                if transport._request_allowed(
-                    self.headers.get("Host"), self.headers.get("Origin")
-                ):
+                status = transport._classify_request(
+                    self.headers.get("Host"), self.headers.get("Origin"),
+                    self.headers.get("Authorization"))
+                if status == "ok":
                     return True
+                if status == "unauthorized":
+                    # Missing/wrong bearer token: distinct from a Host/Origin
+                    # rejection so a client can tell "present a credential"
+                    # from "you are not allowed here at all" (#59 review).
+                    self.send_response(401)
+                    self.send_header("WWW-Authenticate", "Bearer")
+                    self.end_headers()
+                    return False
                 self.send_error(403)
                 return False
 

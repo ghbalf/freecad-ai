@@ -12,6 +12,7 @@ Provides a GUI for configuring:
 """
 
 import os
+import secrets
 
 from .compat import QtWidgets, QtCore, QtGui
 from ..i18n import translate
@@ -702,21 +703,47 @@ class SettingsDialog(QDialog):
             translate("SettingsDialog", "Allowed Host headers:"),
             self.mcp_server_allowed_hosts_edit)
 
+        # Optional bearer token (#59). Empty (the default) leaves the server
+        # unauthenticated, exactly as before this field existed. "Generate"
+        # fills in a fresh secrets.token_urlsafe(32) value on demand.
+        auth_token_row = QWidget()
+        auth_token_row_layout = QHBoxLayout()
+        auth_token_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.mcp_server_auth_token_edit = QLineEdit()
+        self.mcp_server_auth_token_edit.setPlaceholderText(
+            translate("SettingsDialog", "none \u2014 authentication disabled"))
+        auth_token_row_layout.addWidget(self.mcp_server_auth_token_edit)
+        generate_token_btn = QPushButton(translate("SettingsDialog", "Generate"))
+        generate_token_btn.clicked.connect(self._generate_mcp_auth_token)
+        auth_token_row_layout.addWidget(generate_token_btn)
+        clear_token_btn = QPushButton(translate("SettingsDialog", "Clear"))
+        clear_token_btn.clicked.connect(
+            lambda: self.mcp_server_auth_token_edit.setText(""))
+        auth_token_row_layout.addWidget(clear_token_btn)
+        auth_token_row.setLayout(auth_token_row_layout)
+        server_form.addRow(
+            translate("SettingsDialog", "Bearer token:"), auth_token_row)
+
         mcp_layout.addLayout(server_form)
 
         # Unconditional, not shown only for non-loopback values: the loopback
         # default is already reachable by every local process, so hiding the
-        # warning there would imply the default is authenticated. It is not.
+        # warning there would imply the default is authenticated. It is not,
+        # unless a bearer token above is set.
         mcp_server_warning = QLabel(translate(
             "SettingsDialog",
-            "The MCP server has no authentication. Anything that can reach "
-            "this address can run FreeCAD tools, including arbitrary Python. "
-            "Keep it on 127.0.0.1 unless you understand the exposure.\n\n"
+            "Without a bearer token, anything that can reach this address "
+            "can run FreeCAD tools, including arbitrary Python. Keep it on "
+            "127.0.0.1 unless you understand the exposure, or set a bearer "
+            "token above.\n\n"
             "Leave Allowed Host headers empty for loopback-only access. "
             "Listing hosts is what makes a non-loopback bind reachable, so "
             "name only the addresses clients actually dial. \"*\" is not "
-            "accepted \u2014 with no authentication, this list is the only "
-            "thing limiting who can reach the server."))
+            "accepted \u2014 without a token, this list is the only thing "
+            "limiting who can reach the server.\n\n"
+            "Host, port, allowed hosts, and the bearer token only take "
+            "effect the next time the MCP server starts. Saving here does "
+            "not reconfigure one that is already running."))
         mcp_server_warning.setWordWrap(True)
         mcp_layout.addWidget(mcp_server_warning)
 
@@ -953,6 +980,7 @@ class SettingsDialog(QDialog):
         self.mcp_server_port_edit.setText(str(cfg.mcp_server_port))
         self.mcp_server_allowed_hosts_edit.setText(
             ", ".join(cfg.mcp_server_allowed_hosts or []))
+        self.mcp_server_auth_token_edit.setText(cfg.mcp_server_auth_token or "")
 
         # Editor preference
         self.use_external_editor_cb.setChecked(cfg.use_external_editor)
@@ -1226,6 +1254,7 @@ class SettingsDialog(QDialog):
             self.mcp_server_port_edit.text())
         cfg.mcp_server_allowed_hosts = self._parse_allowed_hosts(
             self.mcp_server_allowed_hosts_edit.text())
+        cfg.mcp_server_auth_token = self.mcp_server_auth_token_edit.text().strip()
         cfg.use_external_editor = self.use_external_editor_cb.isChecked()
         cfg.scan_freecad_macros = self.scan_macros_cb.isChecked()
 
@@ -1611,6 +1640,17 @@ class SettingsDialog(QDialog):
         if not 1 <= port <= 65535:
             return host, DEFAULT_PORT
         return host, port
+
+    def _generate_mcp_auth_token(self):
+        """Fill the bearer-token field with a fresh random token.
+
+        Same shape the issue proposes (``secrets.token_urlsafe(32)``), run on
+        demand rather than automatically on every server start: an
+        auto-generated token would change on each restart with no stable
+        place for the user to read it back from, whereas this field is that
+        place: it stays whatever the user last set until they change it.
+        """
+        self.mcp_server_auth_token_edit.setText(secrets.token_urlsafe(32))
 
     def _add_mcp_server(self):
         """Show a dialog to add a new MCP server configuration."""

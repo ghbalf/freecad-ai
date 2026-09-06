@@ -215,7 +215,8 @@ class ToggleMCPServerCommand:
                 "ToggleMCPServerCommand",
                 "Start or stop the MCP server, letting external clients such "
                 "as Claude Code drive this FreeCAD session. The server has no "
-                "authentication; set its address in AI Settings."),
+                "authentication unless a bearer token is configured; set its "
+                "address and token in AI Settings."),
             # False = starts unticked. FreeCAD treats this as the initial
             # state, not as "may this action be checked"; True showed a ticked
             # button on a fresh session with no server running.
@@ -225,7 +226,7 @@ class ToggleMCPServerCommand:
     def Activated(self, index=0):
         from freecad_ai.mcp.gui_server import (
             get_server_controller, resolve_allowed_hosts,
-            resolve_server_address)
+            resolve_auth_token, resolve_server_address)
         controller = get_server_controller()
 
         if controller.is_running():
@@ -243,7 +244,9 @@ class ToggleMCPServerCommand:
             # Settings dialog strips it. Unhandled, that leaves the button
             # mid-state behind a console traceback nothing surfaces.
             allowed_hosts = resolve_allowed_hosts(cfg)
-            url = controller.start(host, port, allowed_hosts=allowed_hosts)
+            auth_token = resolve_auth_token(cfg)
+            url = controller.start(host, port, allowed_hosts=allowed_hosts,
+                                   auth_token=auth_token)
         except (OSError, ValueError) as exc:
             self._report_failure(host, port, exc)
             self._sync_action()  # a failed start must leave the button unticked
@@ -251,6 +254,10 @@ class ToggleMCPServerCommand:
 
         App.Console.PrintMessage(
             "FreeCAD AI: MCP server listening on %s\n" % url)
+        if auth_token:
+            App.Console.PrintMessage(
+                "FreeCAD AI: MCP server requires a bearer token "
+                "(Authorization: Bearer ...)\n")
         window = Gui.getMainWindow()
         if window:
             window.statusBar().showMessage(

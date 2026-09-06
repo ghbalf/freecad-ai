@@ -160,6 +160,91 @@ def test_wildcard_bind_host_allowed_with_explicit_allowed_hosts():
     assert transport._request_allowed("fileserver.local:3000", None) is True
 
 
+# ---------------------------------------------------------------------------
+# Optional bearer token (#59): access control on top of the Host/Origin
+# checks above, which are DNS-rebinding/CSRF guards, not authentication.
+# ---------------------------------------------------------------------------
+
+def test_no_token_configured_keeps_prior_behaviour():
+    # Host/Origin alone still authorize the request when auth_token is unset
+    # (the default), matching every currently documented start-up recipe.
+    transport = SSEServerTransport()
+    assert transport._request_allowed("127.0.0.1:3000", None) is True
+    assert transport._request_allowed("127.0.0.1:3000", None, None) is True
+
+
+def test_token_configured_rejects_a_request_with_no_authorization_header():
+    transport = SSEServerTransport(auth_token="s3cr3t")
+    assert transport._request_allowed("127.0.0.1:3000", None, None) is False
+
+
+def test_token_configured_accepts_the_matching_bearer_header():
+    transport = SSEServerTransport(auth_token="s3cr3t")
+    assert transport._request_allowed(
+        "127.0.0.1:3000", None, "Bearer s3cr3t") is True
+
+
+def test_token_configured_rejects_a_wrong_token():
+    transport = SSEServerTransport(auth_token="s3cr3t")
+    assert transport._request_allowed(
+        "127.0.0.1:3000", None, "Bearer wrong") is False
+
+
+def test_token_configured_rejects_a_non_bearer_scheme():
+    transport = SSEServerTransport(auth_token="s3cr3t")
+    assert transport._request_allowed(
+        "127.0.0.1:3000", None, "Basic s3cr3t") is False
+
+
+def test_token_check_is_case_insensitive_on_the_scheme():
+    # RFC 7235 auth-schemes are case-insensitive; a strict "Bearer" match
+    # would reject a spec-compliant "bearer" from a client that lowercases it.
+    transport = SSEServerTransport(auth_token="s3cr3t")
+    assert transport._request_allowed(
+        "127.0.0.1:3000", None, "bearer s3cr3t") is True
+
+
+def test_empty_string_token_disables_auth_rather_than_requiring_an_empty_one():
+    # An empty token can never be presented by any client (there is no header
+    # value that parses to ""), so treating "" as "enforce an empty token"
+    # would make the endpoint permanently unreachable. "" must mean disabled,
+    # same as None.
+    transport = SSEServerTransport(auth_token="")
+    assert transport._request_allowed("127.0.0.1:3000", None, None) is True
+
+
+def test_non_ascii_authorization_header_is_rejected_not_crashed():
+    # hmac.compare_digest() raises TypeError on a non-ASCII str operand, and
+    # HTTP headers are decoded latin-1, so any byte >= 0x80 in Authorization
+    # used to reach compare_digest() and crash the handler thread with no
+    # response sent at all rather than a clean rejection.
+    transport = SSEServerTransport(auth_token="s3cr3t")
+    assert transport._request_allowed(
+        "127.0.0.1:3000", None, "Bearer t\xf6k\xe9n") is False
+
+
+def test_classify_request_distinguishes_denied_from_unauthorized():
+    # Host/Origin failing is "not allowed here at all" (403), while a
+    # missing or wrong token is "present a credential" (401); the HTTP
+    # handler needs to tell these apart even though _request_allowed
+    # collapses both to False (#59 review).
+    transport = SSEServerTransport(auth_token="s3cr3t")
+    assert transport._classify_request("evil.example:3000", None, "Bearer s3cr3t") == "denied"
+    assert transport._classify_request("127.0.0.1:3000", None, None) == "unauthorized"
+    assert transport._classify_request("127.0.0.1:3000", None, "Bearer wrong") == "unauthorized"
+    assert transport._classify_request("127.0.0.1:3000", None, "Bearer s3cr3t") == "ok"
+
+
+def test_host_and_origin_checks_still_apply_alongside_a_token():
+    # The token is an additional gate, not a replacement for the existing
+    # DNS-rebinding/CSRF checks.
+    transport = SSEServerTransport(auth_token="s3cr3t")
+    assert transport._request_allowed(
+        "evil.example:3000", None, "Bearer s3cr3t") is False
+    assert transport._request_allowed(
+        "127.0.0.1:3000", "https://evil.example", "Bearer s3cr3t") is False
+
+
 def test_cross_origin_post_rejected_and_no_wildcard_cors_header():
     transport = SSEServerTransport(host="127.0.0.1", port=0)
     transport._handler = lambda msg: {
@@ -193,6 +278,69 @@ def test_cross_origin_post_rejected_and_no_wildcard_cors_header():
         resp = urllib.request.urlopen(native, timeout=5)
         assert resp.status == 202
         assert resp.headers.get("Access-Control-Allow-Origin") is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_live_request_with_a_token_configured_requires_it():
+    transport = SSEServerTransport(host="127.0.0.1", port=0, auth_token="s3cr3t")
+    transport._handler = lambda msg: {
+        "jsonrpc": "2.0", "id": msg.get("id"), "result": {}
+    }
+    server = transport._make_server()
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        no_token = urllib.request.Request(
+            f"http://127.0.0.1:{port}/messages",
+            data=b'{"jsonrpc":"2.0","id":1,"method":"ping"}',
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(no_token, timeout=5)
+        # 401, not 403: a missing/wrong token is "present a credential", a
+        # Host/Origin rejection is "not allowed here at all" (#59 review).
+        assert exc.value.code == 401
+        assert exc.value.headers.get("WWW-Authenticate") == "Bearer"
+
+        wrong_token = urllib.request.Request(
+            f"http://127.0.0.1:{port}/messages",
+            data=b'{"jsonrpc":"2.0","id":1,"method":"ping"}',
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer wrong"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(wrong_token, timeout=5)
+        assert exc.value.code == 401
+        assert exc.value.headers.get("WWW-Authenticate") == "Bearer"
+
+        non_ascii_token = urllib.request.Request(
+            f"http://127.0.0.1:{port}/messages",
+            data=b'{"jsonrpc":"2.0","id":1,"method":"ping"}',
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer t\xf6k\xe9n"},
+            method="POST",
+        )
+        # A non-ASCII Authorization header used to crash the handler thread
+        # (hmac.compare_digest raises TypeError on non-ASCII str operands,
+        # and headers are decoded latin-1) rather than answer at all.
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(non_ascii_token, timeout=5)
+        assert exc.value.code == 401
+
+        right_token = urllib.request.Request(
+            f"http://127.0.0.1:{port}/messages",
+            data=b'{"jsonrpc":"2.0","id":1,"method":"ping"}',
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer s3cr3t"},
+            method="POST",
+        )
+        resp = urllib.request.urlopen(right_token, timeout=5)
+        assert resp.status == 202
     finally:
         server.shutdown()
         server.server_close()
@@ -350,25 +498,27 @@ def test_http_entry_point_delegates_to_the_shared_controller(monkeypatch):
     started = []
 
     class _FakeController:
-        def start(self, host, port, allowed_hosts=None):
-            started.append((host, port, allowed_hosts))
+        def start(self, host, port, allowed_hosts=None, auth_token=None):
+            started.append((host, port, allowed_hosts, auth_token))
             return "http://%s:%d/sse" % (host, port)
 
     import freecad_ai.mcp.gui_server as gui_server
     monkeypatch.setattr(gui_server, "get_server_controller",
                         lambda: _FakeController())
 
-    # Pin all three so the assertion cannot depend on the developer's
+    # Pin all four so the assertion cannot depend on the developer's
     # config.json or environment.
     monkeypatch.setenv("MCP_HOST", "127.0.0.1")
     monkeypatch.setenv("MCP_PORT", "3131")
     monkeypatch.delenv("MCP_ALLOWED_HOSTS", raising=False)
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
 
     exec(compile(source, "mcp_server_http.py", "exec"), {})
 
-    # allowed_hosts stays None with nothing configured, so the transport keeps
-    # deriving its own default — and with it the wildcard-bind rejection.
-    assert started == [("127.0.0.1", 3131, None)]
+    # allowed_hosts stays None and auth_token stays None with nothing
+    # configured, so the transport keeps deriving its own default (and with
+    # it the wildcard-bind rejection) and stays unauthenticated.
+    assert started == [("127.0.0.1", 3131, None, None)]
 
 
 def test_http_entry_point_forwards_the_allowed_hosts_env_var(monkeypatch):
@@ -384,8 +534,8 @@ def test_http_entry_point_forwards_the_allowed_hosts_env_var(monkeypatch):
     started = []
 
     class _FakeController:
-        def start(self, host, port, allowed_hosts=None):
-            started.append((host, port, allowed_hosts))
+        def start(self, host, port, allowed_hosts=None, auth_token=None):
+            started.append((host, port, allowed_hosts, auth_token))
             return "http://%s:%d/sse" % (host, port)
 
     import freecad_ai.mcp.gui_server as gui_server
@@ -395,11 +545,43 @@ def test_http_entry_point_forwards_the_allowed_hosts_env_var(monkeypatch):
     monkeypatch.setenv("MCP_HOST", "192.168.1.50")
     monkeypatch.setenv("MCP_PORT", "3131")
     monkeypatch.setenv("MCP_ALLOWED_HOSTS", "fileserver.local, 192.168.1.50")
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
 
     exec(compile(source, "mcp_server_http.py", "exec"), {})
 
     assert started == [("192.168.1.50", 3131,
-                        ["fileserver.local", "192.168.1.50"])]
+                        ["fileserver.local", "192.168.1.50"], None)]
+
+
+def test_http_entry_point_forwards_the_auth_token_env_var(monkeypatch):
+    """MCP_AUTH_TOKEN must reach the transport, not just parse cleanly."""
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    source = (repo_root / "mcp_server_http.py").read_text()
+
+    fake_freecad = types.ModuleType("FreeCAD")
+    fake_freecad.ActiveDocument = object()
+    fake_freecad.newDocument = lambda name: None
+    monkeypatch.setitem(sys.modules, "FreeCAD", fake_freecad)
+
+    started = []
+
+    class _FakeController:
+        def start(self, host, port, allowed_hosts=None, auth_token=None):
+            started.append((host, port, allowed_hosts, auth_token))
+            return "http://%s:%d/sse" % (host, port)
+
+    import freecad_ai.mcp.gui_server as gui_server
+    monkeypatch.setattr(gui_server, "get_server_controller",
+                        lambda: _FakeController())
+
+    monkeypatch.setenv("MCP_HOST", "127.0.0.1")
+    monkeypatch.setenv("MCP_PORT", "3131")
+    monkeypatch.delenv("MCP_ALLOWED_HOSTS", raising=False)
+    monkeypatch.setenv("MCP_AUTH_TOKEN", "s3cr3t")
+
+    exec(compile(source, "mcp_server_http.py", "exec"), {})
+
+    assert started == [("127.0.0.1", 3131, None, "s3cr3t")]
 
 
 # ---------------------------------------------------------------------------

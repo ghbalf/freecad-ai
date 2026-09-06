@@ -1245,3 +1245,19 @@ def test_mcp_server_allowed_hosts_defaults_to_empty():
     """
     from freecad_ai.config import AppConfig
     assert AppConfig().mcp_server_allowed_hosts == []
+
+
+def test_mcp_server_auth_token_defaults_to_empty():
+    """Empty means "no token configured", which leaves the server exactly as
+    unauthenticated as before this field existed (#59): opt-in, not on by
+    default.
+    """
+    from freecad_ai.config import AppConfig
+    assert AppConfig().mcp_server_auth_token == ""
+
+
+def test_mcp_server_auth_token_roundtrip():
+    from freecad_ai.config import AppConfig
+    cfg = AppConfig(mcp_server_auth_token="s3cr3t")
+    restored = AppConfig.from_dict(cfg.to_dict())
+    assert restored.mcp_server_auth_token == "s3cr3t"
