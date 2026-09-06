@@ -372,10 +372,16 @@ PROVIDER_PRESETS = {
 
 @dataclass
 class ProviderConfig:
+    """One named connection: vendor, endpoint, credential, model, params.
+
+    ``name`` is the *vendor* key into PROVIDER_PRESETS. A profile's own
+    label is its key in ``AppConfig.profiles``, not a field here.
+    """
     name: str = "anthropic"
     api_key: str = ""
     base_url: str = "https://api.anthropic.com"
     model: str = "claude-sonnet-4-6"
+    params: dict = field(default_factory=dict)
 
     def apply_preset(self, provider_name: str):
         """Apply a provider preset, updating base_url and model to defaults."""
@@ -387,7 +393,10 @@ class ProviderConfig:
 
 @dataclass
 class AppConfig:
-    provider: ProviderConfig = field(default_factory=ProviderConfig)
+    profiles: dict = field(default_factory=dict)      # label -> ProviderConfig
+    active_profile: str = ""                          # label chat uses
+    provider_keys: dict = field(default_factory=dict) # vendor -> default api key
+    utility_profiles: dict = field(default_factory=dict)  # utility -> label
     mode: str = "plan"  # "plan" or "act"
     max_tokens: int = 4096
     context_window: int = 20000  # tokens — compaction triggers above this
@@ -507,6 +516,36 @@ class AppConfig:
     # is naturally bounded by the number of distinct documents ever edited.
     max_backups: int = 0
 
+    def __post_init__(self):
+        self._ensure_profile()
+
+    def _ensure_profile(self) -> None:
+        """Guarantee at least one profile and a valid active label.
+
+        A config must never leave the dialog unusable, so an empty or
+        dangling ``active_profile`` resolves rather than raising. Cheap
+        and idempotent, so the ``provider`` property can call it on every
+        access and never hand back a KeyError.
+        """
+        if not self.profiles:
+            default = ProviderConfig()
+            self.profiles = {default.name: default}
+            self.active_profile = default.name
+        if self.active_profile not in self.profiles:
+            self.active_profile = next(iter(self.profiles))
+
+    @property
+    def provider(self) -> ProviderConfig:
+        """The active profile.
+
+        Every ``cfg.provider.*`` read and write in the codebase means "the
+        active chat connection", so they all keep working through here.
+        Reads AND writes: the FreeCAD parameter-store bridge assigns to
+        ``cfg.provider.model`` etc., and those land in the stored profile.
+        """
+        self._ensure_profile()
+        return self.profiles[self.active_profile]
+
     @property
     def supports_vision(self) -> bool:
         """Whether the current LLM supports vision (images in content blocks)."""
@@ -536,11 +575,28 @@ class AppConfig:
     @classmethod
     def from_dict(cls, data: dict) -> "AppConfig":
         provider_data = data.pop("provider", {})
-        provider = ProviderConfig(**provider_data)
         # Filter out unknown keys to avoid TypeError
-        known = {f.name for f in cls.__dataclass_fields__.values()} - {"provider"}
+        known = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data.items() if k in known}
-        return cls(provider=provider, **filtered)
+
+        # Convert profiles dict values to ProviderConfig if needed
+        if "profiles" in filtered and isinstance(filtered["profiles"], dict):
+            profiles_dict = filtered["profiles"]
+            converted = {}
+            for label, profile_data in profiles_dict.items():
+                if isinstance(profile_data, dict):
+                    converted[label] = ProviderConfig(**profile_data)
+                else:
+                    converted[label] = profile_data
+            filtered["profiles"] = converted
+
+        cfg = cls(**filtered)
+        # Minimal migration: if old JSON has "provider", restore it as the active profile
+        if provider_data:
+            provider = ProviderConfig(**provider_data)
+            cfg.profiles = {provider.name: provider}
+            cfg.active_profile = provider.name
+        return cfg
 
 
 def _ensure_dirs():
