@@ -895,19 +895,75 @@ def should_strip_thinking(model: str, override: bool | None = None) -> bool:
     return any(model_lower.startswith(prefix) for prefix in _STRIP_THINKING_MODELS)
 
 
-def create_client_from_config() -> LLMClient:
-    """Create an LLMClient from the current application config."""
+def resolve_profile(cfg, utility: str | None = None):
+    """Return the ProviderConfig a call site should use.
+
+    ``utility`` is a call-site identifier ("compaction", "skill_eval",
+    "tool_optimize", "rerank"). None, unmapped, empty, or naming a profile
+    that no longer exists all mean "inherit the active profile" — a
+    deleted profile must never make the workbench unusable.
+    """
+    if utility:
+        label = cfg.utility_profiles.get(utility, "")
+        if label and label in cfg.profiles:
+            return cfg.profiles[label]
+    return cfg.provider
+
+
+def resolve_params(cfg, profile) -> dict:
+    """Return the sampling parameters a profile runs with.
+
+    The profile is authoritative: what the Model Parameters table shows
+    for a profile is exactly what that profile sends, so removing a row
+    removes the parameter. ``cfg.model_params`` — the old per-model dict
+    keyed by model name — is legacy and no longer read; it used to be
+    underlaid here, which no widget could write and which therefore made
+    Remove a no-op and stopped two profiles on one model from disagreeing.
+    Migration folds it into ``profile.params`` once, on upgrade.
+
+    ``cfg`` stays in the signature: every call site has one, and the
+    resolution rule is the kind of thing that grows a config input again.
+    Returns a fresh dict — callers must never alias the profile's own.
+    """
+    return dict(profile.params)
+
+
+def create_client(cfg=None, utility: str | None = None, *,
+                  max_tokens: int | None = None,
+                  temperature: float | None = None,
+                  thinking: str | None = None) -> LLMClient:
+    """Build an LLMClient for one call site.
+
+    Connection settings (vendor, url, key, model, params) come from the
+    resolved profile. Job settings (max_tokens, temperature, thinking)
+    come from the config unless the call site overrides them — the
+    reranker wants 1024 tokens and no thinking whichever profile it runs
+    on.
+
+    An empty ``api_key`` on the profile falls back to the vendor-wide
+    default in ``cfg.provider_keys``, so one Anthropic secret serves every
+    Anthropic profile while a gateway-authenticated Ollama profile can
+    still carry its own.
+    """
     from ..config import get_config
-    cfg = get_config()
-    # Resolve per-model params: saved params for this model, or empty dict.
-    model_params = cfg.model_params.get(cfg.provider.model, {})
+    if cfg is None:
+        cfg = get_config()
+    profile = resolve_profile(cfg, utility)
+
+    params = resolve_params(cfg, profile)
+
     return LLMClient(
-        provider_name=cfg.provider.name,
-        base_url=cfg.provider.base_url,
-        api_key=cfg.provider.api_key,
-        model=cfg.provider.model,
-        max_tokens=cfg.max_tokens,
-        temperature=cfg.temperature,
-        thinking=cfg.thinking,
-        model_params=model_params,
+        provider_name=profile.name,
+        base_url=profile.base_url,
+        api_key=profile.api_key or cfg.provider_keys.get(profile.name, ""),
+        model=profile.model,
+        max_tokens=cfg.max_tokens if max_tokens is None else max_tokens,
+        temperature=cfg.temperature if temperature is None else temperature,
+        thinking=cfg.thinking if thinking is None else thinking,
+        model_params=params,
     )
+
+
+def create_client_from_config() -> LLMClient:
+    """Chat client from the active profile. Kept for third-party hooks."""
+    return create_client()

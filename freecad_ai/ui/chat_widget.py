@@ -94,47 +94,6 @@ def _is_binary_content(data: bytes) -> bool:
     return False
 
 
-def _build_rerank_llm_client(cfg):
-    """Construct the LLMClient used for LLM-based reranking.
-
-    Each override field is inherited from the main provider when empty,
-    so the common case (same provider, maybe a different model) is a
-    one-field change. Full override (different provider entirely) works
-    too, for e.g. running reranking on a local Ollama model while the
-    main chat uses a cloud provider.
-
-    Model params come from one of two disjoint namespaces, so the reranker
-    can never overwrite the main model's params (issue #30):
-      - Inherited model (no override) → the main model's params from
-        ``cfg.model_params`` (handles provider quirks like Moonshot's locked
-        ``temperature=1``)
-      - Override model → the reranker's own ``cfg.rerank_params`` (important
-        for small Ollama models that need ``num_predict`` / ``top_k`` /
-        ``repeat_penalty`` etc.)
-    """
-    from ..llm.client import LLMClient
-    provider_name = cfg.rerank_llm_provider_name or cfg.provider.name
-    base_url = cfg.rerank_llm_base_url or cfg.provider.base_url
-    api_key = cfg.rerank_llm_api_key or cfg.provider.api_key
-    model = cfg.rerank_llm_model or cfg.provider.model
-
-    if cfg.rerank_llm_model:  # override → reranker's own param namespace
-        model_params = dict(cfg.rerank_params)
-    else:  # inherit → use the main model's params
-        model_params = dict(cfg.model_params.get(model, {}))
-
-    return LLMClient(
-        provider_name=provider_name,
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        max_tokens=1024,
-        temperature=model_params.get("temperature", 0.0),
-        thinking="off",
-        model_params=model_params,
-    )
-
-
 def _freecad_log(msg: str):
     """Print a line to FreeCAD's Report View, if FreeCAD is available."""
     try:
@@ -153,7 +112,16 @@ def _run_reranker(cfg, pairs, user_text):
     from ..tools.reranker import rerank_tools, rerank_tools_llm
     if cfg.rerank_method == "llm":
         try:
-            client = _build_rerank_llm_client(cfg)
+            from ..llm.client import create_client, resolve_profile, resolve_params
+            # Reranking is a classification job: short output, no thinking,
+            # deterministic unless the profile itself sets a temperature.
+            # Those are call-site properties and stay fixed whichever
+            # profile the user points the reranker at.
+            profile = resolve_profile(cfg, "rerank")
+            params = resolve_params(cfg, profile)
+            client = create_client(
+                cfg, "rerank", max_tokens=1024, thinking="off",
+                temperature=params.get("temperature", 0.0))
         except Exception as e:
             _freecad_log("LLM reranker: cannot build client ({}); using keyword".format(e))
             return rerank_tools(
@@ -525,8 +493,8 @@ class _CompactionWorker(QThread):
 
     def run(self):
         try:
-            from ..llm.client import create_client_from_config
-            client = create_client_from_config()
+            from ..llm.client import create_client
+            client = create_client(utility="compaction")
 
             messages = [
                 {

@@ -11,11 +11,12 @@ Provides a GUI for configuring:
   - Test connection button
 """
 
+import copy
 import os
 import secrets
 
 from .compat import QtWidgets, QtCore, QtGui
-from ..i18n import translate
+from ..i18n import translate, QT_TRANSLATE_NOOP
 
 QDialog = QtWidgets.QDialog
 QWidget = QtWidgets.QWidget
@@ -41,24 +42,48 @@ QListWidget = QtWidgets.QListWidget
 QListWidgetItem = QtWidgets.QListWidgetItem
 QFileDialog = QtWidgets.QFileDialog
 QMessageBox = QtWidgets.QMessageBox
+QInputDialog = QtWidgets.QInputDialog
 
-from ..config import get_config, save_current_config, PROVIDER_PRESETS
+from ..config import get_config, save_current_config, PROVIDER_PRESETS, ProviderConfig
 from ..llm.providers import get_provider_names
 
 
 class _TestConnectionThread(QThread):
-    """Background thread for testing LLM connection and detecting capabilities."""
+    """Background thread for testing LLM connection and detecting capabilities.
+
+    Takes provider/URL/key/model/model_params as arguments rather than
+    reading config — so the user can test before saving, and so a profile
+    that isn't cfg.active_profile can't have its values smuggled into the
+    active one through the singleton (see _TestRerankerThread).
+    """
     finished = Signal(bool, str)        # success, message
     vision_result = Signal(bool)        # vision probe result
     capabilities_result = Signal(dict)  # full caps dict (Ollama: vision/tools/thinking)
 
-    def __init__(self, parent=None):
+    def __init__(self, provider_name, base_url, api_key, model,
+                 model_params, parent=None):
         super().__init__(parent)
+        self._provider = provider_name
+        self._base_url = base_url
+        self._api_key = api_key
+        self._model = model
+        self._model_params = dict(model_params or {})
 
     def run(self):
         try:
-            from ..llm.client import create_client_from_config
-            client = create_client_from_config()
+            from ..config import get_config
+            from ..llm.client import LLMClient
+            cfg = get_config()
+            client = LLMClient(
+                provider_name=self._provider,
+                base_url=self._base_url,
+                api_key=self._api_key,
+                model=self._model,
+                max_tokens=cfg.max_tokens,
+                temperature=cfg.temperature,
+                thinking=cfg.thinking,
+                model_params=self._model_params,
+            )
             response = client.test_connection()
             self.finished.emit(True, translate("SettingsDialog", "Connected! Response: ") + response)
 
@@ -174,6 +199,40 @@ class _TestRerankerThread(QThread):
 class SettingsDialog(QDialog):
     """Configuration dialog for FreeCAD AI."""
 
+    # Call sites that can run on their own profile. The identifier is the
+    # contract with create_client(cfg, utility); adding a new one here and
+    # at its call site is the whole opt-in.
+    # The labels are QT_TRANSLATE_NOOP-wrapped so pylupdate5 (which
+    # extracts string literals only) finds them here; the use site below
+    # runs them through translate() to resolve them at runtime.
+    UTILITIES = [
+        ("compaction",
+         QT_TRANSLATE_NOOP("SettingsDialog", "Context compaction")),
+        ("skill_eval",
+         QT_TRANSLATE_NOOP("SettingsDialog", "Skill evaluation")),
+        ("tool_optimize",
+         QT_TRANSLATE_NOOP("SettingsDialog", "Tool optimisation")),
+        ("rerank",
+         QT_TRANSLATE_NOOP("SettingsDialog", "Tool reranking")),
+    ]
+
+    @classmethod
+    def _collect_utility_profiles(cls, selections: dict) -> dict:
+        """Turn dropdown selections into the config mapping.
+
+        An empty selection means inherit the active profile and is stored
+        by omission, so config.json carries only real overrides.
+
+        A classmethod because it touches no widgets — that is what makes
+        it testable without constructing a dialog.
+        """
+        known = {u for u, _ in cls.UTILITIES}
+        return {
+            utility: label
+            for utility, label in selections.items()
+            if utility in known and label
+        }
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(translate("SettingsDialog", "FreeCAD AI Settings"))
@@ -182,7 +241,7 @@ class SettingsDialog(QDialog):
         self.resize(540, 700)
         self._test_thread = None
         self._last_default_prompt = ""
-        self._rerank_last_model = ""
+        self._cfg = get_config()
         self._build_ui()
         self._load_from_config()
 
@@ -202,6 +261,40 @@ class SettingsDialog(QDialog):
         # Provider group
         provider_group = QGroupBox(translate("SettingsDialog", "LLM Provider"))
         provider_layout = QFormLayout()
+
+        # ── Profile selector ────────────────────────────────────────
+        profile_row = QHBoxLayout()
+        self.profile_combo = QComboBox()
+        self.profile_combo.setToolTip(translate(
+            "SettingsDialog",
+            "Named connection. Utilities below can each use a different one."))
+        profile_row.addWidget(self.profile_combo, 1)
+        self.profile_add_btn = QPushButton(translate("SettingsDialog", "New"))
+        self.profile_rename_btn = QPushButton(translate("SettingsDialog", "Rename"))
+        self.profile_delete_btn = QPushButton(translate("SettingsDialog", "Delete"))
+        for b in (self.profile_add_btn, self.profile_rename_btn,
+                  self.profile_delete_btn):
+            profile_row.addWidget(b)
+        provider_layout.addRow(translate("SettingsDialog", "Profile:"), profile_row)
+
+        # Selecting a profile in the combo means "edit this one". Chat runs
+        # on the profile this box is ticked for, and nothing else moves it.
+        self.profile_active_check = QCheckBox(translate(
+            "SettingsDialog", "Use this profile for chat"))
+        self.profile_active_check.setToolTip(translate(
+            "SettingsDialog",
+            "The ticked profile is the one the main chat runs on.\n"
+            "Utilities below inherit it unless they name their own.\n"
+            "To move it, tick a different profile — there is always\n"
+            "exactly one."))
+        self.profile_active_check.toggled.connect(
+            self._on_profile_active_toggled)
+        provider_layout.addRow("", self.profile_active_check)
+
+        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        self.profile_add_btn.clicked.connect(self._on_profile_add)
+        self.profile_rename_btn.clicked.connect(self._on_profile_rename)
+        self.profile_delete_btn.clicked.connect(self._on_profile_delete)
 
         self.provider_combo = QComboBox()
         self.provider_combo.addItems([n.capitalize() for n in get_provider_names()])
@@ -232,6 +325,27 @@ class SettingsDialog(QDialog):
 
         provider_group.setLayout(provider_layout)
         layout.addWidget(provider_group)
+
+        # ── Utilities ───────────────────────────────────────────────
+        # Below the profile fields they refer to, so the reading order is
+        # "define connections, then say which one each job uses."
+        self.utility_group = QGroupBox(translate(
+            "SettingsDialog", "Utility models"))
+        util_form = QFormLayout()
+        self.utility_combos = {}
+        for utility, ulabel in self.UTILITIES:
+            combo = QComboBox()
+            combo.setToolTip(translate(
+                "SettingsDialog",
+                "Which profile this job runs on. Leave inherited to use "
+                "the active profile."))
+            combo.currentIndexChanged.connect(
+                lambda index, u=utility: self._on_utility_combo_changed(u, index))
+            self.utility_combos[utility] = combo
+            util_form.addRow(
+                translate("SettingsDialog", ulabel) + ":", combo)
+        self.utility_group.setLayout(util_form)
+        layout.addWidget(self.utility_group)
 
         # Model Parameters group — fixed fields + freeform key-value table
         model_params_group = QGroupBox(translate("SettingsDialog", "Model Parameters"))
@@ -512,8 +626,6 @@ class SettingsDialog(QDialog):
                       "LLM: semantic ranking via a small/fast LLM\n"
                       "Both keyword and LLM include pinned tools unconditionally.")
         )
-        self.rerank_method_combo.currentIndexChanged.connect(
-            self._on_rerank_method_changed)
         method_layout.addWidget(self.rerank_method_combo)
         method_layout.addStretch()
         rerank_layout.addLayout(method_layout)
@@ -537,100 +649,18 @@ class SettingsDialog(QDialog):
         pinned_layout.addWidget(self.rerank_pinned_edit)
         rerank_layout.addLayout(pinned_layout)
 
-        # LLM reranker provider override — only relevant when method == "llm".
-        # Fields left empty inherit the main provider's settings.
-        self.rerank_llm_group = QGroupBox(
-            translate("SettingsDialog", "LLM reranker provider (empty = same as main)"))
-        llm_form = QFormLayout()
-
-        self.rerank_llm_provider_combo = QComboBox()
-        self.rerank_llm_provider_combo.addItem(
-            translate("SettingsDialog", "(same as main)"), "")
-        for name in get_provider_names():
-            self.rerank_llm_provider_combo.addItem(name.capitalize(), name)
-        llm_form.addRow(translate("SettingsDialog", "Provider:"),
-                        self.rerank_llm_provider_combo)
-
-        self.rerank_llm_base_url_edit = QLineEdit()
-        self.rerank_llm_base_url_edit.setPlaceholderText(
-            translate("SettingsDialog", "inherit from main"))
-        llm_form.addRow(translate("SettingsDialog", "Base URL:"),
-                        self.rerank_llm_base_url_edit)
-
-        self.rerank_llm_api_key_edit = QLineEdit()
-        self.rerank_llm_api_key_edit.setEchoMode(QLineEdit.Password)
-        self.rerank_llm_api_key_edit.setPlaceholderText(
-            translate("SettingsDialog", "inherit from main"))
-        llm_form.addRow(translate("SettingsDialog", "API key:"),
-                        self.rerank_llm_api_key_edit)
-
-        self.rerank_llm_model_edit = QLineEdit()
-        self.rerank_llm_model_edit.setPlaceholderText(
-            translate("SettingsDialog", "inherit from main"))
-        # textChanged fires on every keystroke, so toggling between
-        # inherit/override updates the params table live — users who type
-        # a model and click Save immediately still see the right table.
-        self.rerank_llm_model_edit.textChanged.connect(
-            self._on_rerank_model_changed)
-        llm_form.addRow(translate("SettingsDialog", "Model:"),
-                        self.rerank_llm_model_edit)
-
-        # Per-model parameters for the reranker's effective model. Written
-        # back into the shared cfg.model_params dict so a given model's
-        # params are consistent whether the model is used as main, reranker,
-        # or both. When the reranker inherits the main model (override
-        # field empty), the table is prefilled with the main model's
-        # current params and locked read-only — edits belong on the main
-        # Model Parameters table. When an override model is set, the table
-        # is editable and writes to that model's slot in model_params.
-        self._rerank_params_label = QLabel()
-        llm_form.addRow(self._rerank_params_label)
-
-        self.rerank_params_table = QTableWidget(0, 2)
-        self.rerank_params_table.setHorizontalHeaderLabels([
-            translate("SettingsDialog", "Parameter"),
-            translate("SettingsDialog", "Value"),
-        ])
-        self.rerank_params_table.horizontalHeader().setStretchLastSection(True)
-        self.rerank_params_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.Interactive)
-        self.rerank_params_table.setColumnWidth(0, 160)
-        self.rerank_params_table.setMaximumHeight(120)
-        self.rerank_params_table.setToolTip(
-            translate("SettingsDialog",
-                      "Parameters for the reranker's model. Merged into the\n"
-                      "API request body just like main model parameters.\n"
-                      "Common: temperature, top_p, top_k, num_predict."))
-        llm_form.addRow(self.rerank_params_table)
-
-        rp_btn_layout = QHBoxLayout()
-        self._rerank_add_btn = QPushButton(translate("SettingsDialog", "Add"))
-        self._rerank_add_btn.clicked.connect(self._add_rerank_param)
-        rp_btn_layout.addWidget(self._rerank_add_btn)
-
-        self._rerank_remove_btn = QPushButton(translate("SettingsDialog", "Remove"))
-        self._rerank_remove_btn.clicked.connect(self._remove_rerank_param)
-        rp_btn_layout.addWidget(self._rerank_remove_btn)
-
-        self._rerank_defaults_btn = QPushButton(translate("SettingsDialog", "Load Defaults"))
-        self._rerank_defaults_btn.setToolTip(
-            translate("SettingsDialog",
-                      "Load recommended parameters for the reranker's provider"))
-        self._rerank_defaults_btn.clicked.connect(self._load_rerank_default_params)
-        rp_btn_layout.addWidget(self._rerank_defaults_btn)
-        rp_btn_layout.addStretch()
-        llm_form.addRow(rp_btn_layout)
-
-        # Test button — validates the reranker call without waiting for the
-        # user to send a message. Uses current dialog values, not disk, so
-        # the user can iterate on params before saving.
+        # Test button — probes the reranker's resolved profile (the rerank
+        # utility dropdown's selection, or the active profile when it is
+        # left on "inherit") without waiting for the user to send a real
+        # message. The reranker's connection is a profile now, not a
+        # bespoke override group — see the Utility models group above.
         test_layout = QHBoxLayout()
         self._rerank_test_btn = QPushButton(
             translate("SettingsDialog", "Test Reranker"))
         self._rerank_test_btn.setToolTip(
             translate("SettingsDialog",
-                      "Send a small test prompt to the reranker LLM using the\n"
-                      "current dialog settings. Reports success or the exact\n"
+                      "Send a small test prompt to the reranker LLM using\n"
+                      "its resolved profile. Reports success or the exact\n"
                       "error from the provider — useful for diagnosing 4xx\n"
                       "errors, timeouts, or unparseable responses."))
         self._rerank_test_btn.clicked.connect(self._test_reranker)
@@ -639,10 +669,7 @@ class SettingsDialog(QDialog):
         self._rerank_test_status.setWordWrap(True)
         self._rerank_test_status.setStyleSheet("color: #666;")
         test_layout.addWidget(self._rerank_test_status, 1)
-        llm_form.addRow(test_layout)
-
-        self.rerank_llm_group.setLayout(llm_form)
-        rerank_layout.addWidget(self.rerank_llm_group)
+        rerank_layout.addLayout(test_layout)
 
         rerank_group.setLayout(rerank_layout)
         layout.addWidget(rerank_group)
@@ -899,25 +926,23 @@ class SettingsDialog(QDialog):
 
     def _load_from_config(self):
         """Populate fields from the current config."""
-        cfg = get_config()
+        cfg = self._cfg = get_config()
 
-        names = get_provider_names()
-        try:
-            idx = names.index(cfg.provider.name)
-        except ValueError:
-            idx = 0
-        self.provider_combo.setCurrentIndex(idx)
+        # Profile edits stay dialog-local until OK. cfg is the live singleton,
+        # so mutating its profiles in place makes Cancel a no-op — and an
+        # unrelated save_current_config() (the vision probe calls one) would
+        # flush a discarded edit to disk.
+        self._profiles = copy.deepcopy(cfg.profiles)
+        self._active_profile = cfg.active_profile
+        self._utility_profiles = dict(cfg.utility_profiles)
 
-        self.api_key_edit.setText(cfg.provider.api_key)
-        self.base_url_edit.setText(cfg.provider.base_url)
-        self.model_edit.setText(cfg.provider.model)
+        self._refresh_profile_combo()
+        self._show_profile(self._active_profile)
+
         self.max_tokens_spin.setValue(cfg.max_tokens)
         self.context_window_spin.setValue(cfg.context_window)
         self.max_tool_turns_spin.setValue(cfg.max_tool_turns)
         self.execution_timeout_spin.setValue(cfg.execution_timeout)
-
-        # Model parameters table
-        self._load_model_params_table(cfg.provider.model, cfg)
 
         self.enable_tools_check.setChecked(cfg.enable_tools)
         self.auto_execute_check.setChecked(cfg.auto_execute)
@@ -929,21 +954,6 @@ class SettingsDialog(QDialog):
             method_map.get(cfg.rerank_method, 0))
         self.rerank_top_n_spin.setValue(cfg.rerank_top_n)
         self.rerank_pinned_edit.setText(", ".join(cfg.rerank_pinned_tools))
-
-        # LLM reranker provider override
-        provider_idx = self.rerank_llm_provider_combo.findData(
-            cfg.rerank_llm_provider_name)
-        if provider_idx >= 0:
-            self.rerank_llm_provider_combo.setCurrentIndex(provider_idx)
-        else:
-            self.rerank_llm_provider_combo.setCurrentIndex(0)
-        self.rerank_llm_base_url_edit.setText(cfg.rerank_llm_base_url)
-        self.rerank_llm_api_key_edit.setText(cfg.rerank_llm_api_key)
-        self.rerank_llm_model_edit.setText(cfg.rerank_llm_model)
-        # Force a fresh resolve (setText above may have fired the signal mid-load)
-        self._rerank_last_model = ""
-        self._on_rerank_model_changed()
-        self._on_rerank_method_changed(self.rerank_method_combo.currentIndex())
 
         thinking_map = {"off": 0, "on": 1, "extended": 2}
         self.thinking_combo.setCurrentIndex(thinking_map.get(cfg.thinking, 0))
@@ -999,6 +1009,243 @@ class SettingsDialog(QDialog):
         # Hooks
         self._refresh_hooks_list()
 
+    # ── Connection profiles ─────────────────────────────────────
+
+    def _rename_profile(self, old: str, new: str) -> None:
+        """Rename a profile, carrying every reference to it along.
+
+        A profile's label is its identity — utility_profiles and
+        active_profile store the name, not a stable id — so a rename that
+        did not cascade would silently detach a utility from the
+        connection it was using.
+        """
+        new = (new or "").strip()
+        if not new:
+            raise ValueError("Profile name cannot be empty")
+        if old == new:
+            return
+        if new in self._profiles:
+            raise ValueError(f"A profile named {new!r} already exists")
+        if old not in self._profiles:
+            raise ValueError(f"No profile named {old!r}")
+        # Rebuild in place so the combo's order does not shuffle.
+        self._profiles = {
+            (new if label == old else label): prof
+            for label, prof in self._profiles.items()
+        }
+        if self._active_profile == old:
+            self._active_profile = new
+        for utility, label in list(self._utility_profiles.items()):
+            if label == old:
+                self._utility_profiles[utility] = new
+
+    def _delete_profile(self, label: str) -> None:
+        """Remove a profile, leaving nothing pointing at it."""
+        if label not in self._profiles:
+            raise ValueError(f"No profile named {label!r}")
+        if len(self._profiles) == 1:
+            raise ValueError("At least one profile is required")
+        del self._profiles[label]
+        if self._active_profile == label:
+            self._active_profile = next(iter(self._profiles))
+        for utility, mapped in list(self._utility_profiles.items()):
+            if mapped == label:
+                self._utility_profiles[utility] = ""
+
+    def _refresh_profile_combo(self) -> None:
+        """Repopulate the profile combo without firing its handler.
+
+        The active profile is marked in the item *text* only; the item
+        data stays the bare label, because _on_profile_changed and
+        findData both key off it.
+
+        The selection follows the profile being edited, not the active
+        one. Browsing no longer moves active, so re-selecting by
+        _active_profile here would yank the combo back to it after every
+        add, rename and delete. Falls back to the active profile, and
+        then to the first entry, for the delete path — where the label
+        being edited is the one that just went away.
+        """
+        self.profile_combo.blockSignals(True)
+        try:
+            self.profile_combo.clear()
+            for label in self._profiles:
+                text = (f"{label} (active)" if label == self._active_profile
+                        else label)
+                self.profile_combo.addItem(text, label)
+            for candidate in (getattr(self, "_current_profile_label", None),
+                              self._active_profile):
+                idx = self.profile_combo.findData(candidate) if candidate else -1
+                if idx >= 0:
+                    self.profile_combo.setCurrentIndex(idx)
+                    break
+            else:
+                self.profile_combo.setCurrentIndex(0)
+        finally:
+            self.profile_combo.blockSignals(False)
+        self._refresh_utility_combos()
+
+    def _refresh_utility_combos(self) -> None:
+        """Repopulate every utility dropdown from the working copy.
+
+        Reads self._profiles, not self._cfg.profiles: a profile added or
+        renamed in this dialog session must appear in these lists before
+        the user presses OK.
+        """
+        for utility, combo in self.utility_combos.items():
+            current = self._utility_profiles.get(utility, "")
+            combo.blockSignals(True)
+            try:
+                combo.clear()
+                combo.addItem(translate(
+                    "SettingsDialog", "(same as active profile)"), "")
+                for label in self._profiles:
+                    combo.addItem(label, label)
+                idx = combo.findData(current)
+                combo.setCurrentIndex(idx if idx >= 0 else 0)
+            finally:
+                combo.blockSignals(False)
+
+    def _on_utility_combo_changed(self, utility: str, index: int) -> None:
+        """Track a utility dropdown's live selection in the working copy.
+
+        Without this, _utility_profiles only reflects what was loaded when
+        the dialog opened, and both _refresh_utility_combos (on a rename or
+        delete elsewhere in the dialog) and the rerank probe would read
+        stale state instead of the user's in-progress choice.
+        """
+        combo = self.utility_combos[utility]
+        self._utility_profiles[utility] = combo.itemData(index) or ""
+
+    def _commit_profile_fields(self) -> None:
+        """Write the visible connection widgets back into their profile.
+
+        Called before switching away from a profile so an in-progress edit
+        is not lost — the #75 complaint, from the other direction.
+        """
+        label = getattr(self, "_current_profile_label", None)
+        prof = self._profiles.get(label)
+        if prof is None:
+            return
+        names = get_provider_names()
+        idx = self.provider_combo.currentIndex()
+        if 0 <= idx < len(names):
+            prof.name = names[idx]
+        prof.base_url = self.base_url_edit.text()
+        prof.api_key = self.api_key_edit.text()
+        prof.model = self.model_edit.text()
+        # The table is the profile's params in full (see
+        # _load_model_params_table), so this is a straight write-back and
+        # a removed row is a removed parameter. Do not reintroduce a
+        # merge with cfg.model_params here: that shared layer is legacy
+        # and unread, and layering it back in would make Remove a no-op
+        # again.
+        prof.params = self._read_model_params_table()
+
+    def _show_profile(self, label: str) -> None:
+        """Populate the connection widgets from a profile."""
+        prof = self._profiles[label]
+        self._current_profile_label = label
+        names = get_provider_names()
+        try:
+            idx = names.index(prof.name)
+        except ValueError:
+            idx = 0
+        # Programmatic index moves must not run _on_provider_changed —
+        # that handler exists to apply a preset on a *user* switch, and
+        # firing it here would overwrite the profile's saved URL (#75).
+        self.provider_combo.blockSignals(True)
+        try:
+            self.provider_combo.setCurrentIndex(idx)
+        finally:
+            self.provider_combo.blockSignals(False)
+        self.api_key_edit.setText(prof.api_key)
+        self.base_url_edit.setText(prof.base_url)
+        self.model_edit.setText(prof.model)
+        self._load_model_params_table(prof.model, self._cfg, prof)
+
+        is_active = label == self._active_profile
+        # blockSignals, or populating the widgets would itself re-point
+        # chat through _on_profile_active_toggled.
+        self.profile_active_check.blockSignals(True)
+        try:
+            self.profile_active_check.setChecked(is_active)
+        finally:
+            self.profile_active_check.blockSignals(False)
+        # Disabled while ticked: there is always exactly one active
+        # profile, so the way to move it is to tick a different one, not
+        # to untick this one.
+        self.profile_active_check.setEnabled(not is_active)
+
+    def _on_profile_active_toggled(self, checked: bool) -> None:
+        """Point chat at the profile currently being edited.
+
+        Only the off->on transition is reachable — _show_profile disables
+        the box while it is ticked — so an untick is a no-op rather than
+        a way to end up with no active profile.
+        """
+        if not checked:
+            return
+        self._active_profile = self._current_profile_label
+        self.profile_active_check.setEnabled(False)
+        self._refresh_profile_combo()
+
+    def _on_profile_changed(self, index):
+        # Selects a profile for editing. It deliberately does NOT make it
+        # active: browsing the profiles to see what they hold must not
+        # silently re-point chat on OK.
+        label = self.profile_combo.itemData(index)
+        if not label or label == getattr(self, "_current_profile_label", None):
+            return
+        self._commit_profile_fields()
+        self._show_profile(label)
+
+    def _on_profile_add(self):
+        base = translate("SettingsDialog", "New profile")
+        label, n = base, 2
+        while label in self._profiles:
+            label, n = f"{base} {n}", n + 1
+        self._commit_profile_fields()
+        self._profiles[label] = ProviderConfig()
+        # Selected for editing, not made active. _show_profile first, so
+        # the refresh below finds _current_profile_label already pointing
+        # at the new profile and selects it.
+        self._show_profile(label)
+        self._refresh_profile_combo()
+
+    def _on_profile_rename(self):
+        old = self._current_profile_label
+        new, ok = QInputDialog.getText(
+            self, translate("SettingsDialog", "Rename profile"),
+            translate("SettingsDialog", "Name:"), QLineEdit.Normal, old)
+        if not ok:
+            return
+        try:
+            self._rename_profile(old, new)
+        except ValueError as e:
+            QMessageBox.warning(
+                self, translate("SettingsDialog", "Rename profile"), str(e))
+            return
+        self._current_profile_label = new.strip()
+        self._refresh_profile_combo()
+
+    def _on_profile_delete(self):
+        label = self._current_profile_label
+        if QMessageBox.question(
+                self, translate("SettingsDialog", "Delete profile"),
+                translate("SettingsDialog",
+                          "Delete profile '{}'?").format(label)) \
+                != QMessageBox.Yes:
+            return
+        try:
+            self._delete_profile(label)
+        except ValueError as e:
+            QMessageBox.warning(
+                self, translate("SettingsDialog", "Delete profile"), str(e))
+            return
+        self._refresh_profile_combo()
+        self._show_profile(self._active_profile)
+
     def _on_provider_changed(self, index):
         """Update base URL, model, and default params when provider changes."""
         names = get_provider_names()
@@ -1017,9 +1264,15 @@ class SettingsDialog(QDialog):
             if new_model:
                 self.model_edit.setText(new_model)
 
-            # Load saved params for the (possibly preserved) model
-            cfg = get_config()
-            self._load_model_params_table(self.model_edit.text(), cfg)
+            # Load saved params for the (possibly preserved) model. The
+            # working-copy profile, not the singleton: a vendor switch
+            # keeps the parameters this profile already states, and falls
+            # back to the new preset's default_params only when it states
+            # none.
+            prof = self._profiles.get(
+                getattr(self, "_current_profile_label", None))
+            self._load_model_params_table(
+                self.model_edit.text(), self._cfg, prof)
 
             # Apply provider-recommended reranker settings only when the
             # reranker UI is still at its factory default (off + top_n 15).
@@ -1030,6 +1283,11 @@ class SettingsDialog(QDialog):
             rerank_defaults = preset.get("default_rerank", {})
             if rerank_defaults and self._rerank_at_factory_defaults():
                 self._apply_rerank_defaults(rerank_defaults)
+
+            # A vendor switch is an explicit "point this profile
+            # elsewhere", so record it. Only a user-driven change reaches
+            # here: programmatic index moves are wrapped in blockSignals.
+            self._commit_profile_fields()
 
     def _rerank_at_factory_defaults(self) -> bool:
         """True if the rerank UI matches AppConfig's factory defaults."""
@@ -1080,28 +1338,38 @@ class SettingsDialog(QDialog):
         return state == QtCore.Qt.Checked
 
     def _on_model_changed(self):
-        """Save current params under the old model, load params for the new one."""
+        """Stash the edited table on the working-copy profile, load the new model's."""
         new_model = self.model_edit.text().strip()
         if new_model == self._last_model_name or not new_model:
             return
-        # Save current table under old model name (in-memory only)
-        cfg = get_config()
-        if self._last_model_name:
+        # Stash current table on the working-copy profile (never the live
+        # singleton — see _commit_profile_fields for why cfg.model_params
+        # is read-only from this dialog).
+        prof = self._profiles.get(getattr(self, "_current_profile_label", None))
+        if self._last_model_name and prof is not None:
             params = self._read_model_params_table()
             if params:
-                cfg.model_params[self._last_model_name] = params
+                prof.params = params
         # Load params for new model
-        self._load_model_params_table(new_model, cfg)
+        self._load_model_params_table(new_model, self._cfg, prof)
 
-    def _load_model_params_table(self, model_name: str, cfg=None):
-        """Populate the params table for the given model.
+    def _load_model_params_table(self, model_name: str, cfg=None, profile=None):
+        """Populate the params table with what resolve_params() will send.
 
-        Priority: saved params for this model > provider defaults > global temperature.
+        That is the profile's own params and nothing else — the legacy
+        cfg.model_params dict is not read here or in create_client, so a
+        row removed from this table stays removed. When the profile states
+        nothing, seed the table from the provider preset's default_params,
+        and failing that from the global temperature.
         """
         if cfg is None:
             cfg = get_config()
+        if profile is None:
+            profile = self._profiles.get(
+                getattr(self, "_current_profile_label", None))
 
-        params = cfg.model_params.get(model_name, {})
+        params = dict(profile.params) if profile is not None else {}
+
         if not params:
             # No saved params — try provider defaults
             names = get_provider_names()
@@ -1188,29 +1456,76 @@ class SettingsDialog(QDialog):
         self.system_prompt_edit.setPlainText(default)
         self._last_default_prompt = default
 
+    @staticmethod
+    def _profiles_missing_base_url(profiles) -> list:
+        """Sorted labels of profiles with no Base URL, which cannot work.
+
+        LLMClient builds every request URL as base_url + a path, so a blank
+        one yields a relative path and a network error nowhere near the
+        cause. Resolution deliberately does not substitute the provider
+        preset here — a silent substitution is issue #75's shape — so the
+        blank has to be surfaced instead.
+        """
+        return sorted(
+            label for label, prof in profiles.items()
+            if not (getattr(prof, "base_url", "") or "").strip())
+
+    def _confirm_incomplete_profiles(self) -> bool:
+        """Ask before saving a profile that has no Base URL. True to proceed.
+
+        A question rather than a refusal: a config may already carry a
+        half-filled profile the user never selects, and blocking OK on it
+        would strand every unrelated setting in this dialog.
+        """
+        incomplete = self._profiles_missing_base_url(self._profiles)
+        if not incomplete:
+            return True
+        return QMessageBox.question(
+            self,
+            translate("SettingsDialog", "Profile has no Base URL"),
+            translate(
+                "SettingsDialog",
+                "No Base URL is set for: %s.\n\nRequests made with such a "
+                "profile fail with a connection error rather than a clear "
+                "message. Save anyway?") % ", ".join(incomplete),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No) == QMessageBox.Yes
+
     def _save(self):
         """Save settings to config and close."""
         cfg = get_config()
-        names = get_provider_names()
-        idx = self.provider_combo.currentIndex()
-        cfg.provider.name = names[idx] if 0 <= idx < len(names) else "anthropic"
-        cfg.provider.api_key = self.api_key_edit.text()
-        cfg.provider.base_url = self.base_url_edit.text()
-        cfg.provider.model = self.model_edit.text()
+
+        # Profile edits (add/rename/delete/field changes) have lived in the
+        # dialog-local working copy since _load_from_config. OK is the only
+        # point where they land in the real config — commit the visible
+        # widgets into the currently-shown profile first, then write the
+        # whole working copy back. cfg.provider (a property resolving
+        # profiles[active_profile]) then reads correctly for everything
+        # below, with no separate provider.* writes needed.
+        self._commit_profile_fields()
+        if not self._confirm_incomplete_profiles():
+            return
+        cfg.profiles = copy.deepcopy(self._profiles)
+        cfg.active_profile = self._active_profile
+        cfg.utility_profiles = self._collect_utility_profiles({
+            utility: combo.currentData()
+            for utility, combo in self.utility_combos.items()
+        })
+
         cfg.max_tokens = self.max_tokens_spin.value()
         cfg.context_window = self.context_window_spin.value()
         cfg.max_tool_turns = self.max_tool_turns_spin.value()
         cfg.execution_timeout = self.execution_timeout_spin.value()
 
-        # Save model parameters for the current model
+        # Model params reach the profile via _commit_profile_fields above
+        # (prof.params = the table, in full) — cfg.model_params is legacy
+        # and is neither read nor written from here.
         model_name = self.model_edit.text().strip()
         if model_name:
             params = self._read_model_params_table()
-            if params:
-                cfg.model_params[model_name] = params
-            elif model_name in cfg.model_params:
-                del cfg.model_params[model_name]
-            # Keep global temperature in sync for backward compat
+            # Keep global temperature in sync for backward compat —
+            # cfg.temperature is still the job-level fallback create_client
+            # passes when a profile states no temperature.
             cfg.temperature = params.get("temperature", cfg.temperature)
 
         cfg.enable_tools = self.enable_tools_check.isChecked()
@@ -1267,21 +1582,6 @@ class SettingsDialog(QDialog):
             s.strip() for s in pinned_text.split(",") if s.strip()
         ] if pinned_text else []
 
-        # LLM reranker provider override
-        cfg.rerank_llm_provider_name = (
-            self.rerank_llm_provider_combo.currentData() or "")
-        cfg.rerank_llm_base_url = self.rerank_llm_base_url_edit.text().strip()
-        cfg.rerank_llm_api_key = self.rerank_llm_api_key_edit.text().strip()
-        rerank_model = self.rerank_llm_model_edit.text().strip()
-        cfg.rerank_llm_model = rerank_model
-
-        # Save the reranker params into their own namespace (cfg.rerank_params),
-        # never the shared model_params dict. In inherit mode the reranker has
-        # no params of its own — the main Model Parameters table owns the main
-        # model's slot, so the reranker can't clobber it (issue #30).
-        cfg.rerank_params = self._resolve_rerank_params(
-            rerank_model, self._read_rerank_params_table())
-
         save_current_config()
 
         # The menu's "Keep Chat Panel Open" tick mirrors this flag, and
@@ -1293,140 +1593,41 @@ class SettingsDialog(QDialog):
 
         self.accept()
 
-    def _on_rerank_method_changed(self, index: int):
-        """Show the LLM provider subgroup only when 'LLM' is selected."""
-        self.rerank_llm_group.setVisible(index == 2)
-
-    @staticmethod
-    def _resolve_rerank_params(rerank_model: str, table_params: dict) -> dict:
-        """Reranker params to persist into cfg.rerank_params.
-
-        Override mode (a distinct model is set) → persist the table. Inherit
-        mode (empty override) → persist nothing; the reranker reads the main
-        model's params at runtime and the main Model Parameters table owns
-        that slot, so the reranker can never overwrite it (issue #30).
-        """
-        return dict(table_params) if rerank_model.strip() else {}
-
-    def _on_rerank_model_changed(self, *_args):
-        """Refresh the reranker params table for the current model state.
-
-        - Empty override → mirror the main Model Parameters table's live
-          values (edits belong on the main table; the reranker inherits them).
-        - Non-empty override → show the reranker's own params. Renaming the
-          override model keeps the current edits (params are a single set, not
-          keyed per model); entering override from inherit loads the saved
-          cfg.rerank_params, falling back to provider defaults.
-        """
-        cfg = get_config()
-        prev_model = getattr(self, "_rerank_last_model", "") or ""
-        model = self.rerank_llm_model_edit.text().strip()
-        self._rerank_last_model = model
-
-        if not model:
-            # Inherit: show the main model's live params (reflects in-dialog
-            # edits there). These are not persisted under the reranker — the
-            # main table is authoritative.
-            self._populate_rerank_params_table(self._read_model_params_table())
-            self._rerank_params_label.setText(translate(
-                "SettingsDialog",
-                "Model parameters (inheriting main model — edit on the main table):"))
-            return
-
-        if prev_model:
-            # Was already overriding — the user just renamed the model.
-            # Keep the current edits (single param set, not per-model).
-            self._rerank_params_label.setText(translate(
-                "SettingsDialog", "Model parameters (reranker override):"))
-            return
-
-        # Entering override from inherit: load saved reranker params, else
-        # provider defaults.
-        params = dict(cfg.rerank_params)
-        if not params:
-            provider_name = (
-                self.rerank_llm_provider_combo.currentData()
-                or cfg.provider.name
-            )
-            preset = PROVIDER_PRESETS.get(provider_name, {})
-            params = dict(preset.get("default_params", {}))
-        self._populate_rerank_params_table(params)
-        self._rerank_params_label.setText(translate(
-            "SettingsDialog", "Model parameters (reranker override):"))
-
-    def _populate_rerank_params_table(self, params: dict):
-        self.rerank_params_table.setRowCount(0)
-        for key, value in params.items():
-            row = self.rerank_params_table.rowCount()
-            self.rerank_params_table.insertRow(row)
-            self.rerank_params_table.setItem(row, 0, QTableWidgetItem(str(key)))
-            self.rerank_params_table.setItem(row, 1, QTableWidgetItem(str(value)))
-
-    def _read_rerank_params_table(self) -> dict:
-        params = {}
-        for row in range(self.rerank_params_table.rowCount()):
-            key_item = self.rerank_params_table.item(row, 0)
-            val_item = self.rerank_params_table.item(row, 1)
-            if not key_item or not val_item:
-                continue
-            key = key_item.text().strip()
-            val_str = val_item.text().strip()
-            if not key:
-                continue
-            try:
-                if "." in val_str or "e" in val_str.lower():
-                    params[key] = float(val_str)
-                else:
-                    params[key] = int(val_str)
-            except ValueError:
-                if val_str.lower() in ("true", "false"):
-                    params[key] = val_str.lower() == "true"
-                else:
-                    params[key] = val_str
-        return params
-
-    def _add_rerank_param(self):
-        row = self.rerank_params_table.rowCount()
-        self.rerank_params_table.insertRow(row)
-        self.rerank_params_table.setItem(row, 0, QTableWidgetItem(""))
-        self.rerank_params_table.setItem(row, 1, QTableWidgetItem(""))
-        self.rerank_params_table.editItem(self.rerank_params_table.item(row, 0))
-
-    def _remove_rerank_param(self):
-        row = self.rerank_params_table.currentRow()
-        if row >= 0:
-            self.rerank_params_table.removeRow(row)
-
     def _test_reranker(self):
-        """Send a small probe prompt to the reranker LLM using dialog values.
+        """Send a small probe prompt to the reranker LLM using its resolved
+        profile — the rerank utility dropdown's selection, falling back to
+        the active profile when it is left on "inherit".
 
         Surfaces success or the exact error so the user can debug a broken
         reranker config (HTTP 4xx, auth failure, timeouts, hallucinations)
         without sending a real chat message and parsing the Report View.
+
+        Mirrors _test_connection: resolve through the same helpers runtime
+        uses (create_client's own resolve_profile/resolve_params), so this
+        probe cannot drift from what Act mode will actually build.
         """
-        # Resolve effective provider/URL/key/model from dialog state.
-        # Empty fields inherit from the main fields (same as runtime behavior).
-        provider = (self.rerank_llm_provider_combo.currentData() or "").strip()
-        if not provider:
-            names = get_provider_names()
-            idx = self.provider_combo.currentIndex()
-            provider = names[idx] if 0 <= idx < len(names) else ""
+        # An in-progress edit on the visible profile should be what gets
+        # probed, not whatever was last committed.
+        self._commit_profile_fields()
 
-        base_url = self.rerank_llm_base_url_edit.text().strip() \
-            or self.base_url_edit.text().strip()
-        api_key = self.rerank_llm_api_key_edit.text().strip() \
-            or self.api_key_edit.text().strip()
-        model = self.rerank_llm_model_edit.text().strip() \
-            or self.model_edit.text().strip()
-        # Effective params: use the reranker table (reflects current state
-        # for both inherit and override modes).
-        model_params = self._read_rerank_params_table()
-
-        if not model:
+        # Read the dropdown's live selection, not self._utility_profiles —
+        # that mapping is only written back into it on Save.
+        label = self.utility_combos["rerank"].currentData() or ""
+        profile = self._profiles.get(label) or self._profiles.get(
+            self._active_profile)
+        if profile is None:
             self._rerank_test_status.setText(translate(
-                "SettingsDialog", "No model configured"))
+                "SettingsDialog", "No profile configured"))
             self._rerank_test_status.setStyleSheet("color: #c62828;")
             return
+
+        from ..llm.client import resolve_params
+        base_url = profile.base_url
+        # Matches create_client()'s fallback exactly (see _test_connection).
+        api_key = profile.api_key or self._cfg.provider_keys.get(
+            profile.name, "")
+        model = profile.model
+        model_params = resolve_params(self._cfg, profile)
 
         self._rerank_test_btn.setEnabled(False)
         self._rerank_test_status.setText(translate(
@@ -1434,7 +1635,7 @@ class SettingsDialog(QDialog):
         self._rerank_test_status.setStyleSheet("color: #666;")
 
         self._rerank_test_thread = _TestRerankerThread(
-            provider, base_url, api_key, model, model_params, self,
+            profile.name, base_url, api_key, model, model_params, self,
         )
         self._rerank_test_thread.finished.connect(
             self._on_rerank_test_finished)
@@ -1452,21 +1653,28 @@ class SettingsDialog(QDialog):
                 translate("SettingsDialog", "Error") + ": " + message)
             self._rerank_test_status.setStyleSheet("color: #c62828;")
 
-    def _load_rerank_default_params(self):
-        """Reset the reranker params table to the reranker provider's defaults."""
-        provider_name = (
-            self.rerank_llm_provider_combo.currentData()
-            or get_config().provider.name
-        )
-        preset = PROVIDER_PRESETS.get(provider_name, {})
-        params = dict(preset.get("default_params", {}))
-        if not params:
-            params = {"temperature": 0.3}
-        self._populate_rerank_params_table(params)
-
     def _test_connection(self):
         """Test the LLM connection in a background thread."""
         self._save_temp()
+
+        # Resolve provider/URL/key/model/params from the visible widgets
+        # directly, rather than through cfg — the visible profile may not be
+        # cfg.active_profile (e.g. a profile added but not yet saved), and
+        # writing it into the singleton would smuggle it into the wrong
+        # profile (see _save_temp).
+        names = get_provider_names()
+        idx = self.provider_combo.currentIndex()
+        provider_name = names[idx] if 0 <= idx < len(names) else "anthropic"
+        base_url = self.base_url_edit.text()
+        # Match create_client()'s fallback: an explicit key on the widget
+        # wins, else the vendor-wide default in provider_keys. Without this
+        # a profile that deliberately leaves its own key blank to inherit
+        # the vendor default fails Test Connection even though real chat
+        # works fine.
+        api_key = self.api_key_edit.text() or \
+            self._cfg.provider_keys.get(provider_name, "")
+        model = self.model_edit.text()
+        model_params = self._read_model_params_table()
 
         self.test_btn.setEnabled(False)
         self.save_btn.setEnabled(False)
@@ -1474,7 +1682,9 @@ class SettingsDialog(QDialog):
         self.test_status.setText(translate("SettingsDialog", "Testing..."))
         self.test_status.setStyleSheet("color: #666;")
 
-        self._test_thread = _TestConnectionThread(self)
+        self._test_thread = _TestConnectionThread(
+            provider_name, base_url, api_key, model, model_params, self,
+        )
         self._test_thread.finished.connect(self._on_test_finished)
         self._test_thread.vision_result.connect(self._on_vision_probed)
         self._test_thread.capabilities_result.connect(self._on_capabilities_detected)
@@ -1548,14 +1758,21 @@ class SettingsDialog(QDialog):
                 pass
 
     def _save_temp(self):
-        """Temporarily apply current UI values to config (for test connection)."""
+        """Temporarily apply current UI values to config (for test connection).
+
+        Connection fields (provider/base_url/api_key/model) are deliberately
+        NOT written here — _test_connection reads them straight from the
+        widgets and hands them to _TestConnectionThread, so testing a
+        profile that isn't cfg.active_profile can't leak its values into the
+        active one through this singleton write.
+
+        Model params are the same story: _test_connection reads the table
+        itself and passes it straight to _TestConnectionThread (the vision
+        probe builds its client from that same thread), so writing them
+        into cfg.model_params/cfg.temperature here would feed nothing —
+        it would only leak to disk via the vision-probe's save.
+        """
         cfg = get_config()
-        names = get_provider_names()
-        idx = self.provider_combo.currentIndex()
-        cfg.provider.name = names[idx] if 0 <= idx < len(names) else "anthropic"
-        cfg.provider.api_key = self.api_key_edit.text()
-        cfg.provider.base_url = self.base_url_edit.text()
-        cfg.provider.model = self.model_edit.text()
 
         try:
             cfg.max_tokens = self.max_tokens_spin.value()
@@ -1569,14 +1786,6 @@ class SettingsDialog(QDialog):
             cfg.max_tool_turns = self.max_tool_turns_spin.value()
         except Exception:
             pass
-
-        # Apply model params temporarily for test connection
-        model_name = self.model_edit.text().strip()
-        if model_name:
-            params = self._read_model_params_table()
-            if params:
-                cfg.model_params[model_name] = params
-                cfg.temperature = params.get("temperature", cfg.temperature)
 
         thinking_values = ["off", "on", "extended"]
         cfg.thinking = thinking_values[self.thinking_combo.currentIndex()]
