@@ -42,3 +42,41 @@ class TestToolOptimizer:
             _ask_llm_for_modification("skill", 1, 0.5, "results", "strategy")
         assert mk.call_args.args[1:] == ("tool_optimize",) or \
             mk.call_args.kwargs.get("utility") == "tool_optimize"
+
+
+class TestSkillEvaluator:
+    def test_skill_eval_schema_follows_its_own_profile_not_the_active_one(self):
+        from freecad_ai.config import AppConfig, ProviderConfig
+        from freecad_ai.extensions.skill_evaluator import SkillEvaluator
+
+        cfg = AppConfig()
+        cfg.profiles = {
+            "cloud": ProviderConfig(name="openai", api_key="sk-cloud",
+                                     base_url="https://api.openai.com/v1",
+                                     model="gpt-4o"),
+            "eval": ProviderConfig(name="anthropic", api_key="sk-eval",
+                                    base_url="https://api.anthropic.com",
+                                    model="claude-sonnet-4-6"),
+        }
+        cfg.active_profile = "cloud"
+        cfg.utility_profiles["skill_eval"] = "eval"
+
+        fake_client = MagicMock()
+        fake_client.api_style = "anthropic"
+
+        fake_registry = MagicMock()
+        fake_registry.to_anthropic_schema.return_value = []
+        fake_registry.to_openai_schema.return_value = []
+
+        evaluator = SkillEvaluator({}, tool_executor=None)
+        with patch("freecad_ai.config.get_config", return_value=cfg), \
+             patch("freecad_ai.llm.client.create_client",
+                   return_value=fake_client), \
+             patch("freecad_ai.tools.setup.create_default_registry",
+                   return_value=fake_registry), \
+             patch("freecad_ai.core.system_prompt.build_system_prompt",
+                   return_value="system prompt"):
+            evaluator.evaluate("s", "content", test_cases=[])
+
+        assert fake_registry.to_anthropic_schema.called is True
+        assert fake_registry.to_openai_schema.called is False
