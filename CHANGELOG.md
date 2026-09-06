@@ -26,6 +26,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `(active)`. Selecting a profile in the dropdown only opens it for
   editing — browsing what your profiles hold never re-points chat.
 
+- **Optional bearer token for the MCP server** — a new
+  **AI Settings → MCP Servers → Bearer token** field, with a **Generate**
+  button, and an `MCP_AUTH_TOKEN` environment variable (env wins). When set,
+  every request to the server must carry `Authorization: Bearer <token>`;
+  a missing or wrong one is answered `401` with a `WWW-Authenticate: Bearer`
+  challenge, so a client knows to present a credential rather than that it is
+  barred outright. Empty (the default) leaves the server unauthenticated,
+  exactly as before, so nothing changes for an existing setup. Until now the
+  `Host`-header allowlist was the only thing limiting who could reach a
+  non-loopback server, and it cannot tell one client on that host from
+  another. Both start-up routes read the token — the toolbar toggle and
+  `mcp_server_http.py`. The token must be ASCII: it is compared with
+  `hmac.compare_digest()`, which raises on a non-ASCII operand, so a
+  non-ASCII token is refused when the server starts rather than crashing the
+  handler thread on every request. Contributed by @AmirF194 in
+  [#73](https://github.com/ghbalf/freecad-ai/pull/73), closing
+  [#59](https://github.com/ghbalf/freecad-ai/issues/59).
+
+  Host, port, allowed hosts and the token are all read when the server
+  starts, so changing any of them does not reconfigure a server that is
+  already running — stop and restart it.
+
 ### Changed
 
 - The reranker's four-field provider override is replaced by a profile.
