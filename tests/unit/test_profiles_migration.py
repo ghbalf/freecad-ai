@@ -207,6 +207,29 @@ class TestEdgeCases:
         assert cfg.active_profile == "b"
         assert cfg.max_tokens == 8192
 
+    def test_unknown_profile_key_degrades_in_place(self):
+        """A profile carrying a field this version does not know — written
+        by a *newer* version, then opened by this one — must not take the
+        whole config down with it. Same failure mode as a non-mapping
+        value: ProviderConfig(**p) raises TypeError, load_config catches it
+        by discarding everything, and the next save overwrites the file.
+        This branch is itself about to add profile fields, so the forward
+        direction is the one that will actually happen."""
+        cfg = AppConfig.from_dict({
+            "profiles": {
+                "a": {"name": "ollama", "model": "qwen3:8b",
+                      "invented_by_a_later_version": True},
+            },
+            "active_profile": "a",
+            "max_tokens": 8192,
+        })
+        assert cfg.profiles["a"].model == "qwen3:8b"
+        assert cfg.profiles["a"].name == "ollama"
+        assert not hasattr(cfg.profiles["a"], "invented_by_a_later_version")
+        # The rest of the user's config survives.
+        assert cfg.active_profile == "a"
+        assert cfg.max_tokens == 8192
+
     def test_a_bad_profile_does_not_discard_the_file(self, tmp_config_dir):
         """The end of the same path: load_config must not fall back to
         bare defaults."""

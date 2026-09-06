@@ -31,7 +31,7 @@ import shutil
 import sys
 import time
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields
 
 
 # Marker filename inside the active config dir. Its presence signals that
@@ -391,6 +391,19 @@ class ProviderConfig:
         self.model = preset.get("default_model", self.model)
 
 
+def _profile_from_dict(raw) -> "ProviderConfig":
+    """Build a ProviderConfig from JSON, ignoring anything it cannot take.
+
+    Unknown keys are dropped rather than raised on, so a config written by
+    a later version stays loadable by this one. Mirrors how AppConfig
+    filters its own unknown keys in from_dict.
+    """
+    if not isinstance(raw, dict):
+        return ProviderConfig()
+    known = {f.name for f in fields(ProviderConfig)}
+    return ProviderConfig(**{k: v for k, v in raw.items() if k in known})
+
+
 @dataclass
 class AppConfig:
     profiles: dict = field(default_factory=dict)      # label -> ProviderConfig
@@ -606,16 +619,17 @@ class AppConfig:
             # Malformed "profiles" (e.g. a list from a bad hand-edit):
             # treat as absent so the flat-provider migration path runs.
             raw_profiles = None
-        # A profile *value* that is not a mapping (a hand-edit like
-        # {"profiles": {"a": "x"}}) used to raise TypeError out of
-        # ProviderConfig(**p), which load_config caught by discarding the
-        # whole config and returning bare defaults — losing every other
-        # setting the user had. Normalise it to a default profile instead,
-        # so one bad entry degrades in place like the other malformed
-        # shapes on this path.
+        # A profile entry that ProviderConfig(**p) cannot take used to
+        # raise TypeError, which load_config caught by discarding the whole
+        # config and returning bare defaults — losing every other setting
+        # the user had, and letting the next save write the loss to disk.
+        # Two shapes do it: a value that is not a mapping at all (the
+        # hand-edit {"profiles": {"a": "x"}}), and a mapping carrying a
+        # field this version does not know, which is what a profile
+        # written by a *newer* version looks like. Both degrade in place
+        # now, like the other malformed shapes on this path.
         profiles = {
-            label: ProviderConfig(**p) if isinstance(p, dict)
-            else ProviderConfig()
+            label: _profile_from_dict(p)
             for label, p in (raw_profiles or {}).items()
         }
 

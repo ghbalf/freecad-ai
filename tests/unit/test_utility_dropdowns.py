@@ -42,7 +42,7 @@ class TestUtilityIdentifiers:
             assert f'QT_TRANSLATE_NOOP("SettingsDialog", "{label}")' in source
 
     def test_the_noop_leaves_the_label_untouched_at_runtime(self):
-        from freecad_ai.ui.compat import QT_TRANSLATE_NOOP
+        from freecad_ai.i18n import QT_TRANSLATE_NOOP
         assert QT_TRANSLATE_NOOP("SettingsDialog", "Tool reranking") == \
             "Tool reranking"
 

@@ -15,8 +15,8 @@ import copy
 import os
 import secrets
 
-from .compat import QtWidgets, QtCore, QtGui, QT_TRANSLATE_NOOP
-from ..i18n import translate
+from .compat import QtWidgets, QtCore, QtGui
+from ..i18n import translate, QT_TRANSLATE_NOOP
 
 QDialog = QtWidgets.QDialog
 QWidget = QtWidgets.QWidget
