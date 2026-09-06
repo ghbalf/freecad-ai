@@ -336,6 +336,39 @@ class SettingsDialog(QDialog):
         self._last_model_name = ""  # track model name for param save/load
         provider_layout.addRow(translate("SettingsDialog", "Model:"), self.model_edit)
 
+        # Vision support. A profile field, not a global one: it describes
+        # this profile's model, and Test Connection probes whichever
+        # profile is on screen.
+        vision_layout = QHBoxLayout()
+        self.vision_check = QCheckBox(
+            translate("SettingsDialog", "Model supports vision")
+        )
+        self.vision_check.setToolTip(
+            translate("SettingsDialog",
+                      "When enabled, images are sent directly to the LLM.\n"
+                      "When disabled, images are described via MCP before sending.\n"
+                      "Use Test Connection to auto-detect.")
+        )
+        self.vision_check.stateChanged.connect(self._on_vision_override_changed)
+        vision_layout.addWidget(self.vision_check)
+
+        self._vision_status_label = QLabel()
+        self._vision_status_label.setStyleSheet("color: #888;")
+        vision_layout.addWidget(self._vision_status_label)
+
+        self._vision_reset_btn = QPushButton(translate("SettingsDialog", "Reset"))
+        self._vision_reset_btn.setMaximumWidth(50)
+        self._vision_reset_btn.setToolTip(
+            translate("SettingsDialog", "Clear manual override, use auto-detected value")
+        )
+        self._vision_reset_btn.clicked.connect(self._reset_vision_override)
+        self._vision_reset_btn.hide()
+        vision_layout.addWidget(self._vision_reset_btn)
+
+        vision_layout.addStretch()
+        provider_layout.addRow(translate("SettingsDialog", "Vision:"),
+                               vision_layout)
+
         provider_group.setLayout(provider_layout)
         layout.addWidget(provider_group)
 
@@ -586,36 +619,6 @@ class SettingsDialog(QDialog):
         resolution_layout.addWidget(self.viewport_resolution_combo)
         resolution_layout.addStretch()
         behavior_layout.addLayout(resolution_layout)
-
-        # Vision support
-        vision_layout = QHBoxLayout()
-        self.vision_check = QCheckBox(
-            translate("SettingsDialog", "Model supports vision")
-        )
-        self.vision_check.setToolTip(
-            translate("SettingsDialog",
-                      "When enabled, images are sent directly to the LLM.\n"
-                      "When disabled, images are described via MCP before sending.\n"
-                      "Use Test Connection to auto-detect.")
-        )
-        self.vision_check.stateChanged.connect(self._on_vision_override_changed)
-        vision_layout.addWidget(self.vision_check)
-
-        self._vision_status_label = QLabel()
-        self._vision_status_label.setStyleSheet("color: #888;")
-        vision_layout.addWidget(self._vision_status_label)
-
-        self._vision_reset_btn = QPushButton(translate("SettingsDialog", "Reset"))
-        self._vision_reset_btn.setMaximumWidth(50)
-        self._vision_reset_btn.setToolTip(
-            translate("SettingsDialog", "Clear manual override, use auto-detected value")
-        )
-        self._vision_reset_btn.clicked.connect(self._reset_vision_override)
-        self._vision_reset_btn.hide()
-        vision_layout.addWidget(self._vision_reset_btn)
-
-        vision_layout.addStretch()
-        behavior_layout.addLayout(vision_layout)
 
         behavior_group.setLayout(behavior_layout)
         layout.addWidget(behavior_group)
@@ -988,11 +991,6 @@ class SettingsDialog(QDialog):
         resolution_map = {"low": 0, "medium": 1, "high": 2}
         self.viewport_resolution_combo.setCurrentIndex(resolution_map.get(cfg.viewport_resolution, 1))
 
-        # Vision
-        self._original_provider = cfg.provider.name
-        self._original_model = cfg.provider.model
-        self._update_vision_ui(cfg)
-
         # MCP servers
         self.mcp_list.clear()
         self._mcp_configs = list(cfg.mcp_servers)
@@ -1142,11 +1140,23 @@ class SettingsDialog(QDialog):
             return
         names = get_provider_names()
         idx = self.provider_combo.currentIndex()
-        if 0 <= idx < len(names):
-            prof.name = names[idx]
+        new_name = names[idx] if 0 <= idx < len(names) else prof.name
+        new_model = self.model_edit.text()
+        # A probe result describes one provider+model pair. Retype either
+        # and the stored answer is about something else, so drop it —
+        # per profile, since another profile's probe is still valid.
+        if new_name != prof.name or new_model != prof.model:
+            prof.vision_detected = None
+            prof.tools_detected = None
+            prof.thinking_detected = None
+        prof.name = new_name
         prof.base_url = self.base_url_edit.text()
         prof.api_key = self.api_key_edit.text()
-        prof.model = self.model_edit.text()
+        prof.model = new_model
+        # The vision checkbox is a profile widget like the four above; the
+        # dialog holds its pending value so a tri-state (None) survives.
+        if hasattr(self, "_vision_override_value"):
+            prof.vision_override = self._vision_override_value
         # The table is the profile's params in full (see
         # _load_model_params_table), so this is a straight write-back and
         # a removed row is a removed parameter. Do not reintroduce a
@@ -1176,6 +1186,7 @@ class SettingsDialog(QDialog):
         self.base_url_edit.setText(prof.base_url)
         self.model_edit.setText(prof.model)
         self._load_model_params_table(prof.model, self._cfg, prof)
+        self._update_vision_ui(prof)
 
         is_active = label == self._active_profile
         # blockSignals, or populating the widgets would itself re-point
@@ -1565,17 +1576,6 @@ class SettingsDialog(QDialog):
         resolution_values = ["low", "medium", "high"]
         cfg.viewport_resolution = resolution_values[self.viewport_resolution_combo.currentIndex()]
 
-        # Vision override
-        if hasattr(self, '_vision_override_value'):
-            cfg.vision_override = self._vision_override_value
-        # Reset all detected capabilities if provider or model changed —
-        # the previous probe results are about a different model.
-        if (hasattr(self, '_original_provider') and cfg.provider.name != self._original_provider) or \
-           (hasattr(self, '_original_model') and cfg.provider.model != self._original_model):
-            cfg.vision_detected = None
-            cfg.tools_detected = None
-            cfg.thinking_detected = None
-
         cfg.mcp_servers = list(self._mcp_configs) if hasattr(self, "_mcp_configs") else []
         cfg.mcp_server_host, cfg.mcp_server_port = self._parse_server_address(
             self.mcp_server_host_edit.text(),
@@ -1747,15 +1747,32 @@ class SettingsDialog(QDialog):
                 label, translate("SettingsDialog", "Failed: ") + message))
             self.test_status.setStyleSheet("color: #c62828;")
 
+    def _probed_profile(self):
+        """The profile Test Connection actually probed, or None.
+
+        Captured at probe start (``_test_profile_label``) so a profile
+        switch while the probe is in flight cannot land the result on the
+        wrong profile.
+        """
+        label = getattr(self, "_test_profile_label", None)
+        return self._profiles.get(label)
+
     def _on_vision_probed(self, supports_vision: bool):
-        """Handle vision probe result — persists to config immediately."""
+        """Handle vision probe result — records it on the probed profile.
+
+        Test Connection probes whichever profile is on screen, which need
+        not be the active one, so the answer belongs to that profile and
+        nowhere else. It lands in the dialog's working copy like every
+        other profile field and reaches the config on OK.
+        """
         self.test_btn.setEnabled(True)
         self.save_btn.setEnabled(True)
         self.cancel_btn.setEnabled(True)
-        cfg = get_config()
-        cfg.vision_detected = supports_vision
-        save_current_config()
-        self._update_vision_ui(cfg)
+        profile = self._probed_profile()
+        if profile is not None:
+            profile.vision_detected = supports_vision
+            if self._test_profile_label == self._current_profile_label:
+                self._update_vision_ui(profile)
         # Append vision status to test output
         current = self.test_status.text()
         if supports_vision:
@@ -1773,17 +1790,17 @@ class SettingsDialog(QDialog):
     def _on_capabilities_detected(self, caps: dict):
         """Handle full capabilities dict (Ollama only emits tools/thinking).
 
-        Persists tools_detected/thinking_detected to config and appends a
-        readable summary to the test status. Non-Ollama providers emit
-        only "vision" — tools/thinking stay None to keep falling back to
-        the provider-wide static flag.
+        Records tools_detected/thinking_detected on the probed profile and
+        appends a readable summary to the test status. Non-Ollama providers
+        emit only "vision" — tools/thinking stay None to keep falling back
+        to the provider-wide static flag.
         """
-        cfg = get_config()
-        if "tools" in caps:
-            cfg.tools_detected = bool(caps["tools"])
-        if "thinking" in caps:
-            cfg.thinking_detected = bool(caps["thinking"])
-        save_current_config()
+        profile = self._probed_profile()
+        if profile is not None:
+            if "tools" in caps:
+                profile.tools_detected = bool(caps["tools"])
+            if "thinking" in caps:
+                profile.thinking_detected = bool(caps["thinking"])
 
         # Build a single-line summary for the status label
         parts = []
@@ -2068,19 +2085,19 @@ class SettingsDialog(QDialog):
         """Re-scan and refresh the user tools list."""
         self._load_user_tools_list()
 
-    def _update_vision_ui(self, cfg):
-        """Update vision checkbox and label from config state."""
-        self._vision_override_value = cfg.vision_override
+    def _update_vision_ui(self, profile):
+        """Update vision checkbox and label from one profile's state."""
+        self._vision_override_value = profile.vision_override
         # Temporarily disconnect to avoid triggering _on_vision_override_changed
         self.vision_check.stateChanged.disconnect(self._on_vision_override_changed)
-        if cfg.vision_override is not None:
-            self.vision_check.setChecked(cfg.vision_override)
+        if profile.vision_override is not None:
+            self.vision_check.setChecked(profile.vision_override)
             self._vision_status_label.setText(
                 translate("SettingsDialog", "(manual override)")
             )
             self._vision_reset_btn.show()
-        elif cfg.vision_detected is not None:
-            self.vision_check.setChecked(cfg.vision_detected)
+        elif profile.vision_detected is not None:
+            self.vision_check.setChecked(profile.vision_detected)
             self._vision_status_label.setText(
                 translate("SettingsDialog", "(auto-detected)")
             )
@@ -2106,9 +2123,11 @@ class SettingsDialog(QDialog):
 
     def _reset_vision_override(self):
         """Clear the manual override, revert to auto-detected value."""
-        cfg = get_config()
-        self._vision_override_value = None
-        self._update_vision_ui(cfg)
+        profile = self._profiles.get(self._current_profile_label)
+        if profile is None:
+            return
+        profile.vision_override = None
+        self._update_vision_ui(profile)
 
     # --- Hooks methods ---
 
