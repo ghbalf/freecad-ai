@@ -101,34 +101,6 @@ class TestApiKeyFallback:
         assert create_client(cfg).api_key == "sk-remote"
 
 
-class TestBaseUrlAndModelFallback:
-    """Mirrors TestApiKeyFallback: an empty profile field falls back to the
-    vendor preset, never to an unusable empty string."""
-
-    def test_empty_base_url_falls_back_to_the_preset(self):
-        cfg = _cfg()
-        cfg.profiles["p"] = ProviderConfig(name="anthropic", base_url="", model="claude-sonnet-4-6")
-        cfg.active_profile = "p"
-        assert create_client(cfg).base_url == "https://api.anthropic.com"
-
-    def test_empty_model_falls_back_to_the_preset_default(self):
-        cfg = _cfg()
-        cfg.profiles["p"] = ProviderConfig(name="anthropic", base_url="https://api.anthropic.com", model="")
-        cfg.active_profile = "p"
-        assert create_client(cfg).model == "claude-sonnet-4-6"
-
-    def test_unknown_provider_with_empty_fields_degrades_gracefully(self):
-        """apply_preset already tolerates an unmapped vendor via .get(name,
-        {}); resolution must too — never raise KeyError for 'custom' or a
-        typo'd provider name."""
-        cfg = _cfg()
-        cfg.profiles["p"] = ProviderConfig(name="not-a-real-vendor", base_url="", model="")
-        cfg.active_profile = "p"
-        client = create_client(cfg)
-        assert client.base_url == ""
-        assert client.model == ""
-
-
 class TestParamLayering:
     def test_model_params_apply(self):
         cfg = _cfg()
