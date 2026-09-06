@@ -11,4 +11,3 @@ try:
 except ImportError:
     from PySide2 import QtWidgets, QtCore, QtGui  # noqa: F401
     PYSIDE_VERSION = 2
-

@@ -207,6 +207,39 @@ class TestEdgeCases:
         assert cfg.active_profile == "b"
         assert cfg.max_tokens == 8192
 
+    def test_pre_rerank_params_config_keeps_the_reranker_params(self):
+        """A config last written before rerank_params existed (<= v0.16.4)
+        kept the override reranker's params in the shared model_params
+        dict, keyed by the reranker's model. load_config used to seed
+        rerank_params from there *after* from_dict returned — too late for
+        the migration running inside it, and into a field nothing reads
+        any more. Fold the same fallback into the migration instead, or
+        the params vanish on upgrade with nothing logged."""
+        cfg = AppConfig.from_dict({
+            "provider": {"name": "moonshot", "model": "kimi-k2.6",
+                         "base_url": "https://api.moonshot.ai/v1"},
+            "model_params": {
+                "qwen3:8b": {"temperature": 0.0, "top_k": 20,
+                             "num_predict": 512},
+            },
+            "rerank_llm_provider_name": "ollama",
+            "rerank_llm_base_url": "http://localhost:11434/v1",
+            "rerank_llm_model": "qwen3:8b",
+        })
+        assert cfg.profiles["rerank"].params == {
+            "temperature": 0.0, "top_k": 20, "num_predict": 512}
+
+    def test_explicit_rerank_params_beat_the_legacy_model_params(self):
+        """Post-#30 configs carry rerank_params; that is the authority and
+        the legacy per-model dict must not merge into it."""
+        cfg = AppConfig.from_dict({
+            "provider": {"name": "moonshot", "model": "kimi-k2.6"},
+            "model_params": {"qwen3:8b": {"temperature": 0.0, "top_k": 20}},
+            "rerank_params": {"temperature": 0.3},
+            "rerank_llm_model": "qwen3:8b",
+        })
+        assert cfg.profiles["rerank"].params == {"temperature": 0.3}
+
     def test_unknown_profile_key_degrades_in_place(self):
         """A profile carrying a field this version does not know — written
         by a *newer* version, then opened by this one — must not take the

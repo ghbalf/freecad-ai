@@ -26,6 +26,7 @@ where an aborted/buggy prior migration left duplicate data behind.
 
 import datetime
 import json
+import logging
 import os
 import shutil
 import sys
@@ -33,6 +34,8 @@ import time
 import time
 from dataclasses import dataclass, field, asdict, fields
 
+
+logger = logging.getLogger(__name__)
 
 # Marker filename inside the active config dir. Its presence signals that
 # this version of the workbench has already migrated into this target.
@@ -399,8 +402,18 @@ def _profile_from_dict(raw) -> "ProviderConfig":
     filters its own unknown keys in from_dict.
     """
     if not isinstance(raw, dict):
+        logger.warning(
+            "Profile entry is %s, not an object — using defaults for it. "
+            "Check the \"profiles\" section of config.json.",
+            type(raw).__name__)
         return ProviderConfig()
     known = {f.name for f in fields(ProviderConfig)}
+    unknown = set(raw) - known
+    if unknown:
+        logger.warning(
+            "Ignoring unrecognised profile field(s) %s — most likely written "
+            "by a newer version of the workbench.",
+            ", ".join(sorted(unknown)))
     return ProviderConfig(**{k: v for k, v in raw.items() if k in known})
 
 
@@ -672,6 +685,14 @@ class AppConfig:
             if not isinstance(rerank_params, dict):
                 # Malformed "rerank_params" (e.g. a string): no override.
                 rerank_params = {}
+            if not rerank_params:
+                # Configs written before rerank_params existed (<= v0.16.4)
+                # kept the override reranker's params in the shared
+                # model_params dict, keyed by its model. load_config used
+                # to seed them afterwards, which is too late for this
+                # migration and lands in a field nothing reads any more.
+                rerank_params = cfg.model_params.get(
+                    data["rerank_llm_model"], {})
             cfg.profiles["rerank"] = ProviderConfig(
                 name=data.get("rerank_llm_provider_name") or main.name,
                 base_url=data.get("rerank_llm_base_url") or main.base_url,
@@ -711,12 +732,9 @@ def load_config() -> AppConfig:
             cfg = AppConfig.from_dict(data)
         except (json.JSONDecodeError, TypeError, KeyError):
             pass
-    # Migrate pre-namespace configs: the reranker override model's params used
-    # to live in the shared model_params dict. Seed the new rerank_params slot
-    # from there so override users don't silently lose their params on upgrade.
-    # Idempotent — only fills an empty rerank_params (issue #30 follow-up).
-    if cfg.rerank_llm_model and not cfg.rerank_params:
-        cfg.rerank_params = dict(cfg.model_params.get(cfg.rerank_llm_model, {}))
+    # (The pre-namespace rerank_params seeding that used to live here now
+    # runs inside _migrate_flat_provider, where the profile that actually
+    # reads those params is built. rerank_params itself is legacy.)
     _apply_param_store_overrides(cfg)
     _write_to_param_store(cfg)
     return cfg

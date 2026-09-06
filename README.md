@@ -183,7 +183,9 @@ as you like, including several for the same vendor: `ollama-local` and
 `ollama-remote` can coexist with different URLs and keys, and switching between
 profiles in the Settings dialog never touches the ones you're not looking at.
 A profile's API key can be left blank to fall back to a vendor-wide default
-key, so one Anthropic key can serve several Anthropic profiles.
+key, so one Anthropic key can serve several Anthropic profiles. Those defaults
+live in the `provider_keys` object in `config.json` and are set by hand — the
+Settings dialog edits a profile's own key, and clearing that field clears it.
 
 Beyond the active profile chat uses, four utility jobs each pick their own
 profile from a dropdown in Settings: context compaction, skill evaluation,
@@ -197,7 +199,7 @@ you load them — there is nothing to do by hand.
 
 ### Model Parameters
 
-The **Model Parameters** table in Settings lets you set arbitrary sampling parameters (temperature, top_p, top_k, etc.) that are sent with each API request. Parameters belong to the profile you are editing, so two profiles never share them — even when they name the same model — and removing a row removes the parameter. The per-model defaults written by earlier versions are still in `config.json` but are no longer read; on upgrade the entry for your current model is copied into your profile once.
+The **Model Parameters** table in Settings lets you set arbitrary sampling parameters (temperature, top_p, top_k, etc.) that are sent with each API request. Parameters belong to the profile you are editing, so two profiles never share them — even when they name the same model — and removing a row removes the parameter. Removing *every* row is different: a profile with no parameters of its own falls back to the provider's recommended defaults, which is what you will see the next time you open Settings. The per-model defaults written by earlier versions are still in `config.json` but are no longer read; on upgrade the entry for your current model is copied into your profile once.
 
 Click **Load Defaults** to reset to the provider's recommended values. For most providers the only default is `temperature: 0.3`. Moonshot ships with pre-configured values required by Kimi-K2.5.
 
