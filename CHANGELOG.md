@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.24.0-alpha] - 2026-09-07
+
 ### Added
 
 - **Connection profiles.** LLM connection settings are now named profiles.
