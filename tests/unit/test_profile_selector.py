@@ -320,12 +320,10 @@ class TestSaveWritesBackProfileState:
         fake._commit_profile_fields = (
             lambda: SettingsDialog._commit_profile_fields(fake))
         fake._read_model_params_table = lambda: {}
-        fake._read_rerank_params_table = lambda: {}
         fake._read_strip_thinking_state = lambda: None
         fake._get_default_prompt_text = lambda: ""
         fake._parse_server_address = lambda host, port: ("127.0.0.1", 8765)
         fake._parse_allowed_hosts = lambda text: []
-        fake._resolve_rerank_params = lambda model, params: {}
         fake.accept = lambda: None
 
         fake.provider_combo.currentIndex.return_value = idx
@@ -338,10 +336,9 @@ class TestSaveWritesBackProfileState:
         fake.rerank_method_combo.currentIndex.return_value = 0
         fake.system_prompt_edit.toPlainText.return_value = ""
         fake.rerank_pinned_edit.text.return_value = ""
-        fake.rerank_llm_provider_combo.currentData.return_value = ""
-        fake.rerank_llm_base_url_edit.text.return_value = ""
-        fake.rerank_llm_api_key_edit.text.return_value = ""
-        fake.rerank_llm_model_edit.text.return_value = ""
+        # utility_combos is a plain dict on the real dialog; an unconfigured
+        # MagicMock's .items() default-iterates empty, so _collect_utility_
+        # profiles({}) == {} — nothing to stub for the utility dropdowns here.
 
         monkeypatch.setattr(
             "freecad_ai.ui.settings_dialog.get_config", lambda: cfg)
@@ -364,10 +361,10 @@ class TestWorkingCopyIsIndependent:
     def test_mutating_the_working_copy_leaves_cfg_alone(self, monkeypatch):
         cfg = _cfg()
         fake = MagicMock()
-        # The one read-back _load_from_config makes: MagicMock's default
-        # return value doesn't compare to an int, so the widget needs a
-        # real one here or `if provider_idx >= 0` raises.
-        fake.rerank_llm_provider_combo.findData.return_value = -1
+        # self._refresh_profile_combo() and self._show_profile(...) below
+        # resolve to fake's own auto-stubbed attributes (fake is a bare
+        # MagicMock, not a SettingsDialog instance), so their real bodies —
+        # and the widgets those bodies touch — never run here.
 
         monkeypatch.setattr(
             "freecad_ai.ui.settings_dialog.get_config", lambda: cfg)
@@ -455,12 +452,10 @@ class TestParamsTableEditSurvivesSaveAndResolve:
         fake._commit_profile_fields = (
             lambda: SettingsDialog._commit_profile_fields(fake))
         fake._read_model_params_table = lambda: dict(table_params)
-        fake._read_rerank_params_table = lambda: {}
         fake._read_strip_thinking_state = lambda: None
         fake._get_default_prompt_text = lambda: ""
         fake._parse_server_address = lambda host, port: ("127.0.0.1", 8765)
         fake._parse_allowed_hosts = lambda text: []
-        fake._resolve_rerank_params = lambda model, params: {}
         fake.accept = lambda: None
 
         names = get_provider_names()
@@ -474,10 +469,6 @@ class TestParamsTableEditSurvivesSaveAndResolve:
         fake.rerank_method_combo.currentIndex.return_value = 0
         fake.system_prompt_edit.toPlainText.return_value = ""
         fake.rerank_pinned_edit.text.return_value = ""
-        fake.rerank_llm_provider_combo.currentData.return_value = ""
-        fake.rerank_llm_base_url_edit.text.return_value = ""
-        fake.rerank_llm_api_key_edit.text.return_value = ""
-        fake.rerank_llm_model_edit.text.return_value = ""
         return fake
 
     def test_edit_survives_save_and_resolve_params(self, monkeypatch):
