@@ -8,23 +8,23 @@ class TestVisionConfig:
 
     def test_defaults(self):
         cfg = AppConfig()
-        assert cfg.vision_detected is None
-        assert cfg.vision_override is None
+        assert cfg.provider.vision_detected is None
+        assert cfg.provider.vision_override is None
 
     def test_supports_vision_override_takes_precedence(self):
         cfg = AppConfig()
-        cfg.vision_detected = False
-        cfg.vision_override = True
+        cfg.provider.vision_detected = False
+        cfg.provider.vision_override = True
         assert cfg.supports_vision is True
 
     def test_supports_vision_detected_used_when_no_override(self):
         cfg = AppConfig()
-        cfg.vision_detected = True
+        cfg.provider.vision_detected = True
         assert cfg.supports_vision is True
 
     def test_supports_vision_false_when_detected_false(self):
         cfg = AppConfig()
-        cfg.vision_detected = False
+        cfg.provider.vision_detected = False
         assert cfg.supports_vision is False
 
     def test_supports_vision_false_when_untested(self):
@@ -33,19 +33,19 @@ class TestVisionConfig:
 
     def test_vision_fields_roundtrip_json(self):
         cfg = AppConfig()
-        cfg.vision_detected = True
-        cfg.vision_override = False
+        cfg.provider.vision_detected = True
+        cfg.provider.vision_override = False
         d = cfg.to_dict()
         cfg2 = AppConfig.from_dict(d)
-        assert cfg2.vision_detected is True
-        assert cfg2.vision_override is False
+        assert cfg2.provider.vision_detected is True
+        assert cfg2.provider.vision_override is False
 
     def test_vision_fields_none_roundtrip(self):
         cfg = AppConfig()
         d = cfg.to_dict()
         cfg2 = AppConfig.from_dict(d)
-        assert cfg2.vision_detected is None
-        assert cfg2.vision_override is None
+        assert cfg2.provider.vision_detected is None
+        assert cfg2.provider.vision_override is None
 
 
 class TestVisionProbe:
@@ -251,32 +251,32 @@ class TestSupportsToolsConfig:
         from freecad_ai.config import AppConfig
         cfg = AppConfig()
         cfg.provider.name = "ollama"  # statically marked tool-capable
-        cfg.tools_detected = False    # detected: model doesn't support tools
+        cfg.provider.tools_detected = False    # detected: model doesn't support tools
         assert cfg.supports_tools is False
 
     def test_supports_tools_falls_back_to_provider_when_untested(self):
         from freecad_ai.config import AppConfig
         cfg = AppConfig()
         cfg.provider.name = "anthropic"
-        cfg.tools_detected = None
+        cfg.provider.tools_detected = None
         assert cfg.supports_tools is True  # anthropic provider flag is True
 
     def test_supports_tools_detected_true_overrides_provider(self):
         from freecad_ai.config import AppConfig
         cfg = AppConfig()
         cfg.provider.name = "openrouter"
-        cfg.tools_detected = True
+        cfg.provider.tools_detected = True
         assert cfg.supports_tools is True
 
     def test_tools_detected_roundtrip_json(self):
         from freecad_ai.config import AppConfig
         cfg = AppConfig()
-        cfg.tools_detected = True
-        cfg.thinking_detected = False
+        cfg.provider.tools_detected = True
+        cfg.provider.thinking_detected = False
         d = cfg.to_dict()
         cfg2 = AppConfig.from_dict(d)
-        assert cfg2.tools_detected is True
-        assert cfg2.thinking_detected is False
+        assert cfg2.provider.tools_detected is True
+        assert cfg2.provider.thinking_detected is False
 
     def test_custom_provider_supports_tools_by_default(self):
         """Issue #38: a custom OpenAI-compatible endpoint must get tools.
@@ -291,7 +291,7 @@ class TestSupportsToolsConfig:
         from freecad_ai.config import AppConfig
         cfg = AppConfig()
         cfg.provider.name = "custom"
-        cfg.tools_detected = None  # no Ollama probe runs for custom
+        cfg.provider.tools_detected = None  # no Ollama probe runs for custom
         assert cfg.supports_tools is True
 
     def test_custom_provider_tools_opt_out_still_honored(self):
@@ -303,7 +303,7 @@ class TestSupportsToolsConfig:
         from freecad_ai.config import AppConfig
         cfg = AppConfig()
         cfg.provider.name = "custom"
-        cfg.tools_detected = False
+        cfg.provider.tools_detected = False
         assert cfg.supports_tools is False
 
 
@@ -454,40 +454,40 @@ class TestImageControlGating:
         """Controls should NOT be disabled when vision_detected is None."""
         cfg = AppConfig()
         # vision_detected=None, no fallback
-        should_disable = (cfg.vision_detected is not None
+        should_disable = (cfg.provider.vision_detected is not None
                           and not cfg.supports_vision
                           and True)  # simulate no fallback
         assert should_disable is False  # optimistic for untested
 
     def test_gating_disabled_when_no_vision_no_fallback(self):
         cfg = AppConfig()
-        cfg.vision_detected = False
-        should_disable = (cfg.vision_detected is not None
+        cfg.provider.vision_detected = False
+        should_disable = (cfg.provider.vision_detected is not None
                           and not cfg.supports_vision
                           and True)  # no fallback
         assert should_disable is True
 
     def test_gating_enabled_when_fallback_exists(self):
         cfg = AppConfig()
-        cfg.vision_detected = False
+        cfg.provider.vision_detected = False
         fallback = "server__describe_image"  # simulate fallback exists
-        should_disable = (cfg.vision_detected is not None
+        should_disable = (cfg.provider.vision_detected is not None
                           and not cfg.supports_vision
                           and fallback is None)
         assert should_disable is False
 
     def test_gating_enabled_when_vision_supported(self):
         cfg = AppConfig()
-        cfg.vision_detected = True
-        should_disable = (cfg.vision_detected is not None
+        cfg.provider.vision_detected = True
+        should_disable = (cfg.provider.vision_detected is not None
                           and not cfg.supports_vision)
         assert should_disable is False
 
     def test_gating_enabled_with_override(self):
         cfg = AppConfig()
-        cfg.vision_detected = False
-        cfg.vision_override = True
-        should_disable = (cfg.vision_detected is not None
+        cfg.provider.vision_detected = False
+        cfg.provider.vision_override = True
+        should_disable = (cfg.provider.vision_detected is not None
                           and not cfg.supports_vision
                           and True)
         assert should_disable is False  # override makes supports_vision True

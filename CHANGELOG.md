@@ -65,8 +65,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `"ollama-local": Connected! ...` or `"ollama-local": Failed: ...`. The
   name is captured when the probe starts, so switching profiles while one
   is in flight cannot mislabel the result.
+- The **Model supports vision** checkbox moved out of **Behavior** and into
+  the **LLM Provider** group, directly under the model it describes. It is
+  a property of one profile's model, not a global setting, and now reads
+  and writes the profile currently open in the dialog.
 
 ### Fixed
+
+- Detected model capabilities now belong to the profile they were detected
+  on. Test Connection probes whichever profile is open in the dialog, but
+  vision, tool-calling and thinking support were recorded once for the
+  whole configuration — so testing a reranking or utility profile
+  overwrote the chat model's capabilities, and saved them to disk
+  immediately. The sharpest edge was tool support: probe an embedding
+  model on any profile and the answer "no tools" applied to chat, which
+  then stopped sending tools altogether. Each profile now carries its own
+  detection, retyping a profile's provider or model clears only that
+  profile's now-stale results, and a probe result lands in the dialog's
+  working copy like every other profile field — reaching `config.json` on
+  OK rather than the moment the probe returns. Existing settings migrate
+  onto the active profile on first load, and are still written to the top
+  level of `config.json` so an older version reads them.
 
 - Switching between profiles in the Settings dialog is lossless (#75).
   Each profile keeps its own base URL, key, model and parameters, so

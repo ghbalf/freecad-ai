@@ -385,6 +385,18 @@ class ProviderConfig:
     base_url: str = "https://api.anthropic.com"
     model: str = "claude-sonnet-4-6"
     params: dict = field(default_factory=dict)
+    # Capabilities are a property of *this* connection's model, so they
+    # live here rather than on AppConfig. Test Connection probes whichever
+    # profile is on screen; global flags meant probing a reranker profile
+    # rewrote the chat model's capabilities — and tools_detected=False
+    # silently disables tool calling for chat entirely.
+    vision_detected: bool | None = None   # None=not tested, True/False=probe
+    vision_override: bool | None = None   # user manual override, wins
+    tools_detected: bool | None = None    # Ollama /api/show "tools"
+    thinking_detected: bool | None = None  # Ollama /api/show "thinking"
+
+    CAPABILITY_FIELDS = ("vision_detected", "vision_override",
+                         "tools_detected", "thinking_detected")
 
     def apply_preset(self, provider_name: str):
         """Apply a provider preset, updating base_url and model to defaults."""
@@ -486,14 +498,12 @@ class AppConfig:
     # an MDI sub-window of the main window.
     use_external_editor: bool = False
     system_prompt_override: str = ""  # empty = use default; non-empty = use as-is
-    vision_detected: bool | None = None   # None=not tested, True/False=probe result
-    vision_override: bool | None = None   # user manual override, takes precedence
-    # Tool-calling capability (Ollama /api/show "tools"). None=untested or
-    # non-Ollama (in which case provider.supports_tools is the source of truth).
-    # False explicitly = the model doesn't support tools (e.g. embedding/reranker
-    # picked as main model) → suppress tools array in chat sends.
+    # LEGACY, unread since capabilities moved onto the profile. Kept in the
+    # JSON for one release so a downgrade still finds them, and mirrored
+    # from the active profile on save — like the ``provider`` mirror.
+    vision_detected: bool | None = None
+    vision_override: bool | None = None
     tools_detected: bool | None = None
-    # Thinking capability (Ollama /api/show "thinking"). Diagnostic-only today.
     thinking_detected: bool | None = None
 
     # Tool reranking — when active, only the top-N most relevant tools
@@ -579,11 +589,12 @@ class AppConfig:
 
     @property
     def supports_vision(self) -> bool:
-        """Whether the current LLM supports vision (images in content blocks)."""
-        if self.vision_override is not None:
-            return self.vision_override
-        if self.vision_detected is not None:
-            return self.vision_detected
+        """Whether the active profile's LLM supports vision."""
+        profile = self.provider
+        if profile.vision_override is not None:
+            return profile.vision_override
+        if profile.vision_detected is not None:
+            return profile.vision_detected
         return False
 
     @property
@@ -595,10 +606,11 @@ class AppConfig:
         as the main model on a provider that the static table marks as
         tool-capable. Otherwise fall back to the provider-wide flag.
         """
-        if self.tools_detected is not None:
-            return self.tools_detected
+        profile = self.provider
+        if profile.tools_detected is not None:
+            return profile.tools_detected
         from .llm.providers import supports_tools as _provider_supports_tools
-        return _provider_supports_tools(self.provider.name)
+        return _provider_supports_tools(profile.name)
 
     def to_dict(self) -> dict:
         """Serialise, including a legacy ``provider`` mirror.
@@ -616,6 +628,8 @@ class AppConfig:
             "base_url": self.provider.base_url,
             "model": self.provider.model,
         }
+        for name in ProviderConfig.CAPABILITY_FIELDS:
+            data[name] = getattr(self.provider, name)
         return data
 
     @classmethod
@@ -652,7 +666,25 @@ class AppConfig:
 
         if not raw_profiles:
             cls._migrate_flat_provider(cfg, legacy_provider or {}, data)
+        cls._adopt_legacy_capabilities(cfg, data)
         return cfg
+
+    @staticmethod
+    def _adopt_legacy_capabilities(cfg: "AppConfig", data: dict) -> None:
+        """Move top-level capability flags onto the profile chat runs on.
+
+        Runs for both shapes: a pre-profiles config (the flags describe the
+        one connection there was) and a profiles-era config written before
+        the flags moved. Only the active profile can be spoken for — what a
+        probe found about the chat model says nothing about a reranker
+        profile — and a profile that already carries its own value is never
+        overwritten, so this is idempotent across loads.
+        """
+        cfg._ensure_profile()
+        profile = cfg.profiles[cfg.active_profile]
+        for name in ProviderConfig.CAPABILITY_FIELDS:
+            if getattr(profile, name) is None and data.get(name) is not None:
+                setattr(profile, name, data[name])
 
     @staticmethod
     def _migrate_flat_provider(cfg: "AppConfig", legacy: dict, data: dict) -> None:

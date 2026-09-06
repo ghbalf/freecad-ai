@@ -1387,7 +1387,8 @@ class ChatDockWidget(QDockWidget):
         # Show one-time hint if vision not tested and user is sending images
         pending_images = self._attachment_strip.get_images()
         cfg = get_config()
-        if pending_images and cfg.vision_detected is None and not self._vision_hint_shown:
+        if (pending_images and cfg.provider.vision_detected is None
+                and not self._vision_hint_shown):
             self._vision_hint_shown = True
             self._append_html(
                 '<div style="color: #888; font-size: 9pt; margin: 4px 12px;">'
@@ -1666,7 +1667,7 @@ class ChatDockWidget(QDockWidget):
         """Enable/disable image controls based on vision capability."""
         cfg = get_config()
         # Disable only when we know there's no vision AND no fallback
-        disable = (cfg.vision_detected is not None
+        disable = (cfg.provider.vision_detected is not None
                    and not cfg.supports_vision
                    and self._vision_fallback_tool is None)
 

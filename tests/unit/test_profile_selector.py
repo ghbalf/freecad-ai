@@ -283,6 +283,7 @@ class TestProfileFieldRoundTrip:
         fake._load_model_params_table = lambda model, cfg=None, profile=None: None
         fake._read_model_params_table = (
             lambda: dict(fake._profiles[fake._current_profile_label].params))
+        fake._update_vision_ui = lambda profile: None
         return fake
 
     def test_edited_base_url_survives_switching_away_and_back(self):
@@ -680,6 +681,7 @@ class TestParamsDoNotLeakBetweenProfiles:
             lambda model, cfg=None, profile=None:
                 SettingsDialog._load_model_params_table(
                     fake, model, cfg, profile))
+        fake._update_vision_ui = lambda profile: None
 
         SettingsDialog._show_profile(fake, "a")
         assert table["temperature"] == 0.1
@@ -849,6 +851,7 @@ def _selector_fake(cfg, label="cloud"):
     fake._refresh_utility_combos = lambda: None
     fake._rename_profile = (
         lambda old, new: SettingsDialog._rename_profile(fake, old, new))
+    fake._update_vision_ui = lambda profile: None
     return fake
 
 
