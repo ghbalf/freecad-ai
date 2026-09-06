@@ -922,24 +922,30 @@ def create_client(cfg=None, utility: str | None = None, *,
     reranker wants 1024 tokens and no thinking whichever profile it runs
     on.
 
-    An empty ``api_key`` on the profile falls back to the vendor-wide
-    default in ``cfg.provider_keys``, so one Anthropic secret serves every
-    Anthropic profile while a gateway-authenticated Ollama profile can
-    still carry its own.
+    An empty ``api_key``, ``base_url``, or ``model`` on the profile falls
+    back to the vendor preset in ``PROVIDER_PRESETS`` (or, for the key, the
+    vendor-wide default in ``cfg.provider_keys``) — so one Anthropic secret
+    serves every Anthropic profile, a gateway-authenticated Ollama profile
+    can still carry its own, and a profile left with blank connection
+    fields still resolves to something that works rather than an empty
+    string. An unmapped vendor name (e.g. "custom") degrades gracefully:
+    the preset lookup is a plain ``.get(name, {})``, never a KeyError.
     """
-    from ..config import get_config
+    from ..config import PROVIDER_PRESETS, get_config
     if cfg is None:
         cfg = get_config()
     profile = resolve_profile(cfg, utility)
+    preset = PROVIDER_PRESETS.get(profile.name, {})
+    model = profile.model or preset.get("default_model", "")
 
-    params = dict(cfg.model_params.get(profile.model, {}))
+    params = dict(cfg.model_params.get(model, {}))
     params.update(profile.params)
 
     return LLMClient(
         provider_name=profile.name,
-        base_url=profile.base_url,
+        base_url=profile.base_url or preset.get("base_url", ""),
         api_key=profile.api_key or cfg.provider_keys.get(profile.name, ""),
-        model=profile.model,
+        model=model,
         max_tokens=cfg.max_tokens if max_tokens is None else max_tokens,
         temperature=cfg.temperature if temperature is None else temperature,
         thinking=cfg.thinking if thinking is None else thinking,
