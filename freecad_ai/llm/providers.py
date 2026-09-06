@@ -37,6 +37,15 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "cloudflare-workers-ai": {
+        # Cloudflare Workers AI exposes an OpenAI-compatible chat-completions
+        # endpoint per account. Users must replace {ACCOUNT_ID} with their
+        # Cloudflare account ID and supply a Workers AI API token as ApiKey.
+        "base_url": "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1",
+        "default_model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "api_style": "openai",
+        "supports_tools": True,
+    },
     "moonshot": {
         "base_url": "https://api.moonshot.ai/v1",
         "default_model": "kimi-k2.5",
