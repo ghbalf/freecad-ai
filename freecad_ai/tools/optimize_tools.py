@@ -156,9 +156,9 @@ def _evaluate_once(skill_name, skill_content, parsed_cases, runs_per_test,
 def _ask_llm_for_modification(skill_content, iteration, score, results_text,
                                strategy_instruction):
     """Ask the LLM to suggest a modified SKILL.md based on results."""
-    from ..llm.client import create_client_from_config
+    from ..llm.client import create_client
 
-    client = create_client_from_config()
+    client = create_client(utility="tool_optimize")
     prompt = MODIFICATION_PROMPT.format(
         skill_content=skill_content,
         iteration=iteration,

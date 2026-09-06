@@ -525,8 +525,8 @@ class _CompactionWorker(QThread):
 
     def run(self):
         try:
-            from ..llm.client import create_client_from_config
-            client = create_client_from_config()
+            from ..llm.client import create_client
+            client = create_client(utility="compaction")
 
             messages = [
                 {

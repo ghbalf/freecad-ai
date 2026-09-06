@@ -215,7 +215,7 @@ class SkillEvaluator:
                  test_cases: list[dict], runs_per_test: int = 2,
                  validation_content: str = "") -> list[EvalResult]:
         """Run skill against all test cases and return results."""
-        from ..llm.client import create_client_from_config
+        from ..llm.client import create_client
         from ..core.system_prompt import build_system_prompt
         from ..llm.providers import get_api_style
         from ..config import get_config
@@ -223,7 +223,7 @@ class SkillEvaluator:
         cfg = get_config()
         api_style = get_api_style(cfg.provider.name)
         system = build_system_prompt(mode="act", tools_enabled=True)
-        client = create_client_from_config()
+        client = create_client(cfg, "skill_eval")
 
         from ..tools.setup import create_default_registry
         from ..tools.optimize_tools import get_eval_tools
