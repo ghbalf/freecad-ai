@@ -4,7 +4,9 @@ Migration is where the risk concentrates: a wrong call here silently
 mangles a config a user has been running for months.
 """
 
-from freecad_ai.config import AppConfig, ProviderConfig
+import pytest
+
+from freecad_ai.config import AppConfig
 
 
 def _old_shape(**extra):
@@ -145,3 +147,27 @@ class TestEdgeCases:
     def test_unknown_keys_are_still_ignored(self):
         cfg = AppConfig.from_dict(_old_shape(nonsense_key=1))
         assert not hasattr(cfg, "nonsense_key")
+
+    def test_non_mapping_profiles_degrades_to_defaults(self):
+        """A hand-edited config.json with 'profiles' as the wrong JSON type
+        (e.g. a list) must not crash config loading — treat it as absent,
+        same as a missing key."""
+        cfg = AppConfig.from_dict({"profiles": ["a"]})
+        assert len(cfg.profiles) == 1
+        assert cfg.provider.name == "anthropic"
+
+    def test_non_mapping_rerank_params_degrades_to_empty(self):
+        """A hand-edited 'rerank_params' that isn't an object (e.g. a
+        string) must not crash migration — treat it as no override params."""
+        cfg = AppConfig.from_dict(_old_shape(
+            rerank_llm_model="gemma3:4b", rerank_params="nope"))
+        assert cfg.profiles["rerank"].params == {}
+
+    def test_non_mapping_profile_value_still_raises_typeerror(self):
+        """A malformed *individual* profile (not the profiles dict itself)
+        is a distinct failure mode: it already raised TypeError before this
+        change (caught by load_config's except tuple), and must keep doing
+        so — the exception type is part of the contract even though nothing
+        declares it, so a later refactor can't silently change it."""
+        with pytest.raises(TypeError):
+            AppConfig.from_dict({"profiles": {"a": "nope"}})

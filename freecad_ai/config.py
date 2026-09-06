@@ -582,6 +582,10 @@ class AppConfig:
             legacy_provider = None
 
         raw_profiles = data.pop("profiles", None)
+        if not isinstance(raw_profiles, dict):
+            # Malformed "profiles" (e.g. a list from a bad hand-edit):
+            # treat as absent so the flat-provider migration path runs.
+            raw_profiles = None
         profiles = {
             label: ProviderConfig(**p)
             for label, p in (raw_profiles or {}).items()
@@ -617,12 +621,16 @@ class AppConfig:
         # main provider (chat_widget._build_rerank_llm_client). Bake those
         # `or` fallbacks into a standalone profile.
         if data.get("rerank_llm_model"):
+            rerank_params = data.get("rerank_params")
+            if not isinstance(rerank_params, dict):
+                # Malformed "rerank_params" (e.g. a string): no override.
+                rerank_params = {}
             cfg.profiles["rerank"] = ProviderConfig(
                 name=data.get("rerank_llm_provider_name") or main.name,
                 base_url=data.get("rerank_llm_base_url") or main.base_url,
                 api_key=data.get("rerank_llm_api_key") or main.api_key,
                 model=data["rerank_llm_model"],
-                params=dict(data.get("rerank_params") or {}),
+                params=dict(rerank_params),
             )
             cfg.utility_profiles["rerank"] = "rerank"
 
