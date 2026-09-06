@@ -402,8 +402,13 @@ class AppConfig:
     context_window: int = 20000  # tokens — compaction triggers above this
     temperature: float = 0.3
     model_params: dict = field(default_factory=dict)
-    # Per-model parameter overrides, keyed by model name:
-    # {"gemma4:27b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64}, ...}
+    # LEGACY, unread since connection profiles: per-model parameter
+    # overrides keyed by model name,
+    # {"gemma4:27b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64}, ...}.
+    # Sampling parameters now live on the profile (ProviderConfig.params);
+    # migration copies this dict's entry for the migrated model into it
+    # once. Kept in the JSON so a downgrade still finds it, and removed one
+    # release on — like provider/rerank_llm_*/rerank_params.
     auto_execute: bool = False
     max_retries: int = 3
     # Max agentic tool-loop turns per user message. 0 = endless (the Stop

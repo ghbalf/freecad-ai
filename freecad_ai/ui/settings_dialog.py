@@ -1094,14 +1094,12 @@ class SettingsDialog(QDialog):
         prof.base_url = self.base_url_edit.text()
         prof.api_key = self.api_key_edit.text()
         prof.model = self.model_edit.text()
-        # Commit the table's effective merge (global cfg.model_params
-        # layered under the profile's own — see _load_model_params_table),
-        # not just whatever the profile already stated. A visited profile
-        # thereby absorbs the global defaults it was inheriting and states
-        # them itself from here on: that keeps "what you saw is what you
-        # saved" true and stops one profile's edit from moving another
-        # profile's values through the shared cfg.model_params layer. Do
-        # not "simplify" this back to a partial dict.
+        # The table is the profile's params in full (see
+        # _load_model_params_table), so this is a straight write-back and
+        # a removed row is a removed parameter. Do not reintroduce a
+        # merge with cfg.model_params here: that shared layer is legacy
+        # and unread, and layering it back in would make Remove a no-op
+        # again.
         prof.params = self._read_model_params_table()
 
     def _show_profile(self, label: str) -> None:
@@ -1196,9 +1194,15 @@ class SettingsDialog(QDialog):
             if new_model:
                 self.model_edit.setText(new_model)
 
-            # Load saved params for the (possibly preserved) model
-            cfg = get_config()
-            self._load_model_params_table(self.model_edit.text(), cfg)
+            # Load saved params for the (possibly preserved) model. The
+            # working-copy profile, not the singleton: a vendor switch
+            # keeps the parameters this profile already states, and falls
+            # back to the new preset's default_params only when it states
+            # none.
+            prof = self._profiles.get(
+                getattr(self, "_current_profile_label", None))
+            self._load_model_params_table(
+                self.model_edit.text(), self._cfg, prof)
 
             # Apply provider-recommended reranker settings only when the
             # reranker UI is still at its factory default (off + top_n 15).
@@ -1280,14 +1284,13 @@ class SettingsDialog(QDialog):
         self._load_model_params_table(new_model, self._cfg, prof)
 
     def _load_model_params_table(self, model_name: str, cfg=None, profile=None):
-        """Populate the params table with the effective resolve_params() merge.
+        """Populate the params table with what resolve_params() will send.
 
-        Priority: cfg.model_params[model] (the global per-model default
-        layer) with `profile`'s own params layered on top — exactly what
-        resolve_params() computes for create_client() — then provider
-        defaults, then global temperature if neither layer has anything.
-        Saving this table commits the merge into the profile (see
-        _commit_profile_fields), not the global layer.
+        That is the profile's own params and nothing else — the legacy
+        cfg.model_params dict is not read here or in create_client, so a
+        row removed from this table stays removed. When the profile states
+        nothing, seed the table from the provider preset's default_params,
+        and failing that from the global temperature.
         """
         if cfg is None:
             cfg = get_config()
@@ -1295,9 +1298,7 @@ class SettingsDialog(QDialog):
             profile = self._profiles.get(
                 getattr(self, "_current_profile_label", None))
 
-        params = dict(cfg.model_params.get(model_name, {}))
-        if profile is not None:
-            params.update(profile.params)
+        params = dict(profile.params) if profile is not None else {}
 
         if not params:
             # No saved params — try provider defaults
@@ -1410,8 +1411,8 @@ class SettingsDialog(QDialog):
         cfg.execution_timeout = self.execution_timeout_spin.value()
 
         # Model params reach the profile via _commit_profile_fields above
-        # (prof.params = the table's effective merge) — cfg.model_params
-        # stays the global layer and is no longer written from here.
+        # (prof.params = the table, in full) — cfg.model_params is legacy
+        # and is neither read nor written from here.
         model_name = self.model_edit.text().strip()
         if model_name:
             params = self._read_model_params_table()

@@ -911,15 +911,21 @@ def resolve_profile(cfg, utility: str | None = None):
 
 
 def resolve_params(cfg, profile) -> dict:
-    """Merge global per-model defaults with a profile's own params.
+    """Return the sampling parameters a profile runs with.
 
-    ``cfg.model_params`` holds defaults keyed by model name; the profile
-    layers on top, so a profile states only what it changes. Returns a
-    fresh dict — callers and the shared config entry must never alias.
+    The profile is authoritative: what the Model Parameters table shows
+    for a profile is exactly what that profile sends, so removing a row
+    removes the parameter. ``cfg.model_params`` — the old per-model dict
+    keyed by model name — is legacy and no longer read; it used to be
+    underlaid here, which no widget could write and which therefore made
+    Remove a no-op and stopped two profiles on one model from disagreeing.
+    Migration folds it into ``profile.params`` once, on upgrade.
+
+    ``cfg`` stays in the signature: every call site has one, and the
+    resolution rule is the kind of thing that grows a config input again.
+    Returns a fresh dict — callers must never alias the profile's own.
     """
-    params = dict(cfg.model_params.get(profile.model, {}))
-    params.update(profile.params)
-    return params
+    return dict(profile.params)
 
 
 def create_client(cfg=None, utility: str | None = None, *,

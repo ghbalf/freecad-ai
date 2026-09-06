@@ -11,7 +11,7 @@ pattern — no QApplication required.
 
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -26,20 +26,30 @@ except ImportError:
     except ImportError:
         pytest.skip("PySide6/PySide2 not available", allow_module_level=True)
 
-from freecad_ai.config import PROVIDER_PRESETS  # noqa: E402
+from freecad_ai.config import (  # noqa: E402
+    AppConfig,
+    PROVIDER_PRESETS,
+    ProviderConfig,
+)
 from freecad_ai.llm.providers import get_provider_names  # noqa: E402
 from freecad_ai.ui.settings_dialog import SettingsDialog  # noqa: E402
 
 
-def _make_fake_dialog(base_url="http://gateway.example/v1", model="my-model"):
+def _make_fake_dialog(base_url="http://gateway.example/v1", model="my-model",
+                     profile=None):
     """Build a fake dialog with just the attributes _on_provider_changed touches."""
     base_url_edit = MagicMock()
     base_url_edit.text.return_value = base_url
     model_edit = MagicMock()
     model_edit.text.return_value = model
+    cfg = AppConfig()
+    profiles = {"p": profile} if profile is not None else {}
     return SimpleNamespace(
         base_url_edit=base_url_edit,
         model_edit=model_edit,
+        _cfg=cfg,
+        _profiles=profiles,
+        _current_profile_label="p",
         _load_model_params_table=MagicMock(),
         _rerank_at_factory_defaults=MagicMock(return_value=False),
         _apply_rerank_defaults=MagicMock(),
@@ -54,8 +64,7 @@ def test_switch_to_custom_preserves_fields():
 
     fake = _make_fake_dialog()
     custom_idx = get_provider_names().index("custom")
-    with patch("freecad_ai.ui.settings_dialog.get_config", return_value=MagicMock()):
-        SettingsDialog._on_provider_changed(cast(SettingsDialog, fake),custom_idx)
+    SettingsDialog._on_provider_changed(cast(SettingsDialog, fake), custom_idx)
 
     fake.base_url_edit.setText.assert_not_called()
     fake.model_edit.setText.assert_not_called()
@@ -69,8 +78,7 @@ def test_switch_to_real_provider_applies_preset():
     """Anthropic (or any non-custom provider) overwrites fields as before."""
     fake = _make_fake_dialog()
     anthropic_idx = get_provider_names().index("anthropic")
-    with patch("freecad_ai.ui.settings_dialog.get_config", return_value=MagicMock()):
-        SettingsDialog._on_provider_changed(cast(SettingsDialog, fake),anthropic_idx)
+    SettingsDialog._on_provider_changed(cast(SettingsDialog, fake), anthropic_idx)
 
     fake.base_url_edit.setText.assert_called_once_with(
         PROVIDER_PRESETS["anthropic"]["base_url"])
@@ -86,3 +94,19 @@ def test_invalid_index_is_noop():
     fake.base_url_edit.setText.assert_not_called()
     fake.model_edit.setText.assert_not_called()
     fake._load_model_params_table.assert_not_called()
+
+
+def test_params_table_reload_gets_the_working_copy_profile():
+    """A vendor switch must keep the profile's own parameters. Passing
+    the working-copy profile (never the get_config() singleton, and never
+    None) is what makes the new preset's default_params a fallback rather
+    than an override."""
+    profile = ProviderConfig(name="ollama", model="qwen3:8b",
+                             params={"top_k": 40})
+    fake = _make_fake_dialog(profile=profile)
+    SettingsDialog._on_provider_changed(
+        cast(SettingsDialog, fake), get_provider_names().index("anthropic"))
+
+    args, kwargs = fake._load_model_params_table.call_args
+    assert args[1] is fake._cfg
+    assert args[2] is profile

@@ -102,18 +102,53 @@ class TestApiKeyFallback:
 
 
 class TestParamLayering:
-    def test_model_params_apply(self):
+    """``profile.params`` is the only source of sampling parameters.
+
+    ``cfg.model_params`` used to be underlaid beneath it. Nothing in the
+    dialog could write that dict (it was read-only from there), so a
+    parameter deleted in the Model Parameters table came straight back
+    from the underlay on the next resolve, and two profiles naming the
+    same model could not disagree about it. It is legacy now: still
+    written to config.json, never read.
+    """
+
+    def test_profile_params_apply(self):
         cfg = _cfg()
-        cfg.model_params = {"claude-sonnet-4-6": {"temperature": 0.7}}
+        cfg.profiles["cloud"].params = {"temperature": 0.7}
         assert create_client(cfg).model_params["temperature"] == 0.7
 
-    def test_profile_params_override_model_params(self):
+    def test_legacy_model_params_are_not_read(self):
         cfg = _cfg()
-        cfg.model_params = {"qwen3:8b": {"top_k": 10, "top_p": 0.9}}
+        cfg.model_params = {"claude-sonnet-4-6": {"temperature": 0.7}}
+        assert create_client(cfg).model_params == {}
+
+    def test_a_key_removed_from_the_profile_stays_removed(self):
+        """The reported defect. Migration copies model_params[model] into
+        the profile, so for every upgraded user the same key sat in both
+        stores; Remove deleted it from the profile only."""
+        cfg = _cfg()
         cfg.active_profile = "local"
+        cfg.model_params = {"qwen3:8b": {"top_k": 40, "top_p": 0.9}}
+        cfg.profiles["local"].params = {"top_k": 40}  # top_p removed
         params = create_client(cfg).model_params
-        assert params["top_k"] == 40      # profile wins
-        assert params["top_p"] == 0.9     # model_params still contributes
+        assert "top_p" not in params
+        assert params == {"top_k": 40}
+
+    def test_two_profiles_on_one_model_keep_separate_params(self):
+        """No shared namespace to reach — the structural claim profiles
+        are for, which the underlay quietly falsified."""
+        cfg = _cfg()
+        cfg.profiles["a"] = ProviderConfig(
+            name="ollama", base_url="http://localhost:11434/v1",
+            model="qwen3:8b", params={"temperature": 0.1})
+        cfg.profiles["b"] = ProviderConfig(
+            name="ollama", base_url="http://localhost:11434/v1",
+            model="qwen3:8b", params={"top_k": 5})
+        cfg.utility_profiles["compaction"] = "a"
+        cfg.utility_profiles["rerank"] = "b"
+        assert create_client(cfg, "compaction").model_params == {
+            "temperature": 0.1}
+        assert create_client(cfg, "rerank").model_params == {"top_k": 5}
 
     def test_one_profile_params_never_leak_into_another(self):
         """Issue #30, now structural."""
@@ -151,14 +186,14 @@ class TestCreateClientFromConfigIsUnchanged:
     its observable output must match what the old hand-rolled version
     produced: provider/base_url/api_key/model straight from cfg.provider,
     max_tokens/temperature/thinking straight from cfg, and model_params
-    keyed only by cfg.model_params[cfg.provider.model]."""
+    from the active profile's own params."""
 
     def test_matches_the_pre_refactor_construction(self, monkeypatch):
         cfg = _cfg()
         cfg.max_tokens = 4096
         cfg.temperature = 0.5
         cfg.thinking = "on"
-        cfg.model_params = {"claude-sonnet-4-6": {"top_p": 0.8}}
+        cfg.provider.params = {"top_p": 0.8}
         monkeypatch.setattr("freecad_ai.config.get_config", lambda: cfg)
 
         client = create_client_from_config()
@@ -170,7 +205,7 @@ class TestCreateClientFromConfigIsUnchanged:
         assert client.max_tokens == cfg.max_tokens
         assert client.temperature == cfg.temperature
         assert client.thinking == cfg.thinking
-        assert client.model_params == cfg.model_params[cfg.provider.model]
+        assert client.model_params == cfg.provider.params
 
 
 class TestResolveProfile:
@@ -194,8 +229,7 @@ class TestRerankerJobSettings:
         cfg.thinking = "extended"
         cfg.utility_profiles["rerank"] = "local"
         cfg.profiles["local"].params = {"temperature": 0.1, "top_k": 20}
-        params = dict(cfg.model_params.get("qwen3:8b", {}))
-        params.update(cfg.profiles["local"].params)
+        params = dict(cfg.profiles["local"].params)
         client = create_client(cfg, "rerank", max_tokens=1024,
                                temperature=params.get("temperature", 0.0),
                                thinking="off")
@@ -209,10 +243,14 @@ class TestResolveParams:
     def test_returns_a_fresh_dict_not_an_alias(self):
         from freecad_ai.llm.client import resolve_params
         cfg = _cfg()
-        cfg.model_params = {"qwen3:8b": {"temperature": 0.5}}
         profile = cfg.profiles["local"]
         result = resolve_params(cfg, profile)
-        result["temperature"] = 999
+        result["top_k"] = 999
         result["new_key"] = "poison"
-        assert cfg.model_params["qwen3:8b"] == {"temperature": 0.5}
         assert profile.params == {"top_k": 40}
+
+    def test_ignores_the_legacy_model_params_dict(self):
+        from freecad_ai.llm.client import resolve_params
+        cfg = _cfg()
+        cfg.model_params = {"qwen3:8b": {"temperature": 0.5}}
+        assert resolve_params(cfg, cfg.profiles["local"]) == {"top_k": 40}

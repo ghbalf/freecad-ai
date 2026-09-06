@@ -46,8 +46,9 @@ class TestPlainMigration:
         assert cfg.provider.params == {"temperature": 0.8, "top_p": 0.9}
 
     def test_model_params_dict_is_left_intact(self):
-        """profile.params layers ON TOP of model_params; it does not
-        replace it, and other models' entries must not be disturbed."""
+        """The copy into profile.params does not consume the legacy dict.
+        It stays in the JSON, unread, so a downgrade still finds it and
+        other models' entries are not disturbed."""
         cfg = AppConfig.from_dict(_old_shape())
         assert cfg.model_params == {"qwen3:32b": {"temperature": 0.8, "top_p": 0.9}}
 

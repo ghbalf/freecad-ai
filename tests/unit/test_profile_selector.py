@@ -6,6 +6,7 @@ attributes they touch, so no Qt dialog has to be constructed.
 
 import copy
 import types
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,7 +20,11 @@ except ImportError:
     except ImportError:
         pytest.skip("PySide6/PySide2 not available", allow_module_level=True)
 
-from freecad_ai.config import AppConfig, ProviderConfig  # noqa: E402
+from freecad_ai.config import (  # noqa: E402
+    AppConfig,
+    PROVIDER_PRESETS,
+    ProviderConfig,
+)
 from freecad_ai.llm.providers import get_provider_names  # noqa: E402
 from freecad_ai.ui.settings_dialog import SettingsDialog  # noqa: E402
 
@@ -413,14 +418,19 @@ class TestSaveTempDoesNotMutateStoredProfile:
 
 # ── Params table targets the working-copy profile (fix round 2) ────────
 #
-# resolve_params() layers profile.params on top of cfg.model_params, and
-# migration copied a profile's starting params into both places. The
-# dialog's Model Parameters table read/wrote cfg.model_params only, so for
-# any migrated profile the profile layer always won and every edit made
-# through the dialog was silently discarded — demonstrated against a real
-# config: temperature 1 -> 0.2 in the dialog, saved, runtime still resolved
-# 1. These tests pin the fix: the table must read the effective merge and
-# write into the working-copy profile's own params.
+# The dialog's Model Parameters table used to read and write
+# cfg.model_params only, while resolve_params() layered profile.params on
+# top of it — and migration copied a profile's starting params into both
+# places. So for any migrated profile the profile layer always won and
+# every edit made through the dialog was silently discarded: demonstrated
+# against a real config, temperature 1 -> 0.2 in the dialog, saved, runtime
+# still resolved 1.
+#
+# The final review found the other half of the same root cause: the
+# underlay itself. Nothing could write cfg.model_params, so removing a row
+# deleted the key from the profile and the underlay restored it. The
+# profile is now the sole source (see TestParamsTableShowsOnlyTheProfile
+# and tests/unit/test_create_client.py::TestParamLayering).
 
 class TestParamsTableEditSurvivesSaveAndResolve:
     """The regression, end to end — this is the test that would have
@@ -487,28 +497,78 @@ class TestParamsTableEditSurvivesSaveAndResolve:
         assert resolve_params(cfg, cfg.provider)["temperature"] == 0.2
 
 
-class TestParamsTableDisplaysEffectiveMerge:
-    """The table shows exactly what resolve_params() will compute."""
+class TestParamsTableShowsOnlyTheProfile:
+    """The table shows exactly what resolve_params() will compute — which
+    is the profile's own params, and nothing from the legacy
+    cfg.model_params dict."""
 
-    def test_both_layers_appear_profile_wins_on_conflict(self):
+    def _fake(self, cfg, label):
+        prof = cfg.profiles[label]
+        fake = types.SimpleNamespace(
+            _cfg=cfg,
+            _profiles=cfg.profiles,
+            _current_profile_label=label,
+            provider_combo=_Combo(get_provider_names().index(prof.name)),
+        )
+        fake._captured = {}
+        fake._populate_model_params_table = fake._captured.update
+        return fake
+
+    def test_profile_params_are_shown(self):
         cfg = _cfg()
         prof = cfg.profiles["cloud"]
         prof.params = {"temperature": 0.9, "top_p": 0.5}
-        cfg.model_params = {prof.model: {"temperature": 0.1, "max_tokens": 999}}
 
-        fake = types.SimpleNamespace(
-            _profiles=cfg.profiles,
-            _current_profile_label="cloud",
-            provider_combo=_Combo(get_provider_names().index(prof.name)),
-        )
-        captured = {}
-        fake._populate_model_params_table = captured.update
-
+        fake = self._fake(cfg, "cloud")
         SettingsDialog._load_model_params_table(fake, prof.model, cfg, prof)
 
-        assert captured["temperature"] == 0.9  # profile wins the conflict
-        assert captured["top_p"] == 0.5         # profile-only key
-        assert captured["max_tokens"] == 999    # global-only key
+        assert fake._captured == {"temperature": 0.9, "top_p": 0.5}
+
+    def test_legacy_model_params_never_reach_the_table(self):
+        """Re-opening the dialog re-rendered a removed row because the
+        table drew the merge. It must draw the profile."""
+        cfg = _cfg()
+        prof = cfg.profiles["cloud"]
+        prof.params = {"temperature": 0.9}
+        cfg.model_params = {prof.model: {"temperature": 0.1, "max_tokens": 999}}
+
+        fake = self._fake(cfg, "cloud")
+        SettingsDialog._load_model_params_table(fake, prof.model, cfg, prof)
+
+        assert fake._captured == {"temperature": 0.9}
+
+    def test_empty_profile_falls_back_to_the_provider_preset(self):
+        """Both empty-case fallbacks are unchanged by the fix."""
+        cfg = _cfg()
+        prof = cfg.profiles["cloud"]
+        prof.params = {}
+        cfg.model_params = {prof.model: {"temperature": 0.1}}
+
+        fake = self._fake(cfg, "cloud")
+        SettingsDialog._load_model_params_table(fake, prof.model, cfg, prof)
+
+        expected = dict(PROVIDER_PRESETS["anthropic"].get("default_params", {}))
+        if expected:
+            assert fake._captured == expected
+        else:
+            assert fake._captured == {"temperature": cfg.temperature}
+
+    def test_empty_profile_and_empty_preset_falls_back_to_temperature(self):
+        cfg = _cfg()
+        cfg.temperature = 0.42
+        prof = cfg.profiles["cloud"]
+        prof.params = {}
+
+        fake = self._fake(cfg, "cloud")
+        # An index with no default_params of its own, so only the last
+        # fallback can fire.
+        with mock.patch.dict(
+                "freecad_ai.ui.settings_dialog.PROVIDER_PRESETS",
+                {"anthropic": {"base_url": "", "default_model": "",
+                               "default_params": {}}}):
+            SettingsDialog._load_model_params_table(fake, prof.model, cfg, prof)
+
+        assert fake._captured == {"temperature": 0.42}
 
 
 class TestParamsDoNotLeakBetweenProfiles:
