@@ -52,9 +52,32 @@ class TestPlainMigration:
         cfg = AppConfig.from_dict(_old_shape())
         assert cfg.model_params == {"qwen3:32b": {"temperature": 0.8, "top_p": 0.9}}
 
-    def test_api_key_also_seeds_the_provider_default(self):
+    def test_the_key_lands_on_the_profile_and_nowhere_else(self):
+        """provider_keys is a hand-written per-vendor default, never
+        auto-populated. Seeding it put a copy of the credential where no
+        widget could see, edit or delete it, so clearing the API Key field
+        to rotate a leaked key left it on disk and still sending."""
         cfg = AppConfig.from_dict(_old_shape())
-        assert cfg.provider_keys["ollama"] == "sk-main"
+        assert cfg.provider.api_key == "sk-main"
+        assert cfg.provider_keys == {}
+
+    def test_clearing_the_migrated_key_actually_clears_it(self):
+        """The end of the same path: with nothing seeded, emptying the
+        profile's key resolves to no key at all."""
+        from freecad_ai.llm.client import create_client
+        cfg = AppConfig.from_dict(_old_shape())
+        cfg.provider.api_key = ""
+        assert create_client(cfg).api_key == ""
+
+    def test_a_hand_written_vendor_default_still_resolves(self):
+        """The fallback itself is unchanged — only its auto-seeding is
+        gone. A user who writes provider_keys into config.json by hand
+        still has every keyless profile on that vendor pick it up."""
+        from freecad_ai.llm.client import create_client
+        cfg = AppConfig.from_dict(_old_shape(
+            provider_keys={"ollama": "sk-vendor-wide"}))
+        cfg.provider.api_key = ""
+        assert create_client(cfg).api_key == "sk-vendor-wide"
 
     def test_no_utility_overrides_without_a_rerank_model(self):
         cfg = AppConfig.from_dict(_old_shape())

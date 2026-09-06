@@ -634,8 +634,13 @@ class AppConfig:
         main.params = dict(cfg.model_params.get(main.model, {}))
         cfg.profiles = {main.name: main}
         cfg.active_profile = main.name
-        if main.api_key:
-            cfg.provider_keys[main.name] = main.api_key
+        # Deliberately no provider_keys seeding here. The key is already on
+        # the profile above, where the dialog can show and clear it;
+        # copying it into provider_keys as well created a credential no
+        # widget could reach, so clearing the API Key field to rotate a
+        # leaked key left the old one on disk and still being sent.
+        # provider_keys stays a hand-written per-vendor default that
+        # create_client falls back to — never auto-populated.
 
         # The old reranker override inherited each empty field from the
         # main provider (the pre-profiles reranker builder in chat_widget).
