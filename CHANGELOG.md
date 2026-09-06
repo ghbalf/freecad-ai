@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   optimisation and tool reranking each choose a profile, or inherit the
   active one. Run chat on a large cloud model and the throwaway work on a
   cheap or local one.
+- A **Use this profile for chat** checkbox in the Settings dialog says
+  which profile chat runs on, and the profile dropdown marks it
+  `(active)`. Selecting a profile in the dropdown only opens it for
+  editing — browsing what your profiles hold never re-points chat.
 
 ### Changed
 
@@ -28,18 +32,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Switching provider in the Settings dialog no longer overwrites a
-  Base URL you had edited (#75). Connection settings live in the profile,
-  and programmatic dropdown moves no longer fire the preset handler.
+- Switching between profiles in the Settings dialog is lossless (#75).
+  Each profile keeps its own base URL, key, model and parameters, so
+  browsing to another profile and back leaves your edits intact and no
+  profile can overwrite another's settings. Pointing a profile at a
+  *different vendor* still loads that vendor's preset URL and model, as it
+  always has — that is an explicit "point this profile elsewhere".
 - Cancelling the Settings dialog now discards profile changes. Adding,
   renaming, deleting or editing a profile previously took effect
   immediately, and Test Connection could flush the change to disk before
   you ever pressed OK.
-- Sampling parameters edited in Settings now take effect. For a
-  configuration carried over from an earlier version, editing temperature
-  or any other parameter was silently discarded: the value was written to
-  the global per-model defaults, which the profile's own parameters then
-  overrode.
+- Sampling parameters edited in Settings now take effect, including
+  **Remove**. For a configuration carried over from an earlier version,
+  edits were silently discarded and removed rows came back: parameters
+  lived in two places at once, a per-model dict in `config.json` and the
+  profile, and the dialog could only reach one of them. The profile is now
+  the only source; the per-model dict is left in `config.json`, unread.
+- Clearing a profile's API key now actually clears it. Upgrading copied
+  the key into a second, per-vendor slot that no part of the dialog could
+  edit, so a key cleared to rotate a leaked credential stayed on disk and
+  kept being sent — with Test Connection reporting OK. That slot is no
+  longer written on upgrade; it remains available as a hand-written
+  per-vendor default in `config.json`.
 - Test Connection now succeeds for a profile that leaves its API key blank
   to inherit the vendor-wide default, matching what normal chat use
   already did.

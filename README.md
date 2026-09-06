@@ -197,7 +197,7 @@ you load them — there is nothing to do by hand.
 
 ### Model Parameters
 
-The **Model Parameters** table in Settings lets you set arbitrary sampling parameters (temperature, top_p, top_k, etc.) that are sent with each API request. Parameters belong to the profile you are editing, so two profiles never share them — changing temperature on one leaves the other alone, and changing a profile's model keeps that profile's parameters. Per-model defaults from earlier versions are kept in `config.json` and still apply for any parameter a profile does not set itself.
+The **Model Parameters** table in Settings lets you set arbitrary sampling parameters (temperature, top_p, top_k, etc.) that are sent with each API request. Parameters belong to the profile you are editing, so two profiles never share them — even when they name the same model — and removing a row removes the parameter. The per-model defaults written by earlier versions are still in `config.json` but are no longer read; on upgrade the entry for your current model is copied into your profile once.
 
 Click **Load Defaults** to reset to the provider's recommended values. For most providers the only default is `temperature: 0.3`. Moonshot ships with pre-configured values required by Kimi-K2.5.
 

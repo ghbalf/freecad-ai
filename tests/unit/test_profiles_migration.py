@@ -4,8 +4,6 @@ Migration is where the risk concentrates: a wrong call here silently
 mangles a config a user has been running for months.
 """
 
-import pytest
-
 from freecad_ai.config import AppConfig, ProviderConfig
 
 
@@ -187,14 +185,43 @@ class TestEdgeCases:
             rerank_llm_model="gemma3:4b", rerank_params="nope"))
         assert cfg.profiles["rerank"].params == {}
 
-    def test_non_mapping_profile_value_still_raises_typeerror(self):
-        """A malformed *individual* profile (not the profiles dict itself)
-        is a distinct failure mode: it already raised TypeError before this
-        change (caught by load_config's except tuple), and must keep doing
-        so — the exception type is part of the contract even though nothing
-        declares it, so a later refactor can't silently change it."""
-        with pytest.raises(TypeError):
-            AppConfig.from_dict({"profiles": {"a": "nope"}})
+    def test_non_mapping_profile_value_degrades_in_place(self):
+        """A malformed *individual* profile used to raise TypeError, which
+        load_config caught by discarding the entire config and returning
+        bare defaults — which the next save then wrote over the top of.
+        The other four malformed shapes on this path all degrade in place;
+        so does this one now."""
+        cfg = AppConfig.from_dict({
+            "profiles": {
+                "a": "nope",
+                "b": {"name": "ollama", "model": "qwen3:8b",
+                      "base_url": "http://localhost:11434/v1"},
+            },
+            "active_profile": "b",
+            "max_tokens": 8192,
+        })
+        assert isinstance(cfg.profiles["a"], ProviderConfig)
+        assert cfg.profiles["a"] == ProviderConfig()
+        # The rest of the user's config survives.
+        assert cfg.profiles["b"].model == "qwen3:8b"
+        assert cfg.active_profile == "b"
+        assert cfg.max_tokens == 8192
+
+    def test_a_bad_profile_does_not_discard_the_file(self, tmp_config_dir):
+        """The end of the same path: load_config must not fall back to
+        bare defaults."""
+        import json
+        import os
+        import freecad_ai.config as config_mod
+        os.makedirs(os.path.dirname(config_mod.CONFIG_FILE), exist_ok=True)
+        with open(config_mod.CONFIG_FILE, "w") as f:
+            json.dump({
+                "profiles": {"a": "nope"},
+                "active_profile": "a",
+                "max_tokens": 8192,
+            }, f)
+        cfg = config_mod.load_config()
+        assert cfg.max_tokens == 8192
 
 
 class TestLegacyMirrorOnSave:

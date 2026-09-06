@@ -27,6 +27,25 @@ class TestUtilityIdentifiers:
     def test_each_has_a_label(self):
         assert all(label for _, label in SettingsDialog.UTILITIES)
 
+    def test_each_label_is_extractable_for_translation(self):
+        """translations/update_translations.sh runs pylupdate5, which
+        extracts string *literals* only. The labels are translated at the
+        use site through a loop variable, so the literal pylupdate sees has
+        to be here, in the table — otherwise these four strings can never
+        be translated, however correct the runtime translate() call looks.
+        """
+        import inspect
+        from freecad_ai.ui import settings_dialog
+
+        source = inspect.getsource(settings_dialog)
+        for _utility, label in SettingsDialog.UTILITIES:
+            assert f'QT_TRANSLATE_NOOP("SettingsDialog", "{label}")' in source
+
+    def test_the_noop_leaves_the_label_untouched_at_runtime(self):
+        from freecad_ai.ui.compat import QT_TRANSLATE_NOOP
+        assert QT_TRANSLATE_NOOP("SettingsDialog", "Tool reranking") == \
+            "Tool reranking"
+
 
 class TestCollect:
     def test_inherit_is_stored_as_absent(self):

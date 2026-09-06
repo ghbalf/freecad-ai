@@ -606,8 +606,16 @@ class AppConfig:
             # Malformed "profiles" (e.g. a list from a bad hand-edit):
             # treat as absent so the flat-provider migration path runs.
             raw_profiles = None
+        # A profile *value* that is not a mapping (a hand-edit like
+        # {"profiles": {"a": "x"}}) used to raise TypeError out of
+        # ProviderConfig(**p), which load_config caught by discarding the
+        # whole config and returning bare defaults — losing every other
+        # setting the user had. Normalise it to a default profile instead,
+        # so one bad entry degrades in place like the other malformed
+        # shapes on this path.
         profiles = {
-            label: ProviderConfig(**p)
+            label: ProviderConfig(**p) if isinstance(p, dict)
+            else ProviderConfig()
             for label, p in (raw_profiles or {}).items()
         }
 

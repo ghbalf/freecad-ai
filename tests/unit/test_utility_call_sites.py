@@ -71,12 +71,20 @@ class TestSkillEvaluator:
         evaluator = SkillEvaluator({}, tool_executor=None)
         with patch("freecad_ai.config.get_config", return_value=cfg), \
              patch("freecad_ai.llm.client.create_client",
-                   return_value=fake_client), \
+                   return_value=fake_client) as mk, \
              patch("freecad_ai.tools.setup.create_default_registry",
                    return_value=fake_registry), \
              patch("freecad_ai.core.system_prompt.build_system_prompt",
                    return_value="system prompt"):
             evaluator.evaluate("s", "content", test_cases=[])
 
+        # The identifier, like the other three call sites. Without this the
+        # test passes whether production asks for "skill_eval" or takes the
+        # active profile, because the patched client answers "anthropic"
+        # either way.
+        assert mk.call_args.args[1:] == ("skill_eval",) or \
+            mk.call_args.kwargs.get("utility") == "skill_eval"
+        # And the schema still follows that client's own api_style — the
+        # Task 5 guard, which is a different failure.
         assert fake_registry.to_anthropic_schema.called is True
         assert fake_registry.to_openai_schema.called is False

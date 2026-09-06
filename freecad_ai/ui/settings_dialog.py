@@ -15,7 +15,7 @@ import copy
 import os
 import secrets
 
-from .compat import QtWidgets, QtCore, QtGui
+from .compat import QtWidgets, QtCore, QtGui, QT_TRANSLATE_NOOP
 from ..i18n import translate
 
 QDialog = QtWidgets.QDialog
@@ -202,11 +202,18 @@ class SettingsDialog(QDialog):
     # Call sites that can run on their own profile. The identifier is the
     # contract with create_client(cfg, utility); adding a new one here and
     # at its call site is the whole opt-in.
+    # The labels are QT_TRANSLATE_NOOP-wrapped so pylupdate5 (which
+    # extracts string literals only) finds them here; the use site below
+    # runs them through translate() to resolve them at runtime.
     UTILITIES = [
-        ("compaction", "Context compaction"),
-        ("skill_eval", "Skill evaluation"),
-        ("tool_optimize", "Tool optimisation"),
-        ("rerank", "Tool reranking"),
+        ("compaction",
+         QT_TRANSLATE_NOOP("SettingsDialog", "Context compaction")),
+        ("skill_eval",
+         QT_TRANSLATE_NOOP("SettingsDialog", "Skill evaluation")),
+        ("tool_optimize",
+         QT_TRANSLATE_NOOP("SettingsDialog", "Tool optimisation")),
+        ("rerank",
+         QT_TRANSLATE_NOOP("SettingsDialog", "Tool reranking")),
     ]
 
     @classmethod
@@ -646,7 +653,7 @@ class SettingsDialog(QDialog):
         # utility dropdown's selection, or the active profile when it is
         # left on "inherit") without waiting for the user to send a real
         # message. The reranker's connection is a profile now, not a
-        # bespoke override group — see the Utility models group below.
+        # bespoke override group — see the Utility models group above.
         test_layout = QHBoxLayout()
         self._rerank_test_btn = QPushButton(
             translate("SettingsDialog", "Test Reranker"))
