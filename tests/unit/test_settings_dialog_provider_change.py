@@ -43,6 +43,7 @@ def _make_fake_dialog(base_url="http://gateway.example/v1", model="my-model"):
         _load_model_params_table=MagicMock(),
         _rerank_at_factory_defaults=MagicMock(return_value=False),
         _apply_rerank_defaults=MagicMock(),
+        _commit_profile_fields=MagicMock(),
     )
 
 

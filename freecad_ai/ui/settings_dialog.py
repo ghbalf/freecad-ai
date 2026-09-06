@@ -41,8 +41,9 @@ QListWidget = QtWidgets.QListWidget
 QListWidgetItem = QtWidgets.QListWidgetItem
 QFileDialog = QtWidgets.QFileDialog
 QMessageBox = QtWidgets.QMessageBox
+QInputDialog = QtWidgets.QInputDialog
 
-from ..config import get_config, save_current_config, PROVIDER_PRESETS
+from ..config import get_config, save_current_config, PROVIDER_PRESETS, ProviderConfig
 from ..llm.providers import get_provider_names
 
 
@@ -183,6 +184,7 @@ class SettingsDialog(QDialog):
         self._test_thread = None
         self._last_default_prompt = ""
         self._rerank_last_model = ""
+        self._cfg = get_config()
         self._build_ui()
         self._load_from_config()
 
@@ -202,6 +204,26 @@ class SettingsDialog(QDialog):
         # Provider group
         provider_group = QGroupBox(translate("SettingsDialog", "LLM Provider"))
         provider_layout = QFormLayout()
+
+        # ── Profile selector ────────────────────────────────────────
+        profile_row = QHBoxLayout()
+        self.profile_combo = QComboBox()
+        self.profile_combo.setToolTip(translate(
+            "SettingsDialog",
+            "Named connection. Utilities below can each use a different one."))
+        profile_row.addWidget(self.profile_combo, 1)
+        self.profile_add_btn = QPushButton(translate("SettingsDialog", "New"))
+        self.profile_rename_btn = QPushButton(translate("SettingsDialog", "Rename"))
+        self.profile_delete_btn = QPushButton(translate("SettingsDialog", "Delete"))
+        for b in (self.profile_add_btn, self.profile_rename_btn,
+                  self.profile_delete_btn):
+            profile_row.addWidget(b)
+        provider_layout.addRow(translate("SettingsDialog", "Profile:"), profile_row)
+
+        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        self.profile_add_btn.clicked.connect(self._on_profile_add)
+        self.profile_rename_btn.clicked.connect(self._on_profile_rename)
+        self.profile_delete_btn.clicked.connect(self._on_profile_delete)
 
         self.provider_combo = QComboBox()
         self.provider_combo.addItems([n.capitalize() for n in get_provider_names()])
@@ -899,25 +921,15 @@ class SettingsDialog(QDialog):
 
     def _load_from_config(self):
         """Populate fields from the current config."""
-        cfg = get_config()
+        cfg = self._cfg = get_config()
 
-        names = get_provider_names()
-        try:
-            idx = names.index(cfg.provider.name)
-        except ValueError:
-            idx = 0
-        self.provider_combo.setCurrentIndex(idx)
+        self._refresh_profile_combo()
+        self._show_profile(cfg.active_profile)
 
-        self.api_key_edit.setText(cfg.provider.api_key)
-        self.base_url_edit.setText(cfg.provider.base_url)
-        self.model_edit.setText(cfg.provider.model)
         self.max_tokens_spin.setValue(cfg.max_tokens)
         self.context_window_spin.setValue(cfg.context_window)
         self.max_tool_turns_spin.setValue(cfg.max_tool_turns)
         self.execution_timeout_spin.setValue(cfg.execution_timeout)
-
-        # Model parameters table
-        self._load_model_params_table(cfg.provider.model, cfg)
 
         self.enable_tools_check.setChecked(cfg.enable_tools)
         self.auto_execute_check.setChecked(cfg.auto_execute)
@@ -999,6 +1011,154 @@ class SettingsDialog(QDialog):
         # Hooks
         self._refresh_hooks_list()
 
+    # ── Connection profiles ─────────────────────────────────────
+
+    def _rename_profile(self, old: str, new: str) -> None:
+        """Rename a profile, carrying every reference to it along.
+
+        A profile's label is its identity — utility_profiles and
+        active_profile store the name, not a stable id — so a rename that
+        did not cascade would silently detach a utility from the
+        connection it was using.
+        """
+        new = (new or "").strip()
+        if not new:
+            raise ValueError("Profile name cannot be empty")
+        if old == new:
+            return
+        if new in self._cfg.profiles:
+            raise ValueError(f"A profile named {new!r} already exists")
+        if old not in self._cfg.profiles:
+            raise ValueError(f"No profile named {old!r}")
+        # Rebuild in place so the combo's order does not shuffle.
+        self._cfg.profiles = {
+            (new if label == old else label): prof
+            for label, prof in self._cfg.profiles.items()
+        }
+        if self._cfg.active_profile == old:
+            self._cfg.active_profile = new
+        for utility, label in list(self._cfg.utility_profiles.items()):
+            if label == old:
+                self._cfg.utility_profiles[utility] = new
+
+    def _delete_profile(self, label: str) -> None:
+        """Remove a profile, leaving nothing pointing at it."""
+        if label not in self._cfg.profiles:
+            raise ValueError(f"No profile named {label!r}")
+        if len(self._cfg.profiles) == 1:
+            raise ValueError("At least one profile is required")
+        del self._cfg.profiles[label]
+        if self._cfg.active_profile == label:
+            self._cfg.active_profile = next(iter(self._cfg.profiles))
+        for utility, mapped in list(self._cfg.utility_profiles.items()):
+            if mapped == label:
+                self._cfg.utility_profiles[utility] = ""
+
+    def _refresh_profile_combo(self) -> None:
+        """Repopulate the profile combo without firing its handler."""
+        self.profile_combo.blockSignals(True)
+        try:
+            self.profile_combo.clear()
+            for label in self._cfg.profiles:
+                self.profile_combo.addItem(label, label)
+            idx = self.profile_combo.findData(self._cfg.active_profile)
+            if idx >= 0:
+                self.profile_combo.setCurrentIndex(idx)
+        finally:
+            self.profile_combo.blockSignals(False)
+
+    def _commit_profile_fields(self) -> None:
+        """Write the visible connection widgets back into their profile.
+
+        Called before switching away from a profile so an in-progress edit
+        is not lost — the #75 complaint, from the other direction.
+        """
+        label = getattr(self, "_current_profile_label", None)
+        prof = self._cfg.profiles.get(label)
+        if prof is None:
+            return
+        names = get_provider_names()
+        idx = self.provider_combo.currentIndex()
+        if 0 <= idx < len(names):
+            prof.name = names[idx]
+        prof.base_url = self.base_url_edit.text()
+        prof.api_key = self.api_key_edit.text()
+        prof.model = self.model_edit.text()
+
+    def _show_profile(self, label: str) -> None:
+        """Populate the connection widgets from a profile."""
+        prof = self._cfg.profiles[label]
+        self._current_profile_label = label
+        names = get_provider_names()
+        try:
+            idx = names.index(prof.name)
+        except ValueError:
+            idx = 0
+        # Programmatic index moves must not run _on_provider_changed —
+        # that handler exists to apply a preset on a *user* switch, and
+        # firing it here would overwrite the profile's saved URL (#75).
+        self.provider_combo.blockSignals(True)
+        try:
+            self.provider_combo.setCurrentIndex(idx)
+        finally:
+            self.provider_combo.blockSignals(False)
+        self.api_key_edit.setText(prof.api_key)
+        self.base_url_edit.setText(prof.base_url)
+        self.model_edit.setText(prof.model)
+        self._load_model_params_table(prof.model, self._cfg)
+
+    def _on_profile_changed(self, index):
+        label = self.profile_combo.itemData(index)
+        if not label or label == getattr(self, "_current_profile_label", None):
+            return
+        self._commit_profile_fields()
+        self._cfg.active_profile = label
+        self._show_profile(label)
+
+    def _on_profile_add(self):
+        base = translate("SettingsDialog", "New profile")
+        label, n = base, 2
+        while label in self._cfg.profiles:
+            label, n = f"{base} {n}", n + 1
+        self._commit_profile_fields()
+        self._cfg.profiles[label] = ProviderConfig()
+        self._cfg.active_profile = label
+        self._refresh_profile_combo()
+        self._show_profile(label)
+
+    def _on_profile_rename(self):
+        old = self._current_profile_label
+        new, ok = QInputDialog.getText(
+            self, translate("SettingsDialog", "Rename profile"),
+            translate("SettingsDialog", "Name:"), QLineEdit.Normal, old)
+        if not ok:
+            return
+        try:
+            self._rename_profile(old, new)
+        except ValueError as e:
+            QMessageBox.warning(
+                self, translate("SettingsDialog", "Rename profile"), str(e))
+            return
+        self._current_profile_label = new.strip()
+        self._refresh_profile_combo()
+
+    def _on_profile_delete(self):
+        label = self._current_profile_label
+        if QMessageBox.question(
+                self, translate("SettingsDialog", "Delete profile"),
+                translate("SettingsDialog",
+                          "Delete profile '{}'?").format(label)) \
+                != QMessageBox.Yes:
+            return
+        try:
+            self._delete_profile(label)
+        except ValueError as e:
+            QMessageBox.warning(
+                self, translate("SettingsDialog", "Delete profile"), str(e))
+            return
+        self._refresh_profile_combo()
+        self._show_profile(self._cfg.active_profile)
+
     def _on_provider_changed(self, index):
         """Update base URL, model, and default params when provider changes."""
         names = get_provider_names()
@@ -1030,6 +1190,11 @@ class SettingsDialog(QDialog):
             rerank_defaults = preset.get("default_rerank", {})
             if rerank_defaults and self._rerank_at_factory_defaults():
                 self._apply_rerank_defaults(rerank_defaults)
+
+            # A vendor switch is an explicit "point this profile
+            # elsewhere", so record it. Only a user-driven change reaches
+            # here: programmatic index moves are wrapped in blockSignals.
+            self._commit_profile_fields()
 
     def _rerank_at_factory_defaults(self) -> bool:
         """True if the rerank UI matches AppConfig's factory defaults."""
