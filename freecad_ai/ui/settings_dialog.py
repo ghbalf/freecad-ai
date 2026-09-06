@@ -1606,6 +1606,25 @@ class SettingsDialog(QDialog):
 
         self.accept()
 
+    @staticmethod
+    def _probe_running_text(label: str) -> str:
+        """Status text while a probe runs, naming the profile under test.
+
+        Both probes routinely test a profile that is not the active one —
+        Test Connection tests whatever is on screen, Test Reranker follows
+        the rerank utility dropdown — so the row has to say which.
+        """
+        if not label:
+            return translate("SettingsDialog", "Testing...")
+        return translate("SettingsDialog", 'Testing "{}"...').format(label)
+
+    @staticmethod
+    def _probe_result_text(label: str, message: str) -> str:
+        """Prefix a finished probe's message with the profile it tested."""
+        if not label:
+            return message
+        return '"{}": {}'.format(label, message)
+
     def _test_reranker(self):
         """Send a small probe prompt to the reranker LLM using its resolved
         profile — the rerank utility dropdown's selection, falling back to
@@ -1626,8 +1645,12 @@ class SettingsDialog(QDialog):
         # Read the dropdown's live selection, not self._utility_profiles —
         # that mapping is only written back into it on Save.
         label = self.utility_combos["rerank"].currentData() or ""
-        profile = self._profiles.get(label) or self._profiles.get(
-            self._active_profile)
+        if label not in self._profiles:
+            label = self._active_profile
+        profile = self._profiles.get(label)
+        # Captured now, so switching profiles mid-probe cannot relabel the
+        # result that comes back.
+        self._rerank_test_profile_label = label
         if profile is None:
             self._rerank_test_status.setText(translate(
                 "SettingsDialog", "No profile configured"))
@@ -1643,8 +1666,8 @@ class SettingsDialog(QDialog):
         model_params = resolve_params(self._cfg, profile)
 
         self._rerank_test_btn.setEnabled(False)
-        self._rerank_test_status.setText(translate(
-            "SettingsDialog", "Testing..."))
+        self._rerank_test_status.setText(
+            self._probe_running_text(label))
         self._rerank_test_status.setStyleSheet("color: #666;")
 
         self._rerank_test_thread = _TestRerankerThread(
@@ -1657,13 +1680,14 @@ class SettingsDialog(QDialog):
     def _on_rerank_test_finished(self, success: bool, message: str):
         """Render the reranker test outcome in the status label."""
         self._rerank_test_btn.setEnabled(True)
+        label = getattr(self, "_rerank_test_profile_label", "")
         if success:
-            self._rerank_test_status.setText(
-                translate("SettingsDialog", "OK") + " — " + message)
+            self._rerank_test_status.setText(self._probe_result_text(
+                label, translate("SettingsDialog", "OK") + " — " + message))
             self._rerank_test_status.setStyleSheet("color: #2e7d32;")
         else:
-            self._rerank_test_status.setText(
-                translate("SettingsDialog", "Error") + ": " + message)
+            self._rerank_test_status.setText(self._probe_result_text(
+                label, translate("SettingsDialog", "Error") + ": " + message))
             self._rerank_test_status.setStyleSheet("color: #c62828;")
 
     def _test_connection(self):
@@ -1692,7 +1716,11 @@ class SettingsDialog(QDialog):
         self.test_btn.setEnabled(False)
         self.save_btn.setEnabled(False)
         self.cancel_btn.setEnabled(False)
-        self.test_status.setText(translate("SettingsDialog", "Testing..."))
+        # Captured now, so switching profiles mid-probe cannot relabel the
+        # result that comes back.
+        self._test_profile_label = self._current_profile_label
+        self.test_status.setText(
+            self._probe_running_text(self._test_profile_label))
         self.test_status.setStyleSheet("color: #666;")
 
         self._test_thread = _TestConnectionThread(
@@ -1705,16 +1733,18 @@ class SettingsDialog(QDialog):
 
     def _on_test_finished(self, success, message):
         """Handle test connection result."""
+        label = getattr(self, "_test_profile_label", "")
         if success:
             # Keep buttons disabled — vision probe is still running
-            self.test_status.setText(message)
+            self.test_status.setText(self._probe_result_text(label, message))
             self.test_status.setStyleSheet("color: #2e7d32;")
         else:
             # No vision probe on failure — re-enable buttons now
             self.test_btn.setEnabled(True)
             self.save_btn.setEnabled(True)
             self.cancel_btn.setEnabled(True)
-            self.test_status.setText(translate("SettingsDialog", "Failed: ") + message)
+            self.test_status.setText(self._probe_result_text(
+                label, translate("SettingsDialog", "Failed: ") + message))
             self.test_status.setStyleSheet("color: #c62828;")
 
     def _on_vision_probed(self, supports_vision: bool):

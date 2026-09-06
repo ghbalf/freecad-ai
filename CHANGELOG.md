@@ -55,6 +55,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The reranker's **Test reranker** button now probes whichever profile
   reranking is set to (or the active profile, if left on inherit), instead
   of its own four fields.
+- **Test Connection** and **Test Reranker** now name the profile they
+  probed. Both deliberately test a profile that need not be the active one
+  — Test Connection tests whichever profile is open in the dialog, so you
+  can verify a new one before switching chat to it, and Test Reranker
+  follows the tool-reranking dropdown — and the status line previously gave
+  no way to tell that apart from a failure of the profile you chat with.
+  It now reads `Testing "ollama-local"...`, then
+  `"ollama-local": Connected! ...` or `"ollama-local": Failed: ...`. The
+  name is captured when the probe starts, so switching profiles while one
+  is in flight cannot mislabel the result.
 
 ### Fixed
 
