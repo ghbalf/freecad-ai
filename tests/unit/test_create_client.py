@@ -182,3 +182,37 @@ class TestResolveProfile:
         cfg = _cfg()
         cfg.utility_profiles["skill_eval"] = "local"
         assert resolve_profile(cfg, "skill_eval") is cfg.profiles["local"]
+
+
+class TestRerankerJobSettings:
+    def test_reranker_settings_survive_the_move(self):
+        """The old builder pinned max_tokens=1024, thinking off, and
+        temperature from params defaulting to 0.0. Reranking is a
+        classification job; those must not drift to the chat values."""
+        cfg = _cfg()
+        cfg.max_tokens = 8192
+        cfg.thinking = "extended"
+        cfg.utility_profiles["rerank"] = "local"
+        cfg.profiles["local"].params = {"temperature": 0.1, "top_k": 20}
+        params = dict(cfg.model_params.get("qwen3:8b", {}))
+        params.update(cfg.profiles["local"].params)
+        client = create_client(cfg, "rerank", max_tokens=1024,
+                               temperature=params.get("temperature", 0.0),
+                               thinking="off")
+        assert client.max_tokens == 1024
+        assert client.thinking == "off"
+        assert client.temperature == 0.1
+        assert client.model_params == {"temperature": 0.1, "top_k": 20}
+
+
+class TestResolveParams:
+    def test_returns_a_fresh_dict_not_an_alias(self):
+        from freecad_ai.llm.client import resolve_params
+        cfg = _cfg()
+        cfg.model_params = {"qwen3:8b": {"temperature": 0.5}}
+        profile = cfg.profiles["local"]
+        result = resolve_params(cfg, profile)
+        result["temperature"] = 999
+        result["new_key"] = "poison"
+        assert cfg.model_params["qwen3:8b"] == {"temperature": 0.5}
+        assert profile.params == {"top_k": 40}

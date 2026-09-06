@@ -910,6 +910,18 @@ def resolve_profile(cfg, utility: str | None = None):
     return cfg.provider
 
 
+def resolve_params(cfg, profile) -> dict:
+    """Merge global per-model defaults with a profile's own params.
+
+    ``cfg.model_params`` holds defaults keyed by model name; the profile
+    layers on top, so a profile states only what it changes. Returns a
+    fresh dict — callers and the shared config entry must never alias.
+    """
+    params = dict(cfg.model_params.get(profile.model, {}))
+    params.update(profile.params)
+    return params
+
+
 def create_client(cfg=None, utility: str | None = None, *,
                   max_tokens: int | None = None,
                   temperature: float | None = None,
@@ -932,8 +944,7 @@ def create_client(cfg=None, utility: str | None = None, *,
         cfg = get_config()
     profile = resolve_profile(cfg, utility)
 
-    params = dict(cfg.model_params.get(profile.model, {}))
-    params.update(profile.params)
+    params = resolve_params(cfg, profile)
 
     return LLMClient(
         provider_name=profile.name,

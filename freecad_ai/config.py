@@ -633,8 +633,8 @@ class AppConfig:
             cfg.provider_keys[main.name] = main.api_key
 
         # The old reranker override inherited each empty field from the
-        # main provider (chat_widget._build_rerank_llm_client). Bake those
-        # `or` fallbacks into a standalone profile.
+        # main provider (the pre-profiles reranker builder in chat_widget).
+        # Bake those `or` fallbacks into a standalone profile.
         if data.get("rerank_llm_model"):
             rerank_params = data.get("rerank_params")
             if not isinstance(rerank_params, dict):

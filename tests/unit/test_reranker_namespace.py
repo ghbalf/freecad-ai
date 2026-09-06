@@ -11,8 +11,10 @@ The fix gives the reranker its own ``cfg.rerank_params`` field:
   - inherit mode (override field empty) → reranker uses the main model's
     params (``cfg.model_params[provider.model]``), and saves nothing of its own.
 
-These tests pin both the runtime read path (``_build_rerank_llm_client``) and the
-persistence rule (``SettingsDialog._resolve_rerank_params``).
+Profiles retire this class of bug structurally: params are a field of a
+profile, so there is no shared namespace for the reranker to reach into.
+These tests now pin that the reranker reads its own profile's params and
+that an inheriting reranker gets the active profile's.
 """
 
 import pytest
@@ -27,57 +29,45 @@ except ImportError:
     except ImportError:
         pytest.skip("PySide6/PySide2 not available", allow_module_level=True)
 
-from freecad_ai.config import AppConfig  # noqa: E402
-from freecad_ai.ui.chat_widget import _build_rerank_llm_client  # noqa: E402
-from freecad_ai.ui.settings_dialog import SettingsDialog  # noqa: E402
+from freecad_ai.config import AppConfig, ProviderConfig  # noqa: E402
+from freecad_ai.llm.client import create_client  # noqa: E402
 
 
 def _cfg_with_params():
     cfg = AppConfig()
-    cfg.provider.name = "ollama"
-    cfg.provider.base_url = "http://localhost:11434/v1"
-    cfg.provider.model = "main-model"
-    cfg.model_params = {"main-model": {"temperature": 0.8, "top_p": 0.9}}
-    cfg.rerank_params = {"temperature": 0.1, "top_k": 20}
+    cfg.profiles = {
+        "main": ProviderConfig(name="ollama",
+                               base_url="http://localhost:11434/v1",
+                               model="main-model",
+                               params={"temperature": 0.8, "top_p": 0.9}),
+    }
+    cfg.active_profile = "main"
     return cfg
 
 
-class TestBuildRerankClientReadPath:
-    def test_override_uses_rerank_params(self):
-        """Distinct reranker model → params come from cfg.rerank_params,
-        NOT from cfg.model_params (which has nothing for this model)."""
+class TestRerankProfileParams:
+    def test_override_uses_its_own_profile_params(self):
         cfg = _cfg_with_params()
-        cfg.rerank_llm_model = "rr-model"
-        client = _build_rerank_llm_client(cfg)
+        cfg.profiles["rr"] = ProviderConfig(
+            name="ollama", base_url="http://localhost:11434/v1",
+            model="rr-model", params={"temperature": 0.1, "top_k": 20})
+        cfg.utility_profiles["rerank"] = "rr"
+        client = create_client(cfg, "rerank")
         assert client.model == "rr-model"
         assert client.model_params == {"temperature": 0.1, "top_k": 20}
 
-    def test_inherit_uses_main_model_params(self):
-        """Empty override → reranker inherits the main model and its params."""
+    def test_inherit_uses_the_active_profile(self):
         cfg = _cfg_with_params()
-        cfg.rerank_llm_model = ""
-        client = _build_rerank_llm_client(cfg)
+        client = create_client(cfg, "rerank")
         assert client.model == "main-model"
         assert client.model_params == {"temperature": 0.8, "top_p": 0.9}
 
-
-class TestResolveRerankParamsWriteRule:
-    def test_override_persists_table(self):
-        """With an override model set, the reranker table is persisted."""
-        out = SettingsDialog._resolve_rerank_params(
-            "rr-model", {"temperature": 0.1, "top_k": 20})
-        assert out == {"temperature": 0.1, "top_k": 20}
-
-    def test_inherit_persists_nothing(self):
-        """Empty override → reranker stores nothing; the main Model
-        Parameters table is the sole owner of the main model's slot. This is
-        the exact guard that fixes the issue #30 clobber."""
-        out = SettingsDialog._resolve_rerank_params(
-            "", {"temperature": 0.1, "top_k": 20})
-        assert out == {}
-
-    def test_whitespace_override_treated_as_inherit(self):
-        """A blank-but-spaces override field is still inherit mode."""
-        out = SettingsDialog._resolve_rerank_params(
-            "   ", {"temperature": 0.1})
-        assert out == {}
+    def test_reranker_params_cannot_reach_the_main_profile(self):
+        """The #30 regression, now impossible by construction."""
+        cfg = _cfg_with_params()
+        cfg.profiles["rr"] = ProviderConfig(
+            name="ollama", base_url="http://localhost:11434/v1",
+            model="main-model", params={"temperature": 0.1})
+        cfg.utility_profiles["rerank"] = "rr"
+        create_client(cfg, "rerank")
+        assert cfg.profiles["main"].params == {"temperature": 0.8, "top_p": 0.9}
