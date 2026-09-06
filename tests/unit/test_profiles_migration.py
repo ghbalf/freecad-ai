@@ -173,9 +173,6 @@ class TestEdgeCases:
             AppConfig.from_dict({"profiles": {"a": "nope"}})
 
 
-from dataclasses import asdict  # noqa: E402
-
-
 class TestLegacyMirrorOnSave:
     def test_save_still_emits_a_provider_key(self):
         """Downgrade safety: an older version reads `provider` and finds
