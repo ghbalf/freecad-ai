@@ -574,29 +574,57 @@ class AppConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> "AppConfig":
-        provider_data = data.pop("provider", {})
-        # Filter out unknown keys to avoid TypeError
-        known = {f.name for f in cls.__dataclass_fields__.values()}
+        data = dict(data)  # never mutate the caller's parsed JSON
+        legacy_provider = data.pop("provider", None)
+        if not isinstance(legacy_provider, dict):
+            # Malformed legacy "provider" (e.g. a bad config.json hand-edit):
+            # treat as absent rather than raising deep in the migration path.
+            legacy_provider = None
+
+        raw_profiles = data.pop("profiles", None)
+        profiles = {
+            label: ProviderConfig(**p)
+            for label, p in (raw_profiles or {}).items()
+        }
+
+        known = {f.name for f in cls.__dataclass_fields__.values()} - {"profiles"}
         filtered = {k: v for k, v in data.items() if k in known}
+        cfg = cls(profiles=profiles, **filtered)
 
-        # Convert profiles dict values to ProviderConfig if needed
-        if "profiles" in filtered and isinstance(filtered["profiles"], dict):
-            profiles_dict = filtered["profiles"]
-            converted = {}
-            for label, profile_data in profiles_dict.items():
-                if isinstance(profile_data, dict):
-                    converted[label] = ProviderConfig(**profile_data)
-                else:
-                    converted[label] = profile_data
-            filtered["profiles"] = converted
-
-        cfg = cls(**filtered)
-        # Minimal migration: if old JSON has "provider", restore it as the active profile
-        if provider_data:
-            provider = ProviderConfig(**provider_data)
-            cfg.profiles = {provider.name: provider}
-            cfg.active_profile = provider.name
+        if not raw_profiles:
+            cls._migrate_flat_provider(cfg, legacy_provider or {}, data)
         return cfg
+
+    @staticmethod
+    def _migrate_flat_provider(cfg: "AppConfig", legacy: dict, data: dict) -> None:
+        """Turn a pre-profiles config into one or two profiles.
+
+        Only runs when the JSON carries no ``profiles`` key, so it is a
+        one-time upgrade rather than something that fights an already
+        migrated file on every load.
+        """
+        main = ProviderConfig(**{
+            k: v for k, v in legacy.items()
+            if k in {"name", "api_key", "base_url", "model"}
+        })
+        main.params = dict(cfg.model_params.get(main.model, {}))
+        cfg.profiles = {main.name: main}
+        cfg.active_profile = main.name
+        if main.api_key:
+            cfg.provider_keys[main.name] = main.api_key
+
+        # The old reranker override inherited each empty field from the
+        # main provider (chat_widget._build_rerank_llm_client). Bake those
+        # `or` fallbacks into a standalone profile.
+        if data.get("rerank_llm_model"):
+            cfg.profiles["rerank"] = ProviderConfig(
+                name=data.get("rerank_llm_provider_name") or main.name,
+                base_url=data.get("rerank_llm_base_url") or main.base_url,
+                api_key=data.get("rerank_llm_api_key") or main.api_key,
+                model=data["rerank_llm_model"],
+                params=dict(data.get("rerank_params") or {}),
+            )
+            cfg.utility_profiles["rerank"] = "rerank"
 
 
 def _ensure_dirs():
