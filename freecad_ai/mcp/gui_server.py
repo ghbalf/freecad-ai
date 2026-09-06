@@ -78,11 +78,10 @@ def resolve_allowed_hosts(cfg=None):
     hosts = [h.strip() for h in hosts if h and h.strip()]
     if any(h == "*" for h in hosts):
         raise ValueError(
-            "'*' is not accepted in the MCP allowed-hosts list. Unless a "
-            "bearer token is configured (MCP_AUTH_TOKEN or the AI Settings "
-            "dialog), this allowlist is the only thing keeping a wildcard "
-            "bind from serving arbitrary Python to anything that can reach "
-            "it. Name the concrete hosts clients dial instead.")
+            "'*' is not accepted in the MCP allowed-hosts list. This "
+            "allowlist is the only thing keeping a wildcard bind from "
+            "serving arbitrary Python to anything that can reach it. Name "
+            "the concrete hosts clients dial instead.")
     return hosts or None
 
 
@@ -94,11 +93,27 @@ def resolve_auth_token(cfg=None):
     empty string from either source means "no token configured", not "an
     empty token is required": the transport must never be handed a token it
     would enforce against a header nobody can send.
+
+    Raises ValueError on a non-ASCII token: ``hmac.compare_digest`` (used to
+    check it on every request) raises ``TypeError`` on a non-ASCII operand,
+    so a token that cannot be compared must fail loudly here, at start-up,
+    rather than on every request the server ever receives.
     """
     token = os.environ.get("MCP_AUTH_TOKEN")
     if not token and cfg is not None:
         token = getattr(cfg, "mcp_server_auth_token", "")
-    return token or None
+    token = token or None
+    if token is not None:
+        try:
+            token.encode("ascii")
+        except UnicodeEncodeError:
+            raise ValueError(
+                "The MCP bearer token must be ASCII: it is compared with "
+                "hmac.compare_digest() on every request, which raises "
+                "TypeError on a non-ASCII operand. Use the Settings "
+                "dialog's Generate button, or set MCP_AUTH_TOKEN to an "
+                "ASCII value.")
+    return token
 
 
 def _default_backend():

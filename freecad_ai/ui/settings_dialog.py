@@ -740,7 +740,10 @@ class SettingsDialog(QDialog):
             "Listing hosts is what makes a non-loopback bind reachable, so "
             "name only the addresses clients actually dial. \"*\" is not "
             "accepted \u2014 without a token, this list is the only thing "
-            "limiting who can reach the server."))
+            "limiting who can reach the server.\n\n"
+            "Host, port, allowed hosts, and the bearer token only take "
+            "effect the next time the MCP server starts. Saving here does "
+            "not reconfigure one that is already running."))
         mcp_server_warning.setWordWrap(True)
         mcp_layout.addWidget(mcp_server_warning)
 

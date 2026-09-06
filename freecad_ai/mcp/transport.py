@@ -607,16 +607,44 @@ class HTTPServerTransport:
                           authorization_header=None) -> bool:
         """Authorize a request by Host (DNS-rebinding), Origin (CSRF), and,
         when configured, a bearer token (access control, #59)."""
+        return self._classify_request(
+            host_header, origin_header, authorization_header) == "ok"
+
+    def _classify_request(self, host_header, origin_header,
+                           authorization_header=None) -> str:
+        """Like ``_request_allowed``, but distinguishes *why* a request is
+        denied so the HTTP handler can answer 403 vs 401.
+
+        "denied": Host/Origin rejected the request (DNS-rebinding/CSRF),
+        meaning this caller is not allowed here at all, regardless of
+        credentials. "unauthorized": a bearer token is configured and the
+        one presented is missing or wrong, meaning the caller may retry
+        with a credential. "ok": request may proceed.
+        """
         if self._hostname_of(host_header) not in self._allowed_hosts:
-            return False
+            return "denied"
         if origin_header is not None and origin_header not in self._allowed_origins:
+            return "denied"
+        if self._auth_token is not None and not self._token_matches(authorization_header):
+            return "unauthorized"
+        return "ok"
+
+    def _token_matches(self, authorization_header) -> bool:
+        """Constant-time compare of the presented bearer token.
+
+        ``hmac.compare_digest`` raises ``TypeError`` when either ``str``
+        argument contains a non-ASCII character. HTTP headers are decoded
+        latin-1 by ``http.client.parse_headers``, so any byte >= 0x80 in
+        ``Authorization`` produces exactly that: an unauthenticated caller
+        could otherwise crash the handler thread on every request, with no
+        response sent at all.
+        """
+        try:
+            return hmac.compare_digest(
+                self._bearer_token_of(authorization_header),
+                self._auth_token)
+        except TypeError:
             return False
-        if self._auth_token is not None:
-            if not hmac.compare_digest(
-                    self._bearer_token_of(authorization_header),
-                    self._auth_token):
-                return False
-        return True
 
     @staticmethod
     def _bearer_token_of(authorization_header) -> str:
@@ -736,11 +764,19 @@ class HTTPServerTransport:
                 return self.path.split("?")[0].rstrip("/")
 
             def _authorized(self):
-                if transport._request_allowed(
+                status = transport._classify_request(
                     self.headers.get("Host"), self.headers.get("Origin"),
-                    self.headers.get("Authorization")
-                ):
+                    self.headers.get("Authorization"))
+                if status == "ok":
                     return True
+                if status == "unauthorized":
+                    # Missing/wrong bearer token: distinct from a Host/Origin
+                    # rejection so a client can tell "present a credential"
+                    # from "you are not allowed here at all" (#59 review).
+                    self.send_response(401)
+                    self.send_header("WWW-Authenticate", "Bearer")
+                    self.end_headers()
+                    return False
                 self.send_error(403)
                 return False
 

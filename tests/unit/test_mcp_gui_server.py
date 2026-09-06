@@ -170,6 +170,22 @@ def test_auth_token_prefers_env_over_config(monkeypatch):
     assert resolve_auth_token(cfg) == "from-env"
 
 
+def test_non_ascii_auth_token_from_config_raises_at_resolve_time(monkeypatch):
+    # hmac.compare_digest() raises TypeError on a non-ASCII str operand, so a
+    # token that cannot be compared must fail loudly here rather than crash
+    # the handler thread on every request the server ever receives.
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    cfg = type("Cfg", (), {"mcp_server_auth_token": "tökén"})()
+    with pytest.raises(ValueError):
+        resolve_auth_token(cfg)
+
+
+def test_non_ascii_auth_token_from_env_raises_at_resolve_time(monkeypatch):
+    monkeypatch.setenv("MCP_AUTH_TOKEN", "tökén")
+    with pytest.raises(ValueError):
+        resolve_auth_token(None)
+
+
 # --- auth token reaches the transport ---------------------------------------
 
 def test_start_with_an_auth_token_requires_it_on_the_transport():

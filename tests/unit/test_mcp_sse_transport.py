@@ -213,6 +213,28 @@ def test_empty_string_token_disables_auth_rather_than_requiring_an_empty_one():
     assert transport._request_allowed("127.0.0.1:3000", None, None) is True
 
 
+def test_non_ascii_authorization_header_is_rejected_not_crashed():
+    # hmac.compare_digest() raises TypeError on a non-ASCII str operand, and
+    # HTTP headers are decoded latin-1, so any byte >= 0x80 in Authorization
+    # used to reach compare_digest() and crash the handler thread with no
+    # response sent at all rather than a clean rejection.
+    transport = SSEServerTransport(auth_token="s3cr3t")
+    assert transport._request_allowed(
+        "127.0.0.1:3000", None, "Bearer t\xf6k\xe9n") is False
+
+
+def test_classify_request_distinguishes_denied_from_unauthorized():
+    # Host/Origin failing is "not allowed here at all" (403), while a
+    # missing or wrong token is "present a credential" (401); the HTTP
+    # handler needs to tell these apart even though _request_allowed
+    # collapses both to False (#59 review).
+    transport = SSEServerTransport(auth_token="s3cr3t")
+    assert transport._classify_request("evil.example:3000", None, "Bearer s3cr3t") == "denied"
+    assert transport._classify_request("127.0.0.1:3000", None, None) == "unauthorized"
+    assert transport._classify_request("127.0.0.1:3000", None, "Bearer wrong") == "unauthorized"
+    assert transport._classify_request("127.0.0.1:3000", None, "Bearer s3cr3t") == "ok"
+
+
 def test_host_and_origin_checks_still_apply_alongside_a_token():
     # The token is an additional gate, not a replacement for the existing
     # DNS-rebinding/CSRF checks.
@@ -279,7 +301,10 @@ def test_live_request_with_a_token_configured_requires_it():
         )
         with pytest.raises(urllib.error.HTTPError) as exc:
             urllib.request.urlopen(no_token, timeout=5)
-        assert exc.value.code == 403
+        # 401, not 403: a missing/wrong token is "present a credential", a
+        # Host/Origin rejection is "not allowed here at all" (#59 review).
+        assert exc.value.code == 401
+        assert exc.value.headers.get("WWW-Authenticate") == "Bearer"
 
         wrong_token = urllib.request.Request(
             f"http://127.0.0.1:{port}/messages",
@@ -290,7 +315,22 @@ def test_live_request_with_a_token_configured_requires_it():
         )
         with pytest.raises(urllib.error.HTTPError) as exc:
             urllib.request.urlopen(wrong_token, timeout=5)
-        assert exc.value.code == 403
+        assert exc.value.code == 401
+        assert exc.value.headers.get("WWW-Authenticate") == "Bearer"
+
+        non_ascii_token = urllib.request.Request(
+            f"http://127.0.0.1:{port}/messages",
+            data=b'{"jsonrpc":"2.0","id":1,"method":"ping"}',
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer t\xf6k\xe9n"},
+            method="POST",
+        )
+        # A non-ASCII Authorization header used to crash the handler thread
+        # (hmac.compare_digest raises TypeError on non-ASCII str operands,
+        # and headers are decoded latin-1) rather than answer at all.
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(non_ascii_token, timeout=5)
+        assert exc.value.code == 401
 
         right_token = urllib.request.Request(
             f"http://127.0.0.1:{port}/messages",
