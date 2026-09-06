@@ -11,6 +11,7 @@ Provides a GUI for configuring:
   - Test connection button
 """
 
+import copy
 import os
 import secrets
 
@@ -48,18 +49,41 @@ from ..llm.providers import get_provider_names
 
 
 class _TestConnectionThread(QThread):
-    """Background thread for testing LLM connection and detecting capabilities."""
+    """Background thread for testing LLM connection and detecting capabilities.
+
+    Takes provider/URL/key/model/model_params as arguments rather than
+    reading config — so the user can test before saving, and so a profile
+    that isn't cfg.active_profile can't have its values smuggled into the
+    active one through the singleton (see _TestRerankerThread).
+    """
     finished = Signal(bool, str)        # success, message
     vision_result = Signal(bool)        # vision probe result
     capabilities_result = Signal(dict)  # full caps dict (Ollama: vision/tools/thinking)
 
-    def __init__(self, parent=None):
+    def __init__(self, provider_name, base_url, api_key, model,
+                 model_params, parent=None):
         super().__init__(parent)
+        self._provider = provider_name
+        self._base_url = base_url
+        self._api_key = api_key
+        self._model = model
+        self._model_params = dict(model_params or {})
 
     def run(self):
         try:
-            from ..llm.client import create_client_from_config
-            client = create_client_from_config()
+            from ..config import get_config
+            from ..llm.client import LLMClient
+            cfg = get_config()
+            client = LLMClient(
+                provider_name=self._provider,
+                base_url=self._base_url,
+                api_key=self._api_key,
+                model=self._model,
+                max_tokens=cfg.max_tokens,
+                temperature=cfg.temperature,
+                thinking=cfg.thinking,
+                model_params=self._model_params,
+            )
             response = client.test_connection()
             self.finished.emit(True, translate("SettingsDialog", "Connected! Response: ") + response)
 
@@ -923,8 +947,16 @@ class SettingsDialog(QDialog):
         """Populate fields from the current config."""
         cfg = self._cfg = get_config()
 
+        # Profile edits stay dialog-local until OK. cfg is the live singleton,
+        # so mutating its profiles in place makes Cancel a no-op — and an
+        # unrelated save_current_config() (the vision probe calls one) would
+        # flush a discarded edit to disk.
+        self._profiles = copy.deepcopy(cfg.profiles)
+        self._active_profile = cfg.active_profile
+        self._utility_profiles = dict(cfg.utility_profiles)
+
         self._refresh_profile_combo()
-        self._show_profile(cfg.active_profile)
+        self._show_profile(self._active_profile)
 
         self.max_tokens_spin.setValue(cfg.max_tokens)
         self.context_window_spin.setValue(cfg.context_window)
@@ -1026,42 +1058,42 @@ class SettingsDialog(QDialog):
             raise ValueError("Profile name cannot be empty")
         if old == new:
             return
-        if new in self._cfg.profiles:
+        if new in self._profiles:
             raise ValueError(f"A profile named {new!r} already exists")
-        if old not in self._cfg.profiles:
+        if old not in self._profiles:
             raise ValueError(f"No profile named {old!r}")
         # Rebuild in place so the combo's order does not shuffle.
-        self._cfg.profiles = {
+        self._profiles = {
             (new if label == old else label): prof
-            for label, prof in self._cfg.profiles.items()
+            for label, prof in self._profiles.items()
         }
-        if self._cfg.active_profile == old:
-            self._cfg.active_profile = new
-        for utility, label in list(self._cfg.utility_profiles.items()):
+        if self._active_profile == old:
+            self._active_profile = new
+        for utility, label in list(self._utility_profiles.items()):
             if label == old:
-                self._cfg.utility_profiles[utility] = new
+                self._utility_profiles[utility] = new
 
     def _delete_profile(self, label: str) -> None:
         """Remove a profile, leaving nothing pointing at it."""
-        if label not in self._cfg.profiles:
+        if label not in self._profiles:
             raise ValueError(f"No profile named {label!r}")
-        if len(self._cfg.profiles) == 1:
+        if len(self._profiles) == 1:
             raise ValueError("At least one profile is required")
-        del self._cfg.profiles[label]
-        if self._cfg.active_profile == label:
-            self._cfg.active_profile = next(iter(self._cfg.profiles))
-        for utility, mapped in list(self._cfg.utility_profiles.items()):
+        del self._profiles[label]
+        if self._active_profile == label:
+            self._active_profile = next(iter(self._profiles))
+        for utility, mapped in list(self._utility_profiles.items()):
             if mapped == label:
-                self._cfg.utility_profiles[utility] = ""
+                self._utility_profiles[utility] = ""
 
     def _refresh_profile_combo(self) -> None:
         """Repopulate the profile combo without firing its handler."""
         self.profile_combo.blockSignals(True)
         try:
             self.profile_combo.clear()
-            for label in self._cfg.profiles:
+            for label in self._profiles:
                 self.profile_combo.addItem(label, label)
-            idx = self.profile_combo.findData(self._cfg.active_profile)
+            idx = self.profile_combo.findData(self._active_profile)
             if idx >= 0:
                 self.profile_combo.setCurrentIndex(idx)
         finally:
@@ -1074,7 +1106,7 @@ class SettingsDialog(QDialog):
         is not lost — the #75 complaint, from the other direction.
         """
         label = getattr(self, "_current_profile_label", None)
-        prof = self._cfg.profiles.get(label)
+        prof = self._profiles.get(label)
         if prof is None:
             return
         names = get_provider_names()
@@ -1087,7 +1119,7 @@ class SettingsDialog(QDialog):
 
     def _show_profile(self, label: str) -> None:
         """Populate the connection widgets from a profile."""
-        prof = self._cfg.profiles[label]
+        prof = self._profiles[label]
         self._current_profile_label = label
         names = get_provider_names()
         try:
@@ -1112,17 +1144,17 @@ class SettingsDialog(QDialog):
         if not label or label == getattr(self, "_current_profile_label", None):
             return
         self._commit_profile_fields()
-        self._cfg.active_profile = label
+        self._active_profile = label
         self._show_profile(label)
 
     def _on_profile_add(self):
         base = translate("SettingsDialog", "New profile")
         label, n = base, 2
-        while label in self._cfg.profiles:
+        while label in self._profiles:
             label, n = f"{base} {n}", n + 1
         self._commit_profile_fields()
-        self._cfg.profiles[label] = ProviderConfig()
-        self._cfg.active_profile = label
+        self._profiles[label] = ProviderConfig()
+        self._active_profile = label
         self._refresh_profile_combo()
         self._show_profile(label)
 
@@ -1157,7 +1189,7 @@ class SettingsDialog(QDialog):
                 self, translate("SettingsDialog", "Delete profile"), str(e))
             return
         self._refresh_profile_combo()
-        self._show_profile(self._cfg.active_profile)
+        self._show_profile(self._active_profile)
 
     def _on_provider_changed(self, index):
         """Update base URL, model, and default params when provider changes."""
@@ -1356,12 +1388,18 @@ class SettingsDialog(QDialog):
     def _save(self):
         """Save settings to config and close."""
         cfg = get_config()
-        names = get_provider_names()
-        idx = self.provider_combo.currentIndex()
-        cfg.provider.name = names[idx] if 0 <= idx < len(names) else "anthropic"
-        cfg.provider.api_key = self.api_key_edit.text()
-        cfg.provider.base_url = self.base_url_edit.text()
-        cfg.provider.model = self.model_edit.text()
+
+        # Profile edits (add/rename/delete/field changes) have lived in the
+        # dialog-local working copy since _load_from_config. OK is the only
+        # point where they land in the real config — commit the visible
+        # widgets into the currently-shown profile first, then write the
+        # whole working copy back. cfg.provider (a property resolving
+        # profiles[active_profile]) then reads correctly for everything
+        # below, with no separate provider.* writes needed.
+        self._commit_profile_fields()
+        cfg.profiles = copy.deepcopy(self._profiles)
+        cfg.active_profile = self._active_profile
+
         cfg.max_tokens = self.max_tokens_spin.value()
         cfg.context_window = self.context_window_spin.value()
         cfg.max_tool_turns = self.max_tool_turns_spin.value()
@@ -1633,13 +1671,28 @@ class SettingsDialog(QDialog):
         """Test the LLM connection in a background thread."""
         self._save_temp()
 
+        # Resolve provider/URL/key/model/params from the visible widgets
+        # directly, rather than through cfg — the visible profile may not be
+        # cfg.active_profile (e.g. a profile added but not yet saved), and
+        # writing it into the singleton would smuggle it into the wrong
+        # profile (see _save_temp).
+        names = get_provider_names()
+        idx = self.provider_combo.currentIndex()
+        provider_name = names[idx] if 0 <= idx < len(names) else "anthropic"
+        base_url = self.base_url_edit.text()
+        api_key = self.api_key_edit.text()
+        model = self.model_edit.text()
+        model_params = self._read_model_params_table()
+
         self.test_btn.setEnabled(False)
         self.save_btn.setEnabled(False)
         self.cancel_btn.setEnabled(False)
         self.test_status.setText(translate("SettingsDialog", "Testing..."))
         self.test_status.setStyleSheet("color: #666;")
 
-        self._test_thread = _TestConnectionThread(self)
+        self._test_thread = _TestConnectionThread(
+            provider_name, base_url, api_key, model, model_params, self,
+        )
         self._test_thread.finished.connect(self._on_test_finished)
         self._test_thread.vision_result.connect(self._on_vision_probed)
         self._test_thread.capabilities_result.connect(self._on_capabilities_detected)
@@ -1713,14 +1766,15 @@ class SettingsDialog(QDialog):
                 pass
 
     def _save_temp(self):
-        """Temporarily apply current UI values to config (for test connection)."""
+        """Temporarily apply current UI values to config (for test connection).
+
+        Connection fields (provider/base_url/api_key/model) are deliberately
+        NOT written here — _test_connection reads them straight from the
+        widgets and hands them to _TestConnectionThread, so testing a
+        profile that isn't cfg.active_profile can't leak its values into the
+        active one through this singleton write.
+        """
         cfg = get_config()
-        names = get_provider_names()
-        idx = self.provider_combo.currentIndex()
-        cfg.provider.name = names[idx] if 0 <= idx < len(names) else "anthropic"
-        cfg.provider.api_key = self.api_key_edit.text()
-        cfg.provider.base_url = self.base_url_edit.text()
-        cfg.provider.model = self.model_edit.text()
 
         try:
             cfg.max_tokens = self.max_tokens_spin.value()
