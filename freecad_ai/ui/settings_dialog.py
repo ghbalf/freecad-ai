@@ -236,13 +236,26 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(translate("SettingsDialog", "FreeCAD AI Settings"))
-        self.setMinimumWidth(500)
         self.setMinimumHeight(400)
-        self.resize(540, 700)
         self._test_thread = None
         self._last_default_prompt = ""
         self._cfg = get_config()
         self._build_ui()
+        # Width comes from the built layout, never a constant. The profile
+        # row (combo + New/Rename/Delete) is the widest thing on the form
+        # and its buttons are translated, so a hardcoded width clips the
+        # rightmost one in some locale — which is how a 540 predating that
+        # row came to hide Delete behind a horizontal scrollbar. Must run
+        # after _build_ui(): sizeHint() before it describes an empty dialog.
+        # Height stays fixed; the content is taller than most screens and
+        # is meant to scroll — which is also why the vertical scrollbar is
+        # always there, and why its width has to be added on: sizeHint()
+        # does not reserve room for it, leaving the form overflowing by
+        # exactly one scrollbar and growing a horizontal one to say so.
+        width = self.sizeHint().width() + self.style().pixelMetric(
+            QtWidgets.QStyle.PM_ScrollBarExtent)
+        self.setMinimumWidth(width)
+        self.resize(width, 700)
         self._load_from_config()
 
     def _build_ui(self):
