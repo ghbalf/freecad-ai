@@ -570,7 +570,22 @@ class AppConfig:
         return _provider_supports_tools(self.provider.name)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        """Serialise, including a legacy ``provider`` mirror.
+
+        ``provider`` is a property now, so asdict() skips it. We write it
+        anyway for one release: a user who installs this version and then
+        downgrades gets their connection back instead of a blank dialog.
+        Drop this mirror — and the rerank_llm_*/rerank_params fields —
+        one release after profiles ship.
+        """
+        data = asdict(self)
+        data["provider"] = {
+            "name": self.provider.name,
+            "api_key": self.provider.api_key,
+            "base_url": self.provider.base_url,
+            "model": self.provider.model,
+        }
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "AppConfig":

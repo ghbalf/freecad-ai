@@ -6,7 +6,7 @@ mangles a config a user has been running for months.
 
 import pytest
 
-from freecad_ai.config import AppConfig
+from freecad_ai.config import AppConfig, ProviderConfig
 
 
 def _old_shape(**extra):
@@ -171,3 +171,43 @@ class TestEdgeCases:
         declares it, so a later refactor can't silently change it."""
         with pytest.raises(TypeError):
             AppConfig.from_dict({"profiles": {"a": "nope"}})
+
+
+from dataclasses import asdict  # noqa: E402
+
+
+class TestLegacyMirrorOnSave:
+    def test_save_still_emits_a_provider_key(self):
+        """Downgrade safety: an older version reads `provider` and finds
+        the user's live connection, not an empty dialog."""
+        cfg = AppConfig.from_dict(_old_shape())
+        assert cfg.to_dict()["provider"]["model"] == "qwen3:32b"
+
+    def test_mirror_tracks_the_active_profile(self):
+        cfg = AppConfig.from_dict(_old_shape())
+        cfg.profiles["cloud"] = ProviderConfig(
+            name="anthropic", model="claude-sonnet-4-6")
+        cfg.active_profile = "cloud"
+        assert cfg.to_dict()["provider"]["name"] == "anthropic"
+
+    def test_profiles_are_serialised(self):
+        d = AppConfig.from_dict(_old_shape()).to_dict()
+        assert d["profiles"]["ollama"]["model"] == "qwen3:32b"
+        assert d["active_profile"] == "ollama"
+
+    def test_round_trip_is_stable(self):
+        first = AppConfig.from_dict(_old_shape())
+        second = AppConfig.from_dict(first.to_dict())
+        assert second.active_profile == first.active_profile
+        assert second.provider.model == first.provider.model
+        assert second.provider.params == first.provider.params
+
+    def test_round_trip_preserves_a_rerank_override(self):
+        first = AppConfig.from_dict(_old_shape(
+            rerank_llm_model="gemma3:4b",
+            rerank_params={"temperature": 0.1},
+        ))
+        second = AppConfig.from_dict(first.to_dict())
+        assert second.utility_profiles == {"rerank": "rerank"}
+        assert second.profiles["rerank"].model == "gemma3:4b"
+        assert second.profiles["rerank"].params == {"temperature": 0.1}
