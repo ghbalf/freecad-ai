@@ -17,6 +17,8 @@ These tests now pin that the reranker reads its own profile's params and
 that an inheriting reranker gets the active profile's.
 """
 
+from unittest import mock
+
 import pytest
 
 # settings_dialog/chat_widget import through ui/compat.py which needs PySide.
@@ -31,6 +33,8 @@ except ImportError:
 
 from freecad_ai.config import AppConfig, ProviderConfig  # noqa: E402
 from freecad_ai.llm.client import create_client  # noqa: E402
+from freecad_ai.ui.chat_widget import _run_reranker  # noqa: E402
+from freecad_ai.ui.settings_dialog import SettingsDialog  # noqa: E402
 
 
 def _cfg_with_params():
@@ -71,3 +75,77 @@ class TestRerankProfileParams:
         cfg.utility_profiles["rerank"] = "rr"
         create_client(cfg, "rerank")
         assert cfg.profiles["main"].params == {"temperature": 0.8, "top_p": 0.9}
+
+
+# Covers the legacy override persistence path (SettingsDialog._resolve_rerank_
+# params); goes away when the reranker override widgets do.
+class TestResolveRerankParamsWriteRule:
+    def test_override_persists_table(self):
+        """With an override model set, the reranker table is persisted."""
+        out = SettingsDialog._resolve_rerank_params(
+            "rr-model", {"temperature": 0.1, "top_k": 20})
+        assert out == {"temperature": 0.1, "top_k": 20}
+
+    def test_inherit_persists_nothing(self):
+        """Empty override → reranker stores nothing; the main Model
+        Parameters table is the sole owner of the main model's slot. This is
+        the exact guard that fixes the issue #30 clobber."""
+        out = SettingsDialog._resolve_rerank_params(
+            "", {"temperature": 0.1, "top_k": 20})
+        assert out == {}
+
+    def test_whitespace_override_treated_as_inherit(self):
+        """A blank-but-spaces override field is still inherit mode."""
+        out = SettingsDialog._resolve_rerank_params(
+            "   ", {"temperature": 0.1})
+        assert out == {}
+
+
+def _cfg_for_call_site():
+    cfg = AppConfig()
+    cfg.rerank_method = "llm"
+    cfg.profiles = {
+        "main": ProviderConfig(name="ollama",
+                               base_url="http://localhost:11434/v1",
+                               model="main-model"),
+        "rr": ProviderConfig(name="ollama",
+                             base_url="http://localhost:11434/v1",
+                             model="rr-model",
+                             params={"temperature": 0.1, "top_k": 20}),
+    }
+    cfg.active_profile = "main"
+    cfg.utility_profiles["rerank"] = "rr"
+    return cfg
+
+
+class TestRunRerankerCallSite:
+    """_run_reranker (freecad_ai/ui/chat_widget.py) is the actual call site
+    this task rewrote; nothing else in this file exercises it."""
+
+    def test_call_site_passes_job_settings_and_merged_params(self):
+        cfg = _cfg_for_call_site()
+        pairs = [("tool_a", "does a thing")]
+        with mock.patch("freecad_ai.llm.client.create_client") as mock_create, \
+                mock.patch("freecad_ai.tools.reranker.rerank_tools_llm") as mock_llm:
+            mock_llm.return_value = ["tool_a"]
+            _run_reranker(cfg, pairs, "hello")
+
+        assert mock_create.called
+        _, kwargs = mock_create.call_args
+        assert kwargs["max_tokens"] == 1024
+        assert kwargs["thinking"] == "off"
+        assert kwargs["temperature"] == 0.1
+
+    def test_broken_client_falls_back_to_keyword_reranking(self):
+        cfg = _cfg_for_call_site()
+        pairs = [("tool_a", "does a thing")]
+        with mock.patch("freecad_ai.llm.client.create_client",
+                        side_effect=RuntimeError("boom")), \
+                mock.patch("freecad_ai.tools.reranker.rerank_tools_llm") as mock_llm, \
+                mock.patch("freecad_ai.tools.reranker.rerank_tools") as mock_kw:
+            mock_kw.return_value = ["tool_a"]
+            result = _run_reranker(cfg, pairs, "hello")
+
+        assert mock_kw.called
+        assert not mock_llm.called
+        assert result == ["tool_a"]
