@@ -199,7 +199,9 @@ class TestProfileFieldRoundTrip:
             model_edit=_Edit(prof.model),
             provider_combo=_Combo(get_provider_names().index(prof.name)),
         )
-        fake._load_model_params_table = lambda model, cfg=None: None
+        fake._load_model_params_table = lambda model, cfg=None, profile=None: None
+        fake._read_model_params_table = (
+            lambda: dict(fake._profiles[fake._current_profile_label].params))
         return fake
 
     def test_edited_base_url_survives_switching_away_and_back(self):
@@ -410,3 +412,273 @@ class TestSaveTempDoesNotMutateStoredProfile:
 
         assert cfg.provider.base_url == original_base_url
         assert cfg.provider.name == original_name
+
+
+# ── Params table targets the working-copy profile (fix round 2) ────────
+#
+# resolve_params() layers profile.params on top of cfg.model_params, and
+# migration copied a profile's starting params into both places. The
+# dialog's Model Parameters table read/wrote cfg.model_params only, so for
+# any migrated profile the profile layer always won and every edit made
+# through the dialog was silently discarded — demonstrated against a real
+# config: temperature 1 -> 0.2 in the dialog, saved, runtime still resolved
+# 1. These tests pin the fix: the table must read the effective merge and
+# write into the working-copy profile's own params.
+
+class TestParamsTableEditSurvivesSaveAndResolve:
+    """The regression, end to end — this is the test that would have
+    caught the bug."""
+
+    def _migrated_cfg(self):
+        """A profile whose params were also copied into cfg.model_params
+        by migration — the exact shape that hid the bug."""
+        cfg = AppConfig()
+        cfg.profiles = {
+            "cloud": ProviderConfig(
+                name="anthropic", model="claude-sonnet-4-6",
+                params={"temperature": 1}),
+        }
+        cfg.active_profile = "cloud"
+        cfg.model_params = {"claude-sonnet-4-6": {"temperature": 1}}
+        return cfg
+
+    def _fake_for_save(self, cfg, table_params):
+        """Mirrors TestSaveWritesBackProfileState's fake — _save touches a
+        lot of unrelated widgets that only need to not raise."""
+        prof = cfg.profiles[cfg.active_profile]
+        working = copy.deepcopy(cfg.profiles)
+
+        fake = MagicMock()
+        fake._profiles = working
+        fake._active_profile = cfg.active_profile
+        fake._current_profile_label = cfg.active_profile
+        fake._commit_profile_fields = (
+            lambda: SettingsDialog._commit_profile_fields(fake))
+        fake._read_model_params_table = lambda: dict(table_params)
+        fake._read_rerank_params_table = lambda: {}
+        fake._read_strip_thinking_state = lambda: None
+        fake._get_default_prompt_text = lambda: ""
+        fake._parse_server_address = lambda host, port: ("127.0.0.1", 8765)
+        fake._parse_allowed_hosts = lambda text: []
+        fake._resolve_rerank_params = lambda model, params: {}
+        fake.accept = lambda: None
+
+        names = get_provider_names()
+        fake.provider_combo.currentIndex.return_value = names.index(prof.name)
+        fake.api_key_edit.text.return_value = prof.api_key
+        fake.base_url_edit.text.return_value = prof.base_url
+        fake.model_edit.text.return_value = prof.model
+        fake.thinking_combo.currentIndex.return_value = 0
+        fake.viewport_capture_combo.currentIndex.return_value = 0
+        fake.viewport_resolution_combo.currentIndex.return_value = 0
+        fake.rerank_method_combo.currentIndex.return_value = 0
+        fake.system_prompt_edit.toPlainText.return_value = ""
+        fake.rerank_pinned_edit.text.return_value = ""
+        fake.rerank_llm_provider_combo.currentData.return_value = ""
+        fake.rerank_llm_base_url_edit.text.return_value = ""
+        fake.rerank_llm_api_key_edit.text.return_value = ""
+        fake.rerank_llm_model_edit.text.return_value = ""
+        return fake
+
+    def test_edit_survives_save_and_resolve_params(self, monkeypatch):
+        from freecad_ai.llm.client import resolve_params
+
+        cfg = self._migrated_cfg()
+        fake = self._fake_for_save(cfg, {"temperature": 0.2})
+
+        monkeypatch.setattr(
+            "freecad_ai.ui.settings_dialog.get_config", lambda: cfg)
+        monkeypatch.setattr(
+            "freecad_ai.ui.settings_dialog.save_current_config", lambda: None)
+
+        SettingsDialog._save(fake)
+
+        assert resolve_params(cfg, cfg.provider)["temperature"] == 0.2
+
+
+class TestParamsTableDisplaysEffectiveMerge:
+    """The table shows exactly what resolve_params() will compute."""
+
+    def test_both_layers_appear_profile_wins_on_conflict(self):
+        cfg = _cfg()
+        prof = cfg.profiles["cloud"]
+        prof.params = {"temperature": 0.9, "top_p": 0.5}
+        cfg.model_params = {prof.model: {"temperature": 0.1, "max_tokens": 999}}
+
+        fake = types.SimpleNamespace(
+            _profiles=cfg.profiles,
+            _current_profile_label="cloud",
+            provider_combo=_Combo(get_provider_names().index(prof.name)),
+        )
+        captured = {}
+        fake._populate_model_params_table = captured.update
+
+        SettingsDialog._load_model_params_table(fake, prof.model, cfg, prof)
+
+        assert captured["temperature"] == 0.9  # profile wins the conflict
+        assert captured["top_p"] == 0.5         # profile-only key
+        assert captured["max_tokens"] == 999    # global-only key
+
+
+class TestParamsDoNotLeakBetweenProfiles:
+    """Switching profiles must not let one profile's params bleed into,
+    or overwrite, another's."""
+
+    def test_switching_a_b_a_keeps_each_profiles_own_params(self):
+        cfg = AppConfig()
+        cfg.profiles = {
+            "a": ProviderConfig(name="anthropic", model="model-a",
+                                params={"temperature": 0.1}),
+            "b": ProviderConfig(name="anthropic", model="model-b",
+                                params={"temperature": 0.9}),
+        }
+        cfg.active_profile = "a"
+        table = {}
+
+        fake = types.SimpleNamespace(
+            _cfg=cfg,
+            _profiles=cfg.profiles,
+            _current_profile_label="a",
+            base_url_edit=_Edit(cfg.profiles["a"].base_url),
+            api_key_edit=_Edit(cfg.profiles["a"].api_key),
+            model_edit=_Edit(cfg.profiles["a"].model),
+            provider_combo=_Combo(get_provider_names().index("anthropic")),
+        )
+        fake._populate_model_params_table = (
+            lambda params: (table.clear(), table.update(params)))
+        fake._read_model_params_table = lambda: dict(table)
+        fake._load_model_params_table = (
+            lambda model, cfg=None, profile=None:
+                SettingsDialog._load_model_params_table(
+                    fake, model, cfg, profile))
+
+        SettingsDialog._show_profile(fake, "a")
+        assert table["temperature"] == 0.1
+
+        SettingsDialog._commit_profile_fields(fake)
+        SettingsDialog._show_profile(fake, "b")
+        assert table["temperature"] == 0.9
+
+        SettingsDialog._commit_profile_fields(fake)
+        SettingsDialog._show_profile(fake, "a")
+        assert table["temperature"] == 0.1
+
+        assert cfg.profiles["a"].params["temperature"] == 0.1
+        assert cfg.profiles["b"].params["temperature"] == 0.9
+
+
+class TestOnModelChangedDoesNotMutateLiveConfig:
+    """Same class of defect round 1 removed elsewhere: this must write to
+    the working-copy profile, never cfg.model_params on the singleton."""
+
+    def test_stashes_into_profile_not_live_config(self):
+        cfg = _cfg()
+        prof = cfg.profiles["cloud"]
+        original_model_params = copy.deepcopy(cfg.model_params)
+
+        fake = types.SimpleNamespace(
+            _cfg=cfg,
+            _profiles=cfg.profiles,
+            _current_profile_label="cloud",
+            _last_model_name=prof.model,
+            model_edit=_Edit("new-model-name"),
+            provider_combo=_Combo(get_provider_names().index(prof.name)),
+        )
+        fake._read_model_params_table = lambda: {"temperature": 0.42}
+        fake._populate_model_params_table = lambda params: None
+
+        def _stub_load(model, cfg=None, profile=None):
+            fake._last_model_name = model
+        fake._load_model_params_table = _stub_load
+
+        SettingsDialog._on_model_changed(fake)
+
+        assert cfg.model_params == original_model_params
+        assert prof.params == {"temperature": 0.42}
+        assert fake._last_model_name == "new-model-name"
+
+
+class TestSaveTempLeavesParamsAlone:
+    """_save_temp's model-params write fed nothing (_test_connection reads
+    the table directly) and only leaked edits to disk via the vision
+    probe's save. It must leave cfg.model_params/cfg.temperature alone."""
+
+    def test_save_temp_does_not_touch_model_params_or_temperature(
+            self, monkeypatch):
+        cfg = _cfg()
+        cfg.model_params = {"claude-sonnet-4-6": {"temperature": 0.1}}
+        cfg.temperature = 0.1
+        original_model_params = copy.deepcopy(cfg.model_params)
+
+        fake = MagicMock()
+        fake.model_edit.text.return_value = "claude-sonnet-4-6"
+        fake._read_model_params_table.return_value = {"temperature": 0.9}
+        fake.thinking_combo.currentIndex.return_value = 0
+        fake.system_prompt_edit.toPlainText.return_value = ""
+        fake._get_default_prompt_text = lambda: ""
+
+        monkeypatch.setattr(
+            "freecad_ai.ui.settings_dialog.get_config", lambda: cfg)
+
+        SettingsDialog._save_temp(fake)
+
+        assert cfg.model_params == original_model_params
+        assert cfg.temperature == 0.1
+
+
+class TestTestConnectionKeyResolution:
+    """Defect A: the probe must resolve the key exactly as create_client()
+    does, or a profile that inherits the vendor-wide key fails Test
+    Connection even though real chat works."""
+
+    def _fake(self, cfg, api_key_text, provider_name="anthropic"):
+        idx = get_provider_names().index(provider_name)
+        fake = MagicMock()
+        fake._cfg = cfg
+        fake.provider_combo.currentIndex.return_value = idx
+        fake.base_url_edit.text.return_value = "http://example/v1"
+        fake.api_key_edit.text.return_value = api_key_text
+        fake.model_edit.text.return_value = "some-model"
+        fake._read_model_params_table.return_value = {}
+        return fake
+
+    def _capture_thread_api_key(self, monkeypatch, captured):
+        def fake_thread(provider_name, base_url, api_key, model,
+                        model_params, parent):
+            captured["api_key"] = api_key
+            return MagicMock()
+        monkeypatch.setattr(
+            "freecad_ai.ui.settings_dialog._TestConnectionThread", fake_thread)
+
+    def test_profile_key_wins_over_provider_keys(self, monkeypatch):
+        cfg = _cfg()
+        cfg.provider_keys = {"anthropic": "vendor-default"}
+        fake = self._fake(cfg, "profile-key")
+        captured = {}
+        self._capture_thread_api_key(monkeypatch, captured)
+
+        SettingsDialog._test_connection(fake)
+
+        assert captured["api_key"] == "profile-key"
+
+    def test_blank_profile_key_falls_back_to_provider_keys(self, monkeypatch):
+        cfg = _cfg()
+        cfg.provider_keys = {"anthropic": "vendor-default"}
+        fake = self._fake(cfg, "")
+        captured = {}
+        self._capture_thread_api_key(monkeypatch, captured)
+
+        SettingsDialog._test_connection(fake)
+
+        assert captured["api_key"] == "vendor-default"
+
+    def test_both_blank_yields_empty_string(self, monkeypatch):
+        cfg = _cfg()
+        cfg.provider_keys = {}
+        fake = self._fake(cfg, "")
+        captured = {}
+        self._capture_thread_api_key(monkeypatch, captured)
+
+        SettingsDialog._test_connection(fake)
+
+        assert captured["api_key"] == ""

@@ -1116,6 +1116,15 @@ class SettingsDialog(QDialog):
         prof.base_url = self.base_url_edit.text()
         prof.api_key = self.api_key_edit.text()
         prof.model = self.model_edit.text()
+        # Commit the table's effective merge (global cfg.model_params
+        # layered under the profile's own — see _load_model_params_table),
+        # not just whatever the profile already stated. A visited profile
+        # thereby absorbs the global defaults it was inheriting and states
+        # them itself from here on: that keeps "what you saw is what you
+        # saved" true and stops one profile's edit from moving another
+        # profile's values through the shared cfg.model_params layer. Do
+        # not "simplify" this back to a partial dict.
+        prof.params = self._read_model_params_table()
 
     def _show_profile(self, label: str) -> None:
         """Populate the connection widgets from a profile."""
@@ -1137,7 +1146,7 @@ class SettingsDialog(QDialog):
         self.api_key_edit.setText(prof.api_key)
         self.base_url_edit.setText(prof.base_url)
         self.model_edit.setText(prof.model)
-        self._load_model_params_table(prof.model, self._cfg)
+        self._load_model_params_table(prof.model, self._cfg, prof)
 
     def _on_profile_changed(self, index):
         label = self.profile_combo.itemData(index)
@@ -1277,28 +1286,41 @@ class SettingsDialog(QDialog):
         return state == QtCore.Qt.Checked
 
     def _on_model_changed(self):
-        """Save current params under the old model, load params for the new one."""
+        """Stash the edited table on the working-copy profile, load the new model's."""
         new_model = self.model_edit.text().strip()
         if new_model == self._last_model_name or not new_model:
             return
-        # Save current table under old model name (in-memory only)
-        cfg = get_config()
-        if self._last_model_name:
+        # Stash current table on the working-copy profile (never the live
+        # singleton — see _commit_profile_fields for why cfg.model_params
+        # is read-only from this dialog).
+        prof = self._profiles.get(getattr(self, "_current_profile_label", None))
+        if self._last_model_name and prof is not None:
             params = self._read_model_params_table()
             if params:
-                cfg.model_params[self._last_model_name] = params
+                prof.params = params
         # Load params for new model
-        self._load_model_params_table(new_model, cfg)
+        self._load_model_params_table(new_model, self._cfg, prof)
 
-    def _load_model_params_table(self, model_name: str, cfg=None):
-        """Populate the params table for the given model.
+    def _load_model_params_table(self, model_name: str, cfg=None, profile=None):
+        """Populate the params table with the effective resolve_params() merge.
 
-        Priority: saved params for this model > provider defaults > global temperature.
+        Priority: cfg.model_params[model] (the global per-model default
+        layer) with `profile`'s own params layered on top — exactly what
+        resolve_params() computes for create_client() — then provider
+        defaults, then global temperature if neither layer has anything.
+        Saving this table commits the merge into the profile (see
+        _commit_profile_fields), not the global layer.
         """
         if cfg is None:
             cfg = get_config()
+        if profile is None:
+            profile = self._profiles.get(
+                getattr(self, "_current_profile_label", None))
 
-        params = cfg.model_params.get(model_name, {})
+        params = dict(cfg.model_params.get(model_name, {}))
+        if profile is not None:
+            params.update(profile.params)
+
         if not params:
             # No saved params — try provider defaults
             names = get_provider_names()
@@ -1405,15 +1427,15 @@ class SettingsDialog(QDialog):
         cfg.max_tool_turns = self.max_tool_turns_spin.value()
         cfg.execution_timeout = self.execution_timeout_spin.value()
 
-        # Save model parameters for the current model
+        # Model params reach the profile via _commit_profile_fields above
+        # (prof.params = the table's effective merge) — cfg.model_params
+        # stays the global layer and is no longer written from here.
         model_name = self.model_edit.text().strip()
         if model_name:
             params = self._read_model_params_table()
-            if params:
-                cfg.model_params[model_name] = params
-            elif model_name in cfg.model_params:
-                del cfg.model_params[model_name]
-            # Keep global temperature in sync for backward compat
+            # Keep global temperature in sync for backward compat —
+            # cfg.temperature is still the job-level fallback create_client
+            # passes when a profile states no temperature.
             cfg.temperature = params.get("temperature", cfg.temperature)
 
         cfg.enable_tools = self.enable_tools_check.isChecked()
@@ -1680,7 +1702,13 @@ class SettingsDialog(QDialog):
         idx = self.provider_combo.currentIndex()
         provider_name = names[idx] if 0 <= idx < len(names) else "anthropic"
         base_url = self.base_url_edit.text()
-        api_key = self.api_key_edit.text()
+        # Match create_client()'s fallback: an explicit key on the widget
+        # wins, else the vendor-wide default in provider_keys. Without this
+        # a profile that deliberately leaves its own key blank to inherit
+        # the vendor default fails Test Connection even though real chat
+        # works fine.
+        api_key = self.api_key_edit.text() or \
+            self._cfg.provider_keys.get(provider_name, "")
         model = self.model_edit.text()
         model_params = self._read_model_params_table()
 
@@ -1773,6 +1801,12 @@ class SettingsDialog(QDialog):
         widgets and hands them to _TestConnectionThread, so testing a
         profile that isn't cfg.active_profile can't leak its values into the
         active one through this singleton write.
+
+        Model params are the same story: _test_connection reads the table
+        itself and passes it straight to _TestConnectionThread (the vision
+        probe builds its client from that same thread), so writing them
+        into cfg.model_params/cfg.temperature here would feed nothing —
+        it would only leak to disk via the vision-probe's save.
         """
         cfg = get_config()
 
@@ -1788,14 +1822,6 @@ class SettingsDialog(QDialog):
             cfg.max_tool_turns = self.max_tool_turns_spin.value()
         except Exception:
             pass
-
-        # Apply model params temporarily for test connection
-        model_name = self.model_edit.text().strip()
-        if model_name:
-            params = self._read_model_params_table()
-            if params:
-                cfg.model_params[model_name] = params
-                cfg.temperature = params.get("temperature", cfg.temperature)
 
         thinking_values = ["off", "on", "extended"]
         cfg.thinking = thinking_values[self.thinking_combo.currentIndex()]
