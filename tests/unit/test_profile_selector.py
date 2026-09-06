@@ -188,6 +188,80 @@ class _Combo:
         self.calls.append(("block", b))
 
 
+class _Check:
+    """QCheckBox stand-in that records blockSignals order."""
+
+    def __init__(self, checked=False, enabled=True):
+        self._checked = checked
+        self._enabled = enabled
+        self.blocked = []
+
+    def setChecked(self, v):
+        self._checked = v
+
+    def isChecked(self):
+        return self._checked
+
+    def setEnabled(self, v):
+        self._enabled = v
+
+    def isEnabled(self):
+        return self._enabled
+
+    def blockSignals(self, b):
+        self.blocked.append(b)
+
+
+class _ProfileCombo:
+    """QComboBox stand-in carrying a real item model.
+
+    _refresh_profile_combo now renders a label per item and keys the
+    selection off itemData, so a stand-in that only records calls can no
+    longer tell the two apart.
+    """
+
+    def __init__(self):
+        self.items = []          # [(text, data)]
+        self._i = -1
+        self.blocked = []
+
+    def blockSignals(self, b):
+        self.blocked.append(b)
+
+    def clear(self):
+        self.items = []
+        self._i = -1
+
+    def addItem(self, text, data=None):
+        self.items.append((text, data))
+
+    def findData(self, data):
+        for i, (_text, d) in enumerate(self.items):
+            if d == data:
+                return i
+        return -1
+
+    def setCurrentIndex(self, i):
+        self._i = i
+
+    def currentIndex(self):
+        return self._i
+
+    def itemData(self, i):
+        return self.items[i][1]
+
+    def currentData(self):
+        if 0 <= self._i < len(self.items):
+            return self.items[self._i][1]
+        return None
+
+    def texts(self):
+        return [t for t, _d in self.items]
+
+    def data(self):
+        return [d for _t, d in self.items]
+
+
 class TestProfileFieldRoundTrip:
     """Editing a profile, browsing away and back preserves the edit (#75)."""
 
@@ -198,11 +272,13 @@ class TestProfileFieldRoundTrip:
         fake = types.SimpleNamespace(
             _cfg=cfg,
             _profiles=cfg.profiles,
+            _active_profile=cfg.active_profile,
             _current_profile_label=label,
             base_url_edit=_Edit(prof.base_url),
             api_key_edit=_Edit(prof.api_key),
             model_edit=_Edit(prof.model),
             provider_combo=_Combo(get_provider_names().index(prof.name)),
+            profile_active_check=_Check(),
         )
         fake._load_model_params_table = lambda model, cfg=None, profile=None: None
         fake._read_model_params_table = (
@@ -589,11 +665,13 @@ class TestParamsDoNotLeakBetweenProfiles:
         fake = types.SimpleNamespace(
             _cfg=cfg,
             _profiles=cfg.profiles,
+            _active_profile=cfg.active_profile,
             _current_profile_label="a",
             base_url_edit=_Edit(cfg.profiles["a"].base_url),
             api_key_edit=_Edit(cfg.profiles["a"].api_key),
             model_edit=_Edit(cfg.profiles["a"].model),
             provider_combo=_Combo(get_provider_names().index("anthropic")),
+            profile_active_check=_Check(),
         )
         fake._populate_model_params_table = (
             lambda params: (table.clear(), table.update(params)))
@@ -733,3 +811,192 @@ class TestTestConnectionKeyResolution:
         SettingsDialog._test_connection(fake)
 
         assert captured["api_key"] == ""
+
+
+# ── Selected profile vs active profile (final review, finding 3) ───────
+#
+# The combo meant both "edit this one" and "chat runs on this one":
+# _on_profile_changed and _on_profile_add each assigned _active_profile,
+# and _save committed it. So opening Settings to raise Max Tokens,
+# clicking another profile to see which model it used, setting Max Tokens
+# and pressing OK moved chat onto that other profile with nothing having
+# said so. An explicit "Use this profile for chat" checkbox separates the
+# two; the combo shows which profile is active by labelling it.
+
+def _selector_fake(cfg, label="cloud"):
+    """Fake self carrying the widgets the profile-selector methods touch."""
+    fake = types.SimpleNamespace(
+        _cfg=cfg,
+        _profiles=cfg.profiles,
+        _active_profile=cfg.active_profile,
+        _utility_profiles=cfg.utility_profiles,
+        _current_profile_label=label,
+        profile_combo=_ProfileCombo(),
+        profile_active_check=_Check(),
+        api_key_edit=_Edit(),
+        base_url_edit=_Edit(),
+        model_edit=_Edit(),
+        provider_combo=_Combo(get_provider_names().index("anthropic")),
+        utility_combos={},
+    )
+    fake._load_model_params_table = lambda model, cfg=None, profile=None: None
+    fake._read_model_params_table = lambda: {}
+    fake._commit_profile_fields = (
+        lambda: SettingsDialog._commit_profile_fields(fake))
+    fake._show_profile = lambda lbl: SettingsDialog._show_profile(fake, lbl)
+    fake._refresh_profile_combo = (
+        lambda: SettingsDialog._refresh_profile_combo(fake))
+    fake._refresh_utility_combos = lambda: None
+    fake._rename_profile = (
+        lambda old, new: SettingsDialog._rename_profile(fake, old, new))
+    return fake
+
+
+class TestBrowsingDoesNotMoveActive:
+    def test_selecting_another_profile_leaves_active_alone(self):
+        cfg = _cfg()
+        fake = _selector_fake(cfg)
+        fake.profile_combo.addItem("local", "local")
+
+        SettingsDialog._on_profile_changed(fake, 0)
+
+        assert fake._current_profile_label == "local"
+        assert fake._active_profile == "cloud"
+
+    def test_adding_a_profile_leaves_active_alone(self):
+        cfg = _cfg()
+        fake = _selector_fake(cfg)
+
+        SettingsDialog._on_profile_add(fake)
+
+        assert fake._active_profile == "cloud"
+        assert fake._current_profile_label not in ("cloud", "local")
+        assert fake._current_profile_label in fake._profiles
+
+    def test_the_new_profile_is_the_one_selected_for_editing(self):
+        """The combo must land on the profile just added, not snap back to
+        the active one — the trap in re-selecting by _active_profile."""
+        cfg = _cfg()
+        fake = _selector_fake(cfg)
+
+        SettingsDialog._on_profile_add(fake)
+
+        assert fake.profile_combo.currentData() == fake._current_profile_label
+
+    def test_rename_leaves_the_combo_on_the_renamed_profile(self, monkeypatch):
+        cfg = _cfg()
+        fake = _selector_fake(cfg, label="local")
+        monkeypatch.setattr(
+            "freecad_ai.ui.settings_dialog.QInputDialog",
+            types.SimpleNamespace(getText=lambda *a, **k: ("cheap", True)))
+
+        SettingsDialog._on_profile_rename(fake)
+
+        assert fake._active_profile == "cloud"
+        assert fake.profile_combo.currentData() == "cheap"
+
+
+class TestActiveProfileCheckbox:
+    def test_showing_the_active_profile_checks_and_locks_the_box(self):
+        """Exactly one profile is always active, so the box is disabled
+        while checked: the way to move it is to check a different one."""
+        cfg = _cfg()
+        fake = _selector_fake(cfg)
+
+        SettingsDialog._show_profile(fake, "cloud")
+
+        assert fake.profile_active_check.isChecked() is True
+        assert fake.profile_active_check.isEnabled() is False
+        assert fake.profile_active_check.blocked == [True, False]
+
+    def test_showing_another_profile_unchecks_and_unlocks_the_box(self):
+        cfg = _cfg()
+        fake = _selector_fake(cfg)
+
+        SettingsDialog._show_profile(fake, "local")
+
+        assert fake.profile_active_check.isChecked() is False
+        assert fake.profile_active_check.isEnabled() is True
+
+    def test_ticking_the_box_moves_active(self):
+        cfg = _cfg()
+        fake = _selector_fake(cfg, label="local")
+
+        SettingsDialog._on_profile_active_toggled(fake, True)
+
+        assert fake._active_profile == "local"
+        assert fake.profile_active_check.isEnabled() is False
+
+    def test_ticking_the_box_relabels_the_combo(self):
+        cfg = _cfg()
+        fake = _selector_fake(cfg, label="local")
+
+        SettingsDialog._on_profile_active_toggled(fake, True)
+
+        assert fake.profile_combo.texts() == ["cloud", "local (active)"]
+
+    def test_an_untick_is_a_no_op(self):
+        """Unreachable through the UI (the widget is disabled while
+        checked), and must stay a no-op if it ever arrives anyway —
+        there is no such thing as no active profile."""
+        cfg = _cfg()
+        fake = _selector_fake(cfg, label="local")
+
+        SettingsDialog._on_profile_active_toggled(fake, False)
+
+        assert fake._active_profile == "cloud"
+
+
+class TestProfileComboRendering:
+    def test_exactly_one_entry_is_marked_active(self):
+        cfg = _cfg()
+        fake = _selector_fake(cfg)
+
+        SettingsDialog._refresh_profile_combo(fake)
+
+        assert fake.profile_combo.texts() == ["cloud (active)", "local"]
+
+    def test_item_data_stays_the_bare_label(self):
+        """_on_profile_changed and findData both key off it."""
+        cfg = _cfg()
+        fake = _selector_fake(cfg)
+
+        SettingsDialog._refresh_profile_combo(fake)
+
+        assert fake.profile_combo.data() == ["cloud", "local"]
+        assert fake.profile_combo.findData("cloud") == 0
+
+    def test_selection_follows_the_profile_being_edited(self):
+        cfg = _cfg()
+        fake = _selector_fake(cfg, label="local")
+
+        SettingsDialog._refresh_profile_combo(fake)
+
+        assert fake.profile_combo.currentData() == "local"
+
+    def test_selection_falls_back_to_active_when_the_edited_label_is_gone(self):
+        """The delete path: _current_profile_label names the profile that
+        was just removed."""
+        cfg = _cfg()
+        fake = _selector_fake(cfg, label="deleted")
+
+        SettingsDialog._refresh_profile_combo(fake)
+
+        assert fake.profile_combo.currentData() == "cloud"
+
+    def test_selection_falls_back_to_the_first_entry(self):
+        cfg = _cfg()
+        fake = _selector_fake(cfg, label="deleted")
+        fake._active_profile = "also-gone"
+
+        SettingsDialog._refresh_profile_combo(fake)
+
+        assert fake.profile_combo.currentIndex() == 0
+
+    def test_the_handler_is_blocked_while_repopulating(self):
+        cfg = _cfg()
+        fake = _selector_fake(cfg)
+
+        SettingsDialog._refresh_profile_combo(fake)
+
+        assert fake.profile_combo.blocked == [True, False]

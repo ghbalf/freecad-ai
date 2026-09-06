@@ -270,6 +270,20 @@ class SettingsDialog(QDialog):
             profile_row.addWidget(b)
         provider_layout.addRow(translate("SettingsDialog", "Profile:"), profile_row)
 
+        # Selecting a profile in the combo means "edit this one". Chat runs
+        # on the profile this box is ticked for, and nothing else moves it.
+        self.profile_active_check = QCheckBox(translate(
+            "SettingsDialog", "Use this profile for chat"))
+        self.profile_active_check.setToolTip(translate(
+            "SettingsDialog",
+            "The ticked profile is the one the main chat runs on.\n"
+            "Utilities below inherit it unless they name their own.\n"
+            "To move it, tick a different profile — there is always\n"
+            "exactly one."))
+        self.profile_active_check.toggled.connect(
+            self._on_profile_active_toggled)
+        provider_layout.addRow("", self.profile_active_check)
+
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         self.profile_add_btn.clicked.connect(self._on_profile_add)
         self.profile_rename_btn.clicked.connect(self._on_profile_rename)
@@ -1032,15 +1046,34 @@ class SettingsDialog(QDialog):
                 self._utility_profiles[utility] = ""
 
     def _refresh_profile_combo(self) -> None:
-        """Repopulate the profile combo without firing its handler."""
+        """Repopulate the profile combo without firing its handler.
+
+        The active profile is marked in the item *text* only; the item
+        data stays the bare label, because _on_profile_changed and
+        findData both key off it.
+
+        The selection follows the profile being edited, not the active
+        one. Browsing no longer moves active, so re-selecting by
+        _active_profile here would yank the combo back to it after every
+        add, rename and delete. Falls back to the active profile, and
+        then to the first entry, for the delete path — where the label
+        being edited is the one that just went away.
+        """
         self.profile_combo.blockSignals(True)
         try:
             self.profile_combo.clear()
             for label in self._profiles:
-                self.profile_combo.addItem(label, label)
-            idx = self.profile_combo.findData(self._active_profile)
-            if idx >= 0:
-                self.profile_combo.setCurrentIndex(idx)
+                text = (f"{label} (active)" if label == self._active_profile
+                        else label)
+                self.profile_combo.addItem(text, label)
+            for candidate in (getattr(self, "_current_profile_label", None),
+                              self._active_profile):
+                idx = self.profile_combo.findData(candidate) if candidate else -1
+                if idx >= 0:
+                    self.profile_combo.setCurrentIndex(idx)
+                    break
+            else:
+                self.profile_combo.setCurrentIndex(0)
         finally:
             self.profile_combo.blockSignals(False)
         self._refresh_utility_combos()
@@ -1124,12 +1157,40 @@ class SettingsDialog(QDialog):
         self.model_edit.setText(prof.model)
         self._load_model_params_table(prof.model, self._cfg, prof)
 
+        is_active = label == self._active_profile
+        # blockSignals, or populating the widgets would itself re-point
+        # chat through _on_profile_active_toggled.
+        self.profile_active_check.blockSignals(True)
+        try:
+            self.profile_active_check.setChecked(is_active)
+        finally:
+            self.profile_active_check.blockSignals(False)
+        # Disabled while ticked: there is always exactly one active
+        # profile, so the way to move it is to tick a different one, not
+        # to untick this one.
+        self.profile_active_check.setEnabled(not is_active)
+
+    def _on_profile_active_toggled(self, checked: bool) -> None:
+        """Point chat at the profile currently being edited.
+
+        Only the off->on transition is reachable — _show_profile disables
+        the box while it is ticked — so an untick is a no-op rather than
+        a way to end up with no active profile.
+        """
+        if not checked:
+            return
+        self._active_profile = self._current_profile_label
+        self.profile_active_check.setEnabled(False)
+        self._refresh_profile_combo()
+
     def _on_profile_changed(self, index):
+        # Selects a profile for editing. It deliberately does NOT make it
+        # active: browsing the profiles to see what they hold must not
+        # silently re-point chat on OK.
         label = self.profile_combo.itemData(index)
         if not label or label == getattr(self, "_current_profile_label", None):
             return
         self._commit_profile_fields()
-        self._active_profile = label
         self._show_profile(label)
 
     def _on_profile_add(self):
@@ -1139,9 +1200,11 @@ class SettingsDialog(QDialog):
             label, n = f"{base} {n}", n + 1
         self._commit_profile_fields()
         self._profiles[label] = ProviderConfig()
-        self._active_profile = label
-        self._refresh_profile_combo()
+        # Selected for editing, not made active. _show_profile first, so
+        # the refresh below finds _current_profile_label already pointing
+        # at the new profile and selects it.
         self._show_profile(label)
+        self._refresh_profile_combo()
 
     def _on_profile_rename(self):
         old = self._current_profile_label
