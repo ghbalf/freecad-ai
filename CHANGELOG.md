@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Connection profiles.** LLM connection settings are now named profiles.
+  Define as many as you like — `ollama-local` and `ollama-remote` can
+  coexist with different URLs and keys — and switch between them from the
+  Settings dialog without losing anything.
+- **Per-utility models.** Context compaction, skill evaluation, tool
+  optimisation and tool reranking each choose a profile, or inherit the
+  active one. Run chat on a large cloud model and the throwaway work on a
+  cheap or local one.
+
+### Changed
+
+- The reranker's four-field provider override is replaced by a profile.
+  Existing overrides migrate automatically into a profile named `rerank`.
+- The reranker's **Test reranker** button now probes whichever profile
+  reranking is set to (or the active profile, if left on inherit), instead
+  of its own four fields.
+
+### Fixed
+
+- Switching provider in the Settings dialog no longer overwrites a
+  Base URL you had edited (#75). Connection settings live in the profile,
+  and programmatic dropdown moves no longer fire the preset handler.
+- Cancelling the Settings dialog now discards profile changes. Adding,
+  renaming, deleting or editing a profile previously took effect
+  immediately, and Test Connection could flush the change to disk before
+  you ever pressed OK.
+- Sampling parameters edited in Settings now take effect. For a
+  configuration carried over from an earlier version, editing temperature
+  or any other parameter was silently discarded: the value was written to
+  the global per-model defaults, which the profile's own parameters then
+  overrode.
+- Test Connection now succeeds for a profile that leaves its API key blank
+  to inherit the vendor-wide default, matching what normal chat use
+  already did.
+
 ## [0.23.1-alpha] - 2026-08-31
 
 ### Fixed

@@ -175,6 +175,26 @@ To populate the stores once:
 | Zhipu | Yes | GLM models (z.ai international) |
 | Custom | Varies | Any OpenAI-compatible endpoint |
 
+### Connection profiles
+
+Connection settings — provider, base URL, API key, model, sampling parameters —
+are stored as named **profiles**, not a single flat set. You can define as many
+as you like, including several for the same vendor: `ollama-local` and
+`ollama-remote` can coexist with different URLs and keys, and switching between
+profiles in the Settings dialog never touches the ones you're not looking at.
+A profile's API key can be left blank to fall back to a vendor-wide default
+key, so one Anthropic key can serve several Anthropic profiles.
+
+Beyond the active profile chat uses, four utility jobs each pick their own
+profile from a dropdown in Settings: context compaction, skill evaluation,
+tool optimisation, and tool reranking. Left on **inherit**, a utility runs on
+whatever profile is currently active; pointed at a specific profile, it always
+uses that one — for example, running chat on a capable cloud model while
+compaction and reranking run on a cheap or local one.
+
+Existing configurations migrate to this shape automatically the first time
+you load them — there is nothing to do by hand.
+
 ### Model Parameters
 
 The **Model Parameters** table in Settings lets you set arbitrary sampling parameters (temperature, top_p, top_k, etc.) that are sent with each API request. Parameters are saved per model name — when you switch models, the saved parameters for that model are loaded automatically.
