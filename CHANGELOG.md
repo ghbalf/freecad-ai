@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Define as many as you like — `ollama-local` and `ollama-remote` can
   coexist with different URLs and keys — and switch between them from the
   Settings dialog without losing anything.
+- Saving a profile with an empty **Base URL** now asks first, naming the
+  profiles concerned. Such a profile fails with a bare connection error at
+  request time, and profile resolution deliberately does not substitute the
+  provider's preset URL behind your back — so the dialog says so instead.
 - **Per-utility models.** Context compaction, skill evaluation, tool
   optimisation and tool reranking each choose a profile, or inherit the
   active one. Run chat on a large cloud model and the throwaway work on a

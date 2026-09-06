@@ -1456,6 +1456,41 @@ class SettingsDialog(QDialog):
         self.system_prompt_edit.setPlainText(default)
         self._last_default_prompt = default
 
+    @staticmethod
+    def _profiles_missing_base_url(profiles) -> list:
+        """Sorted labels of profiles with no Base URL, which cannot work.
+
+        LLMClient builds every request URL as base_url + a path, so a blank
+        one yields a relative path and a network error nowhere near the
+        cause. Resolution deliberately does not substitute the provider
+        preset here — a silent substitution is issue #75's shape — so the
+        blank has to be surfaced instead.
+        """
+        return sorted(
+            label for label, prof in profiles.items()
+            if not (getattr(prof, "base_url", "") or "").strip())
+
+    def _confirm_incomplete_profiles(self) -> bool:
+        """Ask before saving a profile that has no Base URL. True to proceed.
+
+        A question rather than a refusal: a config may already carry a
+        half-filled profile the user never selects, and blocking OK on it
+        would strand every unrelated setting in this dialog.
+        """
+        incomplete = self._profiles_missing_base_url(self._profiles)
+        if not incomplete:
+            return True
+        return QMessageBox.question(
+            self,
+            translate("SettingsDialog", "Profile has no Base URL"),
+            translate(
+                "SettingsDialog",
+                "No Base URL is set for: %s.\n\nRequests made with such a "
+                "profile fail with a connection error rather than a clear "
+                "message. Save anyway?") % ", ".join(incomplete),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No) == QMessageBox.Yes
+
     def _save(self):
         """Save settings to config and close."""
         cfg = get_config()
@@ -1468,6 +1503,8 @@ class SettingsDialog(QDialog):
         # profiles[active_profile]) then reads correctly for everything
         # below, with no separate provider.* writes needed.
         self._commit_profile_fields()
+        if not self._confirm_incomplete_profiles():
+            return
         cfg.profiles = copy.deepcopy(self._profiles)
         cfg.active_profile = self._active_profile
         cfg.utility_profiles = self._collect_utility_profiles({
