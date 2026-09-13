@@ -26,12 +26,69 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+# Written to fd 2 by the harness to bracket the user's code. FreeCAD's C++
+# layer writes its console errors straight to the same descriptor, so an
+# unbuffered os.write here interleaves in true order with them — which is what
+# lets the parent tell "this document was already broken" from "this code
+# broke it".
+_USER_CODE_BEGIN = "__FCAI_USER_CODE_BEGIN__"
+_USER_CODE_END = "__FCAI_USER_CODE_END__"
+
+# A single bad feature can log the same line on every recompute iteration, and
+# a bad document can log dozens of distinct ones. The message goes to an LLM as
+# context, so it is truncated rather than allowed to crowd out the code.
+_MAX_CONSOLE_ERRORS = 10
+
 # Set once the sandbox has reported a broken console-capture channel, so the
 # warning names the problem on the first pre-check of the session instead of
 # on every one. Degradation is a property of the FreeCAD build, not of any
 # single execution — repeating it per call would only teach the reader to
 # scroll past it.
 _CONSOLE_CAPTURE_WARNED = False
+
+
+def _console_errors_from_stderr(stderr) -> list:
+    """Return the FreeCAD console errors the executed code is responsible for.
+
+    ``stderr`` is the sandbox subprocess's captured fd 2. The harness turns the
+    console's ``Wrn`` level off and brackets the user's code with markers, so
+    everything between them is an error rather than a warning.
+
+    Two things are filtered out, both for the same reason — the code under test
+    did not cause them:
+
+    * output before the opening marker, which belongs to opening and first
+      recomputing the document;
+    * output inside the window whose text also appeared in that baseline. An
+      object that failed to recompute stays ``Touched``, so it re-emits its
+      error on *every* later recompute, including the one the user's code
+      triggers. Position alone does not separate those — only the text does.
+      This is the false positive reported as issue #82.
+
+    Missing markers mean the run died before the window could be delimited. The
+    output is then unattributable, and guessing would blame the user's code for
+    the document's pre-existing state, so nothing is reported.
+    """
+    if not stderr:
+        return []
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode(errors="replace")
+    if _USER_CODE_BEGIN not in stderr or _USER_CODE_END not in stderr:
+        return []
+
+    before, _, rest = stderr.partition(_USER_CODE_BEGIN)
+    window, _, _after = rest.partition(_USER_CODE_END)
+
+    baseline = {line.strip() for line in before.splitlines() if line.strip()}
+    errors = []
+    for line in window.splitlines():
+        line = line.strip()
+        if not line or line in baseline or line in errors:
+            continue
+        errors.append(line)
+        if len(errors) >= _MAX_CONSOLE_ERRORS:
+            break
+    return errors
 
 
 def _console_capture_warning(result) -> str | None:
@@ -257,39 +314,36 @@ def _sandbox_test(code: str, timeout: int = 15, document_path: str | None = None
     # Harness: run user code, then close all documents without saving (temp copy is disposable).
     # Stub FreeCADGui view methods that only work in a graphical session.
     # Harness captures two classes of failure that Python exceptions miss:
-    #   1. FreeCAD.Console.PrintError messages (C++ layer logging — e.g.
-    #      PositionBySupport attachment failures, topological naming mismatches)
+    #   1. Errors the C++ layer logs to fd 2 (PositionBySupport attachment
+    #      failures, topological naming mismatches) — bracketed by markers
+    #      here, read and baselined by the parent after the process exits
     #   2. Features that build a null/invalid Shape without raising
-    harness = '''import sys, json, traceback
+    harness = '''import sys, os as _os, json, traceback
 {collect_fn_src}
 result = {{"ok": False, "error": ""}}
 try:
     import FreeCAD as App
 
-    # Console observer — captures errors/warnings the C++ layer logs to the
-    # Report View. Without this, attachment and recompute failures silently
-    # pass the sandbox because no Python exception is raised.
-    class _ErrObs:
-        def __init__(self):
-            self.errors = []
-            self.warnings = []
-        def OnError(self, msg, *a, **kw):
-            self.errors.append(str(msg).strip())
-        def OnWarning(self, msg, *a, **kw):
-            self.warnings.append(str(msg).strip())
-    _err_obs = _ErrObs()
-    _observer_installed = False
-    # Why the reason is kept rather than swallowed: on FreeCAD 1.1.1 in console
-    # mode App.Console has no AddObserver at all, so this raised AttributeError
-    # into a bare except and the channel silently collected nothing on every
-    # run. Recording the reason is what makes that visible to the parent.
-    _observer_status = "ok"
+    # Console channel: FreeCAD's C++ layer logs attachment and recompute
+    # failures without raising anything Python can catch, and writes them to
+    # fd 2. The parent reads that stream (see _console_errors_from_stderr).
+    #
+    # PrintError and PrintWarning both land there with no severity prefix, so
+    # the stream cannot be sorted out after the fact — a redundant-constraint
+    # warning would read exactly like a failure. SetStatus drops the warnings
+    # at the source instead, leaving fd 2 carrying errors only. If that call
+    # fails the parent is told, and ignores the stream rather than guessing.
+    #
+    # An App.Console.AddObserver hook used to do this job. It never ran: the
+    # method does not exist on __FreeCADConsole__ in console mode, so it raised
+    # into a bare except and the channel was silently dead (#83).
+    _console_capture_status = "ok"
     try:
-        App.Console.AddObserver(_err_obs)
-        _observer_installed = True
-    except Exception as _obs_err:
-        _observer_status = "{{}}: {{}}".format(type(_obs_err).__name__, _obs_err)
-    result["console_capture"] = _observer_status
+        App.Console.SetStatus("Console", "Wrn", False)
+    except Exception as _gate_err:
+        _console_capture_status = "{{}}: {{}}".format(
+            type(_gate_err).__name__, _gate_err)
+    result["console_capture"] = _console_capture_status
 
     # Console mode: install a fake FreeCADGui module instead of importing the
     # real one. LLM-generated code routinely ends with view-framing cosmetics
@@ -357,22 +411,21 @@ try:
         if _s["null"] or _s["invalid"] or _s["invalid_state"]:
             _baseline_bad.add(_s["name"])
 
+    # Everything logged up to here describes the document as it was opened.
+    _os.write(2, b"\\n{begin_marker}\\n")
+
     # --- user code ---
 {indented_code}
     # --- end user code ---
     doc.recompute()
+    _os.write(2, b"\\n{end_marker}\\n")
 
     # Post-execution validation: collect console errors + flag only the shapes
     # this code created or newly broke. Either signal means the code "ran" but
     # broke the model — the case where Python-exception-only checking fails.
+    # Console errors are merged by the parent, which is the only side that can
+    # read this process's stderr.
     _issues = []
-    if _observer_installed:
-        # De-dup — C++ logs the same error per failed recompute iteration
-        _seen = set()
-        for _e in _err_obs.errors:
-            if _e and _e not in _seen:
-                _seen.add(_e)
-                _issues.append("FreeCAD error: " + _e)
     _objects_state = [_snap(_obj) for _obj in doc.Objects]
     _issues.extend(_collect_object_issues(_objects_state, _baseline_bad))
 
@@ -401,6 +454,8 @@ finally:
     _os._exit(0)
 '''.format(
         collect_fn_src=inspect.getsource(_collect_object_issues),
+        begin_marker=_USER_CODE_BEGIN,
+        end_marker=_USER_CODE_END,
         open_block=open_block,
         indented_code="\n".join("    " + line for line in code.splitlines()),
         result_path=result_file,
@@ -436,10 +491,27 @@ finally:
             with open(result_file) as f:
                 result = json.load(f)
             _warn_console_capture_once(result)
-            if result["ok"]:
+
+            # Merged here rather than in the harness because this is the only
+            # side that can read the subprocess's stderr. Trusted only when the
+            # harness confirmed it gated warnings off — otherwise the stream
+            # mixes severities, and reporting a redundant-constraint warning as
+            # a failure is precisely the false positive of issue #82.
+            console_errors = []
+            if result.get("console_capture") == "ok":
+                console_errors = _console_errors_from_stderr(proc.stderr)
+
+            if result["ok"] and not console_errors:
                 return True, ""
-            else:
-                return False, "Sandbox: " + result["error"]
+
+            problems = []
+            if not result["ok"]:
+                problems.append(result["error"])
+            if console_errors:
+                problems.append(
+                    "FreeCAD logged errors while running this code:\n"
+                    + "\n".join(console_errors))
+            return False, "Sandbox: " + "\n".join(problems)
 
         return True, ""  # No result file but process exited OK
 

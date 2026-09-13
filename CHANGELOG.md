@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The sandbox pre-check no longer blames your code for a document that was
+  already broken (#82).** An object that fails to recompute stays `Touched`, so
+  FreeCAD re-logs its error on *every* later recompute — including the one your
+  code triggers. The pre-check now records which errors the document emits
+  before your code runs and suppresses exactly those, the same way it already
+  suppressed objects that were invalid to begin with.
+
+### Added
+
+- **The sandbox can see C++ console errors again (#83).** It now reads the
+  headless process's stderr, bracketed by markers around your code, instead of
+  an `App.Console.AddObserver` hook that never installed. FreeCAD's own console
+  warning level is turned off for the run, so the stream carries errors only —
+  a redundant-constraint warning no longer reads like a failure. Failures now
+  name the reason ("NoProfilePad: No object linked") rather than only the
+  symptom ("has null shape").
+
 ### Changed
 
 - **The sandbox now says when its console-error channel is unavailable.** The
@@ -17,8 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   into a bare `except: pass` and the second channel collected nothing on every
   run — while the sandbox went on reporting success as though it had checked
   both. The failure is now recorded and logged once per session with the
-  reason. Reviving the channel is tracked separately; this change only stops it
-  from failing silently.
+  reason. (The channel itself is revived above.)
 
 ## [0.25.0-alpha] - 2026-09-13
 

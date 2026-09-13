@@ -1,5 +1,6 @@
 """Tests for code execution engine — extract, validate, and safety checks."""
 
+import json
 import os
 import sys
 
@@ -798,7 +799,7 @@ class TestConsoleCaptureVisibility:
             "the harness must report whether console capture was installed; "
             "swallowing the failure is what hid the dead channel")
         # The reason, not just a boolean — 'it broke' is not actionable.
-        assert "_observer_status" in harness
+        assert "_console_capture_status" in harness
 
     def test_the_warning_is_logged_once_not_per_execution(self):
         # execute_code runs constantly in a session; a per-run warning would
@@ -815,3 +816,215 @@ class TestConsoleCaptureVisibility:
         with patch("freecad_ai.core.executor.logger") as log:
             executor._warn_console_capture_once({"console_capture": "ok"})
         log.warning.assert_not_called()
+
+
+
+# Captured verbatim from FreeCAD_1.1.1-Linux-x86_64-py311.AppImage running the
+# sandbox harness over a document holding a sketch attached to a face that does
+# not exist. Note the SAME error appears in the baseline region and twice more
+# inside the user-code window: a broken object stays Touched, so every later
+# recompute re-emits it. That repetition is issue #82's false positive, and it
+# is why the baseline has to suppress by message text and not merely by
+# position relative to the marker.
+_REAL_STDERR = """\
+PositionBySupport: AttachEngine3D: subshape not found Box.Face99
+StaleAttach: AttachEngine3D: subshape not found Box.Face99
+__FCAI_USER_CODE_BEGIN__
+StaleAttach: AttachEngine3D: subshape not found Box.Face99
+NoProfilePad: No object linked
+StaleAttach: AttachEngine3D: subshape not found Box.Face99
+__FCAI_USER_CODE_END__
+"""
+
+
+class TestConsoleErrorsFromStderr:
+    """Issue #83's revived channel, carrying issue #82's fix from day one.
+
+    The sandbox subprocess writes FreeCAD's C++ console errors to fd 2. The
+    harness brackets the user's code with markers on that same descriptor
+    (``os.write``, unbuffered, so ordering against the C++ writes holds) and
+    turns the console's ``Wrn`` level off, leaving errors alone on the stream.
+
+    Everything before the opening marker belongs to the document as it was
+    opened, not to the code under test.
+    """
+
+    def _errs(self, text):
+        return executor._console_errors_from_stderr(text)
+
+    def test_an_error_in_the_user_window_is_reported(self):
+        assert self._errs(
+            "__FCAI_USER_CODE_BEGIN__\nPad: No object linked\n"
+            "__FCAI_USER_CODE_END__\n") == ["Pad: No object linked"]
+
+    def test_baseline_errors_are_not_blamed_on_the_user_code(self):
+        assert self._errs(
+            "Box: something was already wrong\n__FCAI_USER_CODE_BEGIN__\n"
+            "__FCAI_USER_CODE_END__\n") == []
+
+    def test_a_baseline_error_repeated_inside_the_window_is_suppressed(self):
+        # The #82 regression, and the one that actually bites: the object is
+        # still Touched, so the user's recompute re-emits its error verbatim.
+        assert self._errs(_REAL_STDERR) == ["NoProfilePad: No object linked"]
+
+    def test_repeats_within_the_window_are_collapsed(self):
+        assert self._errs(
+            "__FCAI_USER_CODE_BEGIN__\nPad: boom\nPad: boom\n"
+            "__FCAI_USER_CODE_END__\n") == ["Pad: boom"]
+
+    def test_output_after_the_closing_marker_is_ignored(self):
+        # Document teardown in the harness finally-block runs after the end
+        # marker and can log; that is not the user's code either.
+        assert self._errs(
+            "__FCAI_USER_CODE_BEGIN__\n__FCAI_USER_CODE_END__\n"
+            "Closing: teardown complaint\n") == []
+
+    def test_no_markers_means_nothing_is_attributed(self):
+        # A crash before the markers were written leaves undelimited output.
+        # Blaming the user's code for all of it is the false positive we are
+        # removing, so the honest answer is to report nothing.
+        assert self._errs("Some startup noise\nAnd more\n") == []
+
+    def test_a_missing_closing_marker_attributes_nothing(self):
+        assert self._errs(
+            "__FCAI_USER_CODE_BEGIN__\nPad: boom\n") == []
+
+    def test_blank_lines_are_not_errors(self):
+        assert self._errs(
+            "__FCAI_USER_CODE_BEGIN__\n\n   \n__FCAI_USER_CODE_END__\n") == []
+
+    def test_empty_input_is_handled(self):
+        assert self._errs("") == []
+        assert self._errs(None) == []
+
+    def test_the_report_is_capped(self):
+        body = "".join("Obj{}: boom\n".format(i) for i in range(50))
+        found = self._errs(
+            "__FCAI_USER_CODE_BEGIN__\n" + body + "__FCAI_USER_CODE_END__\n")
+        assert 0 < len(found) <= 10
+
+
+class TestTheHarnessDelimitsAndGatesTheStream:
+    def _harness(self, code="x = 1"):
+        captured = {}
+
+        class _FakeProc:
+            returncode = 0
+            stderr = b""
+
+        def _fake_run(cmd, **kwargs):
+            with open(cmd[2]) as fh:
+                captured["h"] = fh.read()
+            return _FakeProc()
+
+        with patch("freecad_ai.core.executor._find_freecad_cmd",
+                   return_value="/usr/bin/freecadcmd"):
+            with patch("freecad_ai.core.executor.subprocess.run",
+                       side_effect=_fake_run):
+                executor._sandbox_test(code, timeout=5)
+        return captured["h"]
+
+    def test_warnings_are_gated_off_so_stderr_carries_errors_only(self):
+        # PrintError and PrintWarning both reach fd 2 with no severity prefix,
+        # so the stream cannot be filtered after the fact. SetStatus is how
+        # FreeCAD 1.1.1 lets us drop the warnings at the source.
+        h = self._harness()
+        assert "SetStatus" in h and '"Wrn"' in h
+
+    def test_both_markers_are_written_to_fd_2(self):
+        h = self._harness()
+        assert h.count("__FCAI_USER_CODE_BEGIN__") == 1
+        assert h.count("__FCAI_USER_CODE_END__") == 1
+        # On fd 2 directly: a buffered sys.stderr write would not interleave
+        # correctly with the C++ layer's own unbuffered writes.
+        assert "os.write(2" in h or "_os.write(2" in h
+
+    def test_the_opening_marker_comes_after_the_baseline_recompute(self):
+        h = self._harness("MY_UNIQUE_USER_CODE = 1")
+        begin = h.index("__FCAI_USER_CODE_BEGIN__")
+        user = h.index("MY_UNIQUE_USER_CODE")
+        end = h.index("__FCAI_USER_CODE_END__")
+        baseline = h.index("_baseline_bad = set()")
+        assert baseline < begin < user < end
+
+    def test_the_dead_observer_path_is_gone(self):
+        # The call, not the word: the harness still names AddObserver in a
+        # comment explaining why it was removed, and that note is worth
+        # keeping for whoever wonders why the channel reads stderr.
+        h = self._harness()
+        assert "App.Console.AddObserver(" not in h, (
+            "App.Console has no AddObserver in console mode; keeping the call "
+            "leaves a path that cannot run")
+        assert "_err_obs" not in h
+
+
+class TestStderrErrorsReachTheVerdict:
+    """The parent, not the harness, owns this verdict.
+
+    The harness cannot read its own stderr, so the console channel is merged
+    on the parent side after the subprocess exits. That is also why the seam
+    is a pure function over a string and needs no FreeCAD to test.
+    """
+
+    def _run(self, payload, stderr, tmp_path):
+        result_file = str(tmp_path / "result.json")
+        script_file = str(tmp_path / "harness.py")
+
+        class _FakeProc:
+            returncode = 0
+
+        _FakeProc.stderr = stderr
+
+        def _fake_run(cmd, **kwargs):
+            with open(result_file, "w") as fh:
+                json.dump(payload, fh)
+            return _FakeProc()
+
+        with patch("freecad_ai.core.executor.tempfile.mktemp",
+                   side_effect=[result_file, script_file]):
+            with patch("freecad_ai.core.executor._find_freecad_cmd",
+                       return_value="/usr/bin/freecadcmd"):
+                with patch("freecad_ai.core.executor.subprocess.run",
+                           side_effect=_fake_run):
+                    return executor._sandbox_test("x = 1", timeout=5)
+
+    def test_a_window_error_fails_an_otherwise_clean_run(self, tmp_path):
+        ok, msg = self._run(
+            {"ok": True, "error": "", "console_capture": "ok"},
+            b"__FCAI_USER_CODE_BEGIN__\nPad: No object linked\n"
+            b"__FCAI_USER_CODE_END__\n", tmp_path)
+        assert ok is False
+        assert "No object linked" in msg
+
+    def test_a_clean_stream_still_passes(self, tmp_path):
+        ok, msg = self._run(
+            {"ok": True, "error": "", "console_capture": "ok"},
+            b"__FCAI_USER_CODE_BEGIN__\n__FCAI_USER_CODE_END__\n", tmp_path)
+        assert ok is True and msg == ""
+
+    def test_baseline_noise_alone_still_passes(self, tmp_path):
+        ok, msg = self._run(
+            {"ok": True, "error": "", "console_capture": "ok"},
+            b"Box: already broken\n__FCAI_USER_CODE_BEGIN__\n"
+            b"Box: already broken\n__FCAI_USER_CODE_END__\n", tmp_path)
+        assert ok is True and msg == ""
+
+    def test_errors_are_ignored_when_warning_gating_failed(self, tmp_path):
+        # Without the gate the stream carries warnings too, and reporting
+        # those as errors is exactly issue #82's false positive. Degrade to
+        # the object-state channel rather than guess at severity.
+        ok, msg = self._run(
+            {"ok": True, "error": "", "console_capture": "AttributeError: nope"},
+            b"__FCAI_USER_CODE_BEGIN__\nSketch: redundant constraints\n"
+            b"__FCAI_USER_CODE_END__\n", tmp_path)
+        assert ok is True
+
+    def test_object_state_issues_and_console_errors_are_both_reported(self, tmp_path):
+        ok, msg = self._run(
+            {"ok": False,
+             "error": "Post-execution validation found issues:\nBox has an invalid shape",
+             "console_capture": "ok"},
+            b"__FCAI_USER_CODE_BEGIN__\nBox: subshape not found\n"
+            b"__FCAI_USER_CODE_END__\n", tmp_path)
+        assert ok is False
+        assert "invalid shape" in msg and "subshape not found" in msg
