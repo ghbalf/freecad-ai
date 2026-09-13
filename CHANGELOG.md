@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Cloudflare Workers AI is now a provider preset.** Pick it from the
+  provider dropdown in Settings instead of configuring a Custom endpoint
+  by hand. Its chat-completions endpoint is per-account, so the preset's
+  Base URL ships with an `{ACCOUNT_ID}` placeholder that **you must
+  replace with your own Cloudflare account ID** before the profile will
+  work; supply a Workers AI API token as the API key. The default model
+  is `@cf/moonshotai/kimi-k2.7-code`, which is the model tool calling was
+  verified against. Thanks to @Syeed-MD-Talha.
+- **Settings warns about a Base URL you still have to fill in.** Saving a
+  profile whose Base URL contains an unreplaced `{...}` placeholder now
+  asks first, naming the profile. Previously the literal braces were sent
+  in the request path and came back as a bare 404 that pointed at neither
+  the field nor the fix. This extends the existing blank-Base-URL check,
+  so both problems are reported in one message.
+
 ### Fixed
 
 - **Arch/BIM code no longer fails the sandbox pre-check.** Creating an

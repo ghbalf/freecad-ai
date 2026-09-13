@@ -20,7 +20,7 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 - **Thinking mode** — enable LLM reasoning for complex multi-step tasks (Off / On / Extended)
 - **Context compacting** — automatically summarizes older messages when approaching context limits
 - **Session resume** — save and load chat sessions to continue work later
-- **20 LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere, SambaNova, MiniMax, Llama, GitHub Models, HuggingFace, Zhipu, plus any OpenAI-compatible endpoint via Custom
+- **21 LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Cloudflare Workers AI, Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere, SambaNova, MiniMax, Llama, GitHub Models, HuggingFace, Zhipu, plus any OpenAI-compatible endpoint via Custom
 - **Context-aware** — automatically includes document state (objects, properties, selection) in prompts
 - **Error self-correction** — failed code is sent back to the LLM for automatic retry (up to 3 attempts)
 - **AGENTS.md support** — project-level instructions with include directives and variable substitution
@@ -158,6 +158,7 @@ To populate the stores once:
 | OpenAI | Yes | GPT models |
 | Gemini | Yes | Google AI via OpenAI-compatible endpoint |
 | OpenRouter | Yes | Multi-provider gateway |
+| Cloudflare Workers AI | Yes (Workers AI token) | Per-account endpoint — replace `{ACCOUNT_ID}` in the Base URL with your Cloudflare account ID before use |
 | Moonshot | Yes | Kimi models (default params pre-configured) |
 | DeepSeek | Yes | DeepSeek-V3 |
 | Qwen | Yes | Alibaba DashScope (international) |

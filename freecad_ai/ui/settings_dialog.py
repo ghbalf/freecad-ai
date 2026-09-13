@@ -13,6 +13,7 @@ Provides a GUI for configuring:
 
 import copy
 import os
+import re
 import secrets
 
 from .compat import QtWidgets, QtCore, QtGui
@@ -194,6 +195,13 @@ class _TestRerankerThread(QThread):
             self.finished.emit(True, detail)
         except Exception as e:
             self.finished.emit(False, "{}: {}".format(type(e).__name__, e))
+
+
+# Markers a provider preset leaves for the user to fill in, e.g. the
+# {ACCOUNT_ID} in Cloudflare Workers AI's per-account endpoint. Deliberately
+# narrow: only a bare word in braces, so a real URL carrying braces for some
+# other reason is not mistaken for an unfinished one.
+_URL_PLACEHOLDER_RE = re.compile(r"\{[A-Za-z0-9_]+\}")
 
 
 class SettingsDialog(QDialog):
@@ -1481,6 +1489,21 @@ class SettingsDialog(QDialog):
         self._last_default_prompt = default
 
     @staticmethod
+    def _profiles_with_url_placeholder(profiles) -> list:
+        """Sorted labels of profiles whose Base URL still holds a preset marker.
+
+        A few vendor endpoints are per-account, so their preset cannot ship a
+        complete URL and carries a ``{ACCOUNT_ID}``-style marker for the user
+        to replace. Nothing substitutes it: the literal braces travel in the
+        request path and come back as a 404 naming neither the field nor the
+        fix, so the unreplaced marker has to be caught here instead.
+        """
+        return sorted(
+            label for label, prof in profiles.items()
+            if _URL_PLACEHOLDER_RE.search(
+                getattr(prof, "base_url", "") or ""))
+
+    @staticmethod
     def _profiles_missing_base_url(profiles) -> list:
         """Sorted labels of profiles with no Base URL, which cannot work.
 
@@ -1495,23 +1518,38 @@ class SettingsDialog(QDialog):
             if not (getattr(prof, "base_url", "") or "").strip())
 
     def _confirm_incomplete_profiles(self) -> bool:
-        """Ask before saving a profile that has no Base URL. True to proceed.
+        """Ask before saving a profile that cannot work. True to proceed.
+
+        Covers both ways a Base URL is unusable — blank, or still carrying a
+        preset placeholder — in a single question, so a config with one of
+        each is not two dialogs deep before it can be saved.
 
         A question rather than a refusal: a config may already carry a
         half-filled profile the user never selects, and blocking OK on it
         would strand every unrelated setting in this dialog.
         """
-        incomplete = self._profiles_missing_base_url(self._profiles)
-        if not incomplete:
+        problems = []
+        blank = self._profiles_missing_base_url(self._profiles)
+        if blank:
+            problems.append(translate(
+                "SettingsDialog",
+                "No Base URL is set for: %s.") % ", ".join(blank))
+        unfilled = self._profiles_with_url_placeholder(self._profiles)
+        if unfilled:
+            problems.append(translate(
+                "SettingsDialog",
+                "The Base URL for %s still contains a placeholder such as "
+                "{ACCOUNT_ID}. Replace it with the value from your provider "
+                "account.") % ", ".join(unfilled))
+        if not problems:
             return True
         return QMessageBox.question(
             self,
-            translate("SettingsDialog", "Profile has no Base URL"),
-            translate(
+            translate("SettingsDialog", "Profile cannot be used as set up"),
+            "\n\n".join(problems) + "\n\n" + translate(
                 "SettingsDialog",
-                "No Base URL is set for: %s.\n\nRequests made with such a "
-                "profile fail with a connection error rather than a clear "
-                "message. Save anyway?") % ", ".join(incomplete),
+                "Requests made with such a profile fail with a connection "
+                "error rather than a clear message. Save anyway?"),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No) == QMessageBox.Yes
 

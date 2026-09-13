@@ -184,6 +184,22 @@ class TestProviderPresets:
         # PROVIDER_PRESETS should have exactly the same keys as PROVIDERS
         assert set(PROVIDER_PRESETS.keys()) == set(PROVIDERS.keys())
 
+    def test_cloudflare_preset_defaults_to_a_tool_tested_model(self):
+        """PR #74: the default must be a model tool calling was verified on.
+
+        ``supports_tools`` is the sole source of truth for every non-Ollama
+        provider — there is no runtime capability probe — so a default model
+        that rejects the ``tools`` parameter makes Act mode fail with a 400
+        instead of degrading. The contributor exercised the kimi model; the
+        llama one it originally shipped was untested.
+        """
+        from freecad_ai.llm.providers import PROVIDERS
+        assert (PROVIDER_PRESETS["cloudflare-workers-ai"]["default_model"]
+                == "@cf/moonshotai/kimi-k2.7-code")
+        # supports_tools lives only on the canonical dict: PROVIDER_PRESETS
+        # is a four-field projection for the dialog's auto-fill.
+        assert PROVIDERS["cloudflare-workers-ai"]["supports_tools"] is True
+
     def test_github_preset_recommends_reranker(self):
         """Issue #10: GitHub Models has a small per-request input cap.
 

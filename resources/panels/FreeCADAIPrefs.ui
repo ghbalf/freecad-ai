@@ -46,7 +46,8 @@
         <item><property name="text"><string>groq</string></property></item>
         <item><property name="text"><string>mistral</string></property></item>
         <item><property name="text"><string>together</string></property></item>
-       </widget>
+        <item><property name="text"><string>cloudflare-workers-ai</string></property></item>
+        </widget>
       </item>
       <item row="1" column="0">
        <widget class="QLabel" name="modelLabel">

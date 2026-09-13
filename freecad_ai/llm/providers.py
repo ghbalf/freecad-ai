@@ -37,6 +37,20 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "cloudflare-workers-ai": {
+        # Cloudflare Workers AI exposes an OpenAI-compatible chat-completions
+        # endpoint per account. Users must replace {ACCOUNT_ID} with their
+        # Cloudflare account ID and supply a Workers AI API token as ApiKey.
+        # The Settings dialog warns at save time if the marker is still in
+        # place (_profiles_with_url_placeholder); nothing substitutes it.
+        "base_url": "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1",
+        # Tool calling is verified on this model. supports_tools is the only
+        # source of truth for non-Ollama providers, so the default must be a
+        # model that honours the tools parameter.
+        "default_model": "@cf/moonshotai/kimi-k2.7-code",
+        "api_style": "openai",
+        "supports_tools": True,
+    },
     "moonshot": {
         "base_url": "https://api.moonshot.ai/v1",
         "default_model": "kimi-k2.5",
