@@ -42,7 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     from cache. Turn this on *first* to see what you are paying now, then turn
     on the caching option and compare. On OpenAI-style providers this adds a
     field to the request asking for the counts, which a small number of unusual
-    endpoints may reject; if yours does, turn it back off.
+    endpoints may reject; if yours does, turn it back off. If a provider
+    ignores that field and reports nothing, the Report view says so once,
+    rather than leaving you unable to tell a silent provider from a broken
+    setting.
 
   Notes on scope: the Anthropic cache point is only emitted in Act mode, where
   the same prefix is re-sent on every tool turn and so pays for itself. Plan

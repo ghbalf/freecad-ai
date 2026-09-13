@@ -31,6 +31,11 @@ from .providers import get_api_style
 # Anthropic API version header
 ANTHROPIC_API_VERSION = "2023-06-01"
 
+# Set once a session, the first time usage logging is on but a provider
+# reports nothing. Module level on purpose: the chat builds a client per
+# send, so a per-instance flag would repeat the notice every turn (#47).
+_USAGE_SILENCE_REPORTED = False
+
 
 @dataclass
 class ToolCall:
@@ -515,7 +520,9 @@ class LLMClient:
         # Track in-progress tool calls: {index: {"id": ..., "name": ..., "arguments_json": ...}}
         pending_tools: dict[int, dict] = {}
 
-        for chunk in self._http_stream(self._openai_url(), self._openai_headers(), body):
+        stream = self._http_stream(
+            self._openai_url(), self._openai_headers(), body)
+        for chunk in stream:
             try:
                 choices = chunk.get("choices", [])
                 if not choices:
@@ -569,6 +576,7 @@ class LLMClient:
                 # (issue #52).
                 if finish == "length":
                     self.response_truncated = True
+                    self._drain(stream)
                     yield LLMStreamEvent(type="done")
                     return
 
@@ -587,6 +595,7 @@ class LLMClient:
                                 type="tool_call_end",
                                 tool_call=ToolCall(id=pt["id"], name=pt["name"], arguments=args),
                             )
+                    self._drain(stream)
                     yield LLMStreamEvent(type="done")
                     return
 
@@ -874,10 +883,47 @@ class LLMClient:
         merged.update(found)
         self.last_usage = merged
 
+    def _drain(self, stream) -> None:
+        """Pull whatever is left of ``stream`` so the usage chunk arrives.
+
+        An OpenAI-style stream puts its counters in a final chunk *after*
+        the one carrying finish_reason (`choices` empty, `usage` set), so a
+        consumer that returns on finish_reason closes the generator one
+        chunk too early -- and `_log_usage`, firing from that generator's
+        `finally`, finds nothing to report. What is left is the usage chunk
+        and `[DONE]`, so this is two reads, not a second response.
+
+        Gated on log_usage: without the opt-in the request never asked for
+        that chunk, and waiting on a socket for a turn that is already over
+        would be a cost with nothing to collect.
+        """
+        if not self.log_usage:
+            return
+        try:
+            for _ in stream:
+                pass
+        except Exception:
+            # A truncated or misbehaving tail must not lose a turn the user
+            # has already been shown. Missing counters is the lesser harm.
+            pass
+
     def _log_usage(self) -> None:
         """Emit one line per request, to the log and the Report view."""
         usage = self.last_usage
-        if not self.log_usage or not usage:
+        if not self.log_usage:
+            return
+        if not usage:
+            # Asked for counters and got none. Say so once, or the user is
+            # left reading an empty Report view unable to tell a broken
+            # workbench from a provider that simply does not report.
+            global _USAGE_SILENCE_REPORTED
+            if not _USAGE_SILENCE_REPORTED:
+                _USAGE_SILENCE_REPORTED = True
+                self._emit(
+                    "token usage logging is on, but {} returned no usage "
+                    "counters. The provider may not report them; there is "
+                    "nothing to measure on this endpoint.".format(
+                        self.provider_name))
             return
         # Anthropic's input_tokens EXCLUDES whatever was served from cache;
         # OpenAI's prompt_tokens already INCLUDES its cached_tokens. Same
@@ -888,9 +934,14 @@ class LLMClient:
         else:
             prompt = usage["input"]
         share = (100.0 * usage["cache_read"] / prompt) if prompt else 0.0
-        msg = ("tokens: prompt={} (cache read {} = {:.0f}%, written {}), "
-               "completion={}".format(prompt, usage["cache_read"], share,
-                                      usage["cache_write"], usage["output"]))
+        self._emit(
+            "tokens: prompt={} (cache read {} = {:.0f}%, written {}), "
+            "completion={}".format(prompt, usage["cache_read"], share,
+                                   usage["cache_write"], usage["output"]))
+
+    @staticmethod
+    def _emit(msg: str) -> None:
+        """One line to the log and, when there is a GUI, the Report view."""
         logger.info(msg)
         try:
             import FreeCAD as _App
