@@ -732,3 +732,86 @@ class TestSandboxGuiStub:
         # `import FreeCADGui` is the exact statement that segfaults.
         src = self._generated_script()
         assert "import FreeCADGui" not in src
+
+
+class TestConsoleCaptureVisibility:
+    """Issue #82 follow-up: the sandbox's C++ console channel is dead, and
+    said nothing about it.
+
+    The harness installs an `App.Console.AddObserver` observer to catch errors
+    the C++ layer logs without raising a Python exception — attachment and
+    recompute failures that would otherwise pass validation silently. On
+    FreeCAD 1.1.1 in console mode (`-c`) that method does not exist:
+    `App.Console` exposes GetObservers/Print*/SetStatus and no AddObserver at
+    all. The registration raised AttributeError into a bare `except: pass`, so
+    `_observer_installed` was False on every run and the channel collected
+    nothing — while the sandbox went on reporting success as though it had
+    checked.
+
+    Losing the capability is one bug (tracked separately). Losing it *silently*
+    is the one these tests close: a degraded fallback has to say which path it
+    actually took.
+    """
+
+    def test_ok_status_produces_no_warning(self):
+        assert executor._console_capture_warning({"console_capture": "ok"}) is None
+
+    def test_failure_status_is_reported(self):
+        msg = executor._console_capture_warning(
+            {"console_capture": "AttributeError: module '__FreeCADConsole__' "
+                                "has no attribute 'AddObserver'"})
+        assert msg is not None
+        # The reason has to survive into the message, or the next person gets
+        # "something failed" and starts over from nothing.
+        assert "AddObserver" in msg
+
+    def test_the_warning_says_what_is_no_longer_checked(self):
+        msg = executor._console_capture_warning({"console_capture": "boom"})
+        assert msg and "console" in msg.lower()
+
+    def test_a_result_without_the_key_is_not_treated_as_a_failure(self):
+        # An older harness, or a result file from a version that predates the
+        # field; absence is unknown, not broken.
+        assert executor._console_capture_warning({}) is None
+        assert executor._console_capture_warning(None) is None
+
+    def test_the_harness_records_why_the_observer_did_not_install(self):
+        captured = {}
+
+        class _FakeProc:
+            returncode = 0
+
+        def _fake_run(cmd, **kwargs):
+            with open(cmd[2]) as fh:
+                captured["harness"] = fh.read()
+            return _FakeProc()
+
+        with patch("freecad_ai.core.executor._find_freecad_cmd",
+                   return_value="/usr/bin/freecadcmd"):
+            with patch("freecad_ai.core.executor.subprocess.run",
+                       side_effect=_fake_run):
+                executor._sandbox_test("x = 1", timeout=5)
+
+        harness = captured.get("harness", "")
+        assert harness, "sandbox did not generate a harness script"
+        assert "console_capture" in harness, (
+            "the harness must report whether console capture was installed; "
+            "swallowing the failure is what hid the dead channel")
+        # The reason, not just a boolean — 'it broke' is not actionable.
+        assert "_observer_status" in harness
+
+    def test_the_warning_is_logged_once_not_per_execution(self):
+        # execute_code runs constantly in a session; a per-run warning would
+        # train the reader to ignore it.
+        executor._CONSOLE_CAPTURE_WARNED = False
+        bad = {"console_capture": "AttributeError: no AddObserver"}
+        with patch("freecad_ai.core.executor.logger") as log:
+            executor._warn_console_capture_once(bad)
+            executor._warn_console_capture_once(bad)
+        assert log.warning.call_count == 1
+
+    def test_a_healthy_result_never_warns(self):
+        executor._CONSOLE_CAPTURE_WARNED = False
+        with patch("freecad_ai.core.executor.logger") as log:
+            executor._warn_console_capture_once({"console_capture": "ok"})
+        log.warning.assert_not_called()

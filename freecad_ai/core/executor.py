@@ -13,6 +13,7 @@ Safety layers:
 import inspect
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -22,6 +23,49 @@ import sys
 import tempfile
 import traceback
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+# Set once the sandbox has reported a broken console-capture channel, so the
+# warning names the problem on the first pre-check of the session instead of
+# on every one. Degradation is a property of the FreeCAD build, not of any
+# single execution — repeating it per call would only teach the reader to
+# scroll past it.
+_CONSOLE_CAPTURE_WARNED = False
+
+
+def _console_capture_warning(result) -> str | None:
+    """Return a warning if the sandbox could not install its console observer.
+
+    The harness hooks ``App.Console.AddObserver`` to catch errors the C++ layer
+    *logs* without raising anything Python can see — a failed attachment or
+    recompute that leaves the document quietly wrong. That hook is optional by
+    construction, and when it does not attach the sandbox keeps validating
+    object state and reports success as though both channels had run.
+
+    ``result`` is the JSON the harness wrote. A missing ``console_capture`` key
+    means the harness predates this field, not that capture failed, so it is
+    not treated as a problem. Returns ``None`` when there is nothing to say.
+    """
+    status = (result or {}).get("console_capture")
+    if not status or status == "ok":
+        return None
+    return (
+        "Sandbox console capture unavailable ({}). Pre-execution checks still "
+        "validate object state, but FreeCAD errors printed by the C++ layer "
+        "without raising a Python exception will not be detected.".format(status)
+    )
+
+
+def _warn_console_capture_once(result) -> None:
+    """Log ``_console_capture_warning`` at most once per session."""
+    global _CONSOLE_CAPTURE_WARNED
+    if _CONSOLE_CAPTURE_WARNED:
+        return
+    message = _console_capture_warning(result)
+    if message:
+        _CONSOLE_CAPTURE_WARNED = True
+        logger.warning(message)
 
 
 @dataclass
@@ -235,11 +279,17 @@ try:
             self.warnings.append(str(msg).strip())
     _err_obs = _ErrObs()
     _observer_installed = False
+    # Why the reason is kept rather than swallowed: on FreeCAD 1.1.1 in console
+    # mode App.Console has no AddObserver at all, so this raised AttributeError
+    # into a bare except and the channel silently collected nothing on every
+    # run. Recording the reason is what makes that visible to the parent.
+    _observer_status = "ok"
     try:
         App.Console.AddObserver(_err_obs)
         _observer_installed = True
-    except Exception:
-        pass
+    except Exception as _obs_err:
+        _observer_status = "{{}}: {{}}".format(type(_obs_err).__name__, _obs_err)
+    result["console_capture"] = _observer_status
 
     # Console mode: install a fake FreeCADGui module instead of importing the
     # real one. LLM-generated code routinely ends with view-framing cosmetics
@@ -385,6 +435,7 @@ finally:
         if os.path.exists(result_file):
             with open(result_file) as f:
                 result = json.load(f)
+            _warn_console_capture_once(result)
             if result["ok"]:
                 return True, ""
             else:

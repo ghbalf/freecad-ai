@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **The sandbox now says when its console-error channel is unavailable.** The
+  pre-execution sandbox has two ways of noticing a problem: it inspects every
+  object's shape, and it hooks `App.Console.AddObserver` to catch errors the
+  C++ layer prints without raising a Python exception. On FreeCAD 1.1.1 in
+  console mode that method does not exist, so the hook raised `AttributeError`
+  into a bare `except: pass` and the second channel collected nothing on every
+  run — while the sandbox went on reporting success as though it had checked
+  both. The failure is now recorded and logged once per session with the
+  reason. Reviving the channel is tracked separately; this change only stops it
+  from failing silently.
+
 ## [0.25.0-alpha] - 2026-09-13
 
 ### Added
