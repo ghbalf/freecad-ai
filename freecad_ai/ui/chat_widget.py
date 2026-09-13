@@ -218,7 +218,13 @@ class _LLMWorker(QThread):
         try:
             from ..llm.client import create_client_from_config, should_strip_thinking
             from ..config import get_config as _get_config
-            client = create_client_from_config()
+            # Every request in one conversation carries the same cache key, so
+            # the provider can keep routing them to the cluster that already
+            # holds the prefix (#47). It is the conversation id, which outlives
+            # a save/load, because Moonshot asks for a value that survives
+            # leaving and resuming a session.
+            client = create_client_from_config(
+                cache_key=getattr(self.conversation, "conversation_id", ""))
             self._strip_thinking = should_strip_thinking(
                 client.model, _get_config().strip_thinking_history)
             self._optimize_caching = _get_config().optimize_prompt_caching

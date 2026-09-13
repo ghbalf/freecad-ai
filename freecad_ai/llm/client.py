@@ -137,13 +137,18 @@ def _check_probe_response(response: str, expected_number: int) -> bool:
     return str(expected_number) in response
 
 
+# Vendors documenting `prompt_cache_key` on the chat-completions body.
+_CACHE_KEY_PROVIDERS = {"moonshot", "openai"}
+
+
 class LLMClient:
     """Unified client for multiple LLM providers."""
 
     def __init__(self, provider_name: str, base_url: str, api_key: str,
                  model: str, max_tokens: int = 4096, temperature: float = 0.3,
                  thinking: str = "off", model_params: dict | None = None,
-                 prompt_caching: bool = False, log_usage: bool = False):
+                 prompt_caching: bool = False, log_usage: bool = False,
+                 cache_key: str = ""):
         self.provider_name = provider_name
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -163,6 +168,9 @@ class LLMClient:
         # streams, so neither is free enough to switch on for everyone.
         self.prompt_caching = prompt_caching
         self.log_usage = log_usage
+        # Opaque per-conversation id for the sticky-routing hint below.
+        # Empty for every call site that has no conversation to be sticky to.
+        self.cache_key = cache_key
         # Token counts from the most recent response, normalised across both
         # API styles, or None if nothing reported any. Same ownership as
         # response_truncated above: the client records, the UI reads.
@@ -440,6 +448,19 @@ class LLMClient:
         # for a thin proxy to 400 on.
         if stream and self.log_usage:
             body["stream_options"] = {"include_usage": True}
+
+        # A byte-perfect prefix is necessary but not sufficient: Moonshot's
+        # backend is many clusters, each holding its own KV blocks, so a
+        # follow-up routed to a cluster that has none of this conversation's
+        # cache misses anyway. `prompt_cache_key` is a scheduling hint that
+        # asks for the same cluster; OpenAI documents the same field and also
+        # recommends one value per conversation. Only the two vendors that
+        # document it -- an unknown key is one more thing for a thin proxy to
+        # 400 on -- and never over a value the user set themselves.
+        if (self.prompt_caching and self.cache_key
+                and self.provider_name in _CACHE_KEY_PROVIDERS
+                and "prompt_cache_key" not in body):
+            body["prompt_cache_key"] = self.cache_key
 
         # Provider-specific API transformations
         self._apply_provider_overrides(body)
@@ -1135,7 +1156,8 @@ def resolve_params(cfg, profile) -> dict:
 def create_client(cfg=None, utility: str | None = None, *,
                   max_tokens: int | None = None,
                   temperature: float | None = None,
-                  thinking: str | None = None) -> LLMClient:
+                  thinking: str | None = None,
+                  cache_key: str = "") -> LLMClient:
     """Build an LLMClient for one call site.
 
     Connection settings (vendor, url, key, model, params) come from the
@@ -1171,9 +1193,10 @@ def create_client(cfg=None, utility: str | None = None, *,
         # every time anyway — nothing there would ever be re-read.
         prompt_caching=cfg.optimize_prompt_caching and utility is None,
         log_usage=cfg.log_token_usage,
+        cache_key=cache_key,
     )
 
 
-def create_client_from_config() -> LLMClient:
+def create_client_from_config(*, cache_key: str = "") -> LLMClient:
     """Chat client from the active profile. Kept for third-party hooks."""
-    return create_client()
+    return create_client(cache_key=cache_key)

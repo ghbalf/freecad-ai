@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Requests now ask to be routed back to the cache they filled (#47).** A
+  byte-perfect prefix is necessary but not sufficient. Moonshot's engineers
+  describe a backend of many clusters, each holding its own cache blocks: a
+  follow-up balanced onto a cluster that never saw your conversation pays full
+  price however careful the client was with its bytes. Both Moonshot and OpenAI
+  document a `prompt_cache_key` field for this, and both recommend one value
+  per conversation, so the workbench now sends the conversation's own id -- the
+  same one that names the saved session, so resuming a conversation asks for
+  the cluster it was using before.
+
+  It goes out only with **Optimize prompt for caching** ticked, and only to
+  Moonshot and OpenAI: the other OpenAI-*compatible* endpoints are proxies of
+  varying strictness, and an unfamiliar field is a plausible way to earn a 400
+  on someone's chat. If you set `prompt_cache_key` yourself in Model
+  Parameters, your value is left alone.
+
+  Whether this is worth anything depends on how your provider load-balances,
+  which is not something the workbench can see. Nothing here changes what the
+  model is shown.
+
+### Fixed
+
+- **Two conversations created in the same millisecond got the same id.** The id
+  is a millisecond timestamp; it names the saved session file, so the collision
+  could already have one conversation overwrite another, and it is now also the
+  cache-routing key above. It now carries six random hex characters as well.
+  Existing saved conversations keep the ids they have.
+
 ## [0.26.0-alpha] - 2026-09-14
 
 ### Fixed

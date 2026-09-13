@@ -14,6 +14,7 @@ The get_messages_for_api() method converts to provider-specific format.
 
 import json
 import os
+import secrets
 import time
 from dataclasses import dataclass, field
 
@@ -31,7 +32,13 @@ class Conversation:
 
     def __post_init__(self):
         if not self.conversation_id:
-            self.conversation_id = f"conv_{int(time.time() * 1000)}"
+            # The millisecond alone collided: it names the save file, and
+            # since #47 it is also the provider's cache-routing key, where
+            # two conversations sharing one would ask to be scheduled onto
+            # the same prefix cache. Timestamp first so the directory still
+            # sorts chronologically.
+            self.conversation_id = "conv_{}_{}".format(
+                int(time.time() * 1000), secrets.token_hex(3))
         if not self.created_at:
             self.created_at = time.time()
         self.compaction_enabled = True
