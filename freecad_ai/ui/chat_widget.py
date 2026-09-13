@@ -35,7 +35,8 @@ QTextCursor = QtGui.QTextCursor
 from ..config import LOGS_DIR, get_config, prune_oldest_files, save_current_config
 from ..core.conversation import Conversation
 from ..core.executor import extract_code_blocks, extract_truncated_block, execute_code
-from ..core.loop_control import resolve_turn_outcome, should_continue_loop
+from ..core.loop_control import (
+    reasoning_to_persist, resolve_turn_outcome, should_continue_loop)
 from ..core.input_history import InputHistory
 from .message_view import (
     _get_theme_colors,
@@ -209,6 +210,7 @@ class _LLMWorker(QThread):
         self._pending_result = None
         self._max_tool_turns = get_config().max_tool_turns  # 0 = endless
         self._strip_thinking = False  # resolved in run()
+        self._optimize_caching = False  # resolved in run()
         self._tool_timeline = []  # timing data for summary visualization
         self._response_truncated = False  # response hit the output-token limit
 
@@ -219,6 +221,7 @@ class _LLMWorker(QThread):
             client = create_client_from_config()
             self._strip_thinking = should_strip_thinking(
                 client.model, _get_config().strip_thinking_history)
+            self._optimize_caching = _get_config().optimize_prompt_caching
 
             # Re-format messages with image interception on worker thread
             if self.conversation and self.describe_fn:
@@ -425,6 +428,11 @@ class _LLMWorker(QThread):
             # Store tool call info so the parent can update the conversation
             self._tool_results.append({
                 "assistant_text": turn_text,
+                # What the provider was shown for this turn, so the stored
+                # history can re-render it unchanged (#47).
+                "reasoning": reasoning_to_persist(
+                    turn_thinking, self._strip_thinking, self._optimize_caching,
+                    self.api_style),
                 "tool_calls": tc_dicts,
                 "results": [
                     {"tool_call_id": tc.id, "content": r["content"] if self.api_style != "anthropic" else r["content"][0]["content"]}
@@ -2191,7 +2199,8 @@ class ChatDockWidget(QDockWidget):
             for turn_info in self._worker._tool_results:
                 tc_dicts = turn_info["tool_calls"]
                 self.conversation.add_assistant_message(
-                    turn_info["assistant_text"], tool_calls=tc_dicts
+                    turn_info["assistant_text"], tool_calls=tc_dicts,
+                    reasoning_content=turn_info.get("reasoning"),
                 )
                 for r in turn_info["results"]:
                     self.conversation.add_tool_result(r["tool_call_id"], r["content"])

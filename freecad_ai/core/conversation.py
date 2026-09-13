@@ -60,11 +60,26 @@ class Conversation:
         else:
             self.messages.append({"role": "user", "content": content})
 
-    def add_assistant_message(self, content: str, tool_calls: list[dict] | None = None):
-        """Add an assistant message, optionally with tool calls."""
+    def add_assistant_message(self, content: str, tool_calls: list[dict] | None = None,
+                              reasoning_content: str | None = None):
+        """Add an assistant message, optionally with tool calls.
+
+        ``reasoning_content`` is the thinking the agentic loop already
+        echoed back to the provider for this turn. Storing it is what lets
+        the next request re-render the turn as the bytes it was sent with;
+        without it the prefix diverges here and the cache match stops at
+        the static head (#47). ``_to_openai_format`` has always been able
+        to emit it -- nothing ever wrote it.
+
+        Empty means nothing was sent (a silent turn, a model that rejects
+        thinking in history, or caching mode off), and then no key is
+        added at all, so the message is byte-identical to the old one.
+        """
         msg = {"role": "assistant", "content": content}
         if tool_calls:
             msg["tool_calls"] = tool_calls
+        if reasoning_content:
+            msg["reasoning_content"] = reasoning_content
         self.messages.append(msg)
 
     def add_tool_result(self, tool_call_id: str, content: str):

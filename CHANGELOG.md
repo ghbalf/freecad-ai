@@ -18,12 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   history. Adding a single feature changed it, and nothing behind it matched
   any more.
 
-  Measured on moonshot/kimi-k2.6 over a 16-request Act session before the
-  change: the cached portion sat pinned at 12,288 tokens -- the tool list,
-  which is sent as a separate field and cached either way -- and never grew,
-  while the prompt climbed to 15,569. The ~2,000-token system prompt rejoined
-  the cache only on requests where the document had not changed since the one
-  before, and the conversation history never did at all.
+  Measured on moonshot/kimi-k2.6 across three Act sessions of 14-19 requests:
+  the cached portion only ever took two values, 12,288 and 14,336, while the
+  prompt climbed to 15,620. Both are multiples of 2,048, and `cache read`
+  matches `floor(previous request's prompt / 2048) x 2048` on 24 of 28
+  consecutive request pairs -- that provider stores the prefix in 2,048-token
+  blocks. Every exception is a turn boundary, where the re-rendered history
+  stopped matching what had actually been sent.
+
+  Two honest caveats on those numbers. A session that small cannot show this
+  fix working: the entire message history is under one 2,048-token block, so
+  the billed remainder is essentially the prompt's remainder past the last
+  block boundary whatever we do. And the block size is one provider's
+  behaviour, not a rule. The sessions that gain are the long ones, and the
+  gain is that the history *can* be cached at all -- which it could not be
+  before, at any length.
 
   On providers that cache automatically and for free — OpenAI, DeepSeek and
   most OpenAI-compatible endpoints — this silently gave up a discount the
@@ -41,7 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
     Each turn keeps the document snapshot it was actually sent with, so the
     conversation reproduces byte-for-byte every time it is re-sent — which is
-    the property the cache match depends on. A side effect you will see in a
+    the property the cache match depends on. On models that echo their reasoning
+    back into the history — Kimi and the other thinking models — the thinking
+    sent for a turn used to be dropped when that turn was stored, so the next
+    request re-rendered the turn differently and the prefix diverged there;
+    it is now kept, which also means it is written to the saved session and
+    the session log alongside the rest of the turn. A side effect you will see in a
     long session is that the transcript carries one snapshot per turn rather
     than a single live one; they are labelled as the state at the time of that
     message, and the newest is always the one nearest the model's answer.
