@@ -13,10 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   you money on every turn (#47).** Providers discount a prompt whose opening
   they have seen before, but the match is a *prefix* — it compares from the
   first token and stops at the first byte that differs. The live document
-  state (your object tree, active Body and selection) sat at the very top of
-  the system prompt, ahead of the instructions and the ~12.5k tool list, so
-  adding a single feature changed the opening and invalidated the whole run
-  behind it on the next turn.
+  state (your object tree, active Body and selection) sat inside the system
+  prompt, ahead of the skill list, your AGENTS.md and the whole conversation
+  history. Adding a single feature changed it, and nothing behind it matched
+  any more.
+
+  Measured on moonshot/kimi-k2.6 over a 16-request Act session before the
+  change: the cached portion sat pinned at 12,288 tokens -- the tool list,
+  which is sent as a separate field and cached either way -- and never grew,
+  while the prompt climbed to 15,569. The ~2,000-token system prompt rejoined
+  the cache only on requests where the document had not changed since the one
+  before, and the conversation history never did at all.
 
   On providers that cache automatically and for free — OpenAI, DeepSeek and
   most OpenAI-compatible endpoints — this silently gave up a discount the
@@ -28,8 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
   - **Optimize prompt for caching.** Moves the document state from the top of
     the system prompt to the end of your most recent message, and on Anthropic
-    marks a cache point covering the tool list. In a multi-turn Act session
-    this can cut the repeated part of the prompt by roughly three quarters.
+    marks a cache point covering the tool list. What this recovers is the
+    system prompt and the conversation history, which grow with the session;
+    the tool list was already cached on providers that cache implicitly.
 
     > ⚠️ **This may change the assistant's replies.** The model is shown the
     > same information, but in a different position, and models are sensitive
