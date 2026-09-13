@@ -55,7 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     sent for a turn used to be dropped when that turn was stored, so the next
     request re-rendered the turn differently and the prefix diverged there;
     it is now kept, which also means it is written to the saved session and
-    the session log alongside the rest of the turn. A side effect you will see in a
+    the session log alongside the rest of the turn. Whether that recovers
+    anything is up to the provider: Moonshot's `kimi-k2.6` documents that it
+    ignores reasoning in history unless the request asks it not to, which the
+    workbench does not do, so there this is a correctness fix rather than a
+    measurable saving. A side effect you will see in a
     long session is that the transcript carries one snapshot per turn rather
     than a single live one; they are labelled as the state at the time of that
     message, and the newest is always the one nearest the model's answer.
