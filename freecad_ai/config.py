@@ -498,6 +498,28 @@ class AppConfig:
     # an MDI sub-window of the main window.
     use_external_editor: bool = False
     system_prompt_override: str = ""  # empty = use default; non-empty = use as-is
+
+    # ── Prompt caching (#47) ────────────────────────────────────
+    # Every provider that discounts repeated prompts matches on a *prefix*
+    # and stops at the first differing byte. The live document state used
+    # to sit at the top of the system prompt, ahead of the instructions and
+    # the ~12.5k tool block, so one added feature invalidated the whole
+    # cacheable run on the next turn.
+    #
+    # Two switches, not one: the first only measures, the second only
+    # changes. Turning them on together would leave no way to tell whether
+    # the numbers improved because of the optimisation or because usage
+    # reporting had just started. Both default off — prior behaviour.
+    #
+    # Moves the document state to the end of the last user message and (on
+    # Anthropic) marks a cache breakpoint. Same text, later position: what
+    # the model sees genuinely changes, hence opt-in.
+    optimize_prompt_caching: bool = False
+    # Logs input/output and cache read/write token counts per response.
+    # Anthropic reports these unasked; OpenAI-style streaming only sends
+    # them if the request carries stream_options.include_usage, which this
+    # flag adds — so it is a request change, not purely passive.
+    log_token_usage: bool = False
     # LEGACY, unread since capabilities moved onto the profile. Kept in the
     # JSON for one release so a downgrade still finds them, and mirrored
     # from the active profile on save — like the ``provider`` mirror.

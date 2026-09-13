@@ -137,7 +137,8 @@ class LLMClient:
 
     def __init__(self, provider_name: str, base_url: str, api_key: str,
                  model: str, max_tokens: int = 4096, temperature: float = 0.3,
-                 thinking: str = "off", model_params: dict | None = None):
+                 thinking: str = "off", model_params: dict | None = None,
+                 prompt_caching: bool = False, log_usage: bool = False):
         self.provider_name = provider_name
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -151,6 +152,16 @@ class LLMClient:
         # Set when the last stream ended because it hit the output-token limit
         # rather than finishing. Read by the UI to warn the user (issue #50).
         self.response_truncated = False
+
+        # Prompt caching (#47). Both default off: the first changes what the
+        # model is shown, the second changes the request body on OpenAI-style
+        # streams, so neither is free enough to switch on for everyone.
+        self.prompt_caching = prompt_caching
+        self.log_usage = log_usage
+        # Token counts from the most recent response, normalised across both
+        # API styles, or None if nothing reported any. Same ownership as
+        # response_truncated above: the client records, the UI reads.
+        self.last_usage = None
 
         # SSL context for HTTPS requests.
         # Snap-packaged FreeCAD may lack the _ssl C extension, in which
@@ -418,6 +429,13 @@ class LLMClient:
             effort_map = {"on": "medium", "extended": "high"}
             body["reasoning_effort"] = effort_map.get(self.thinking, "medium")
 
+        # An OpenAI-style stream reports no usage at all unless asked, so
+        # this is the price of measuring anything (#47). Only on streams —
+        # off-stream it buys nothing, and an unknown key is one more thing
+        # for a thin proxy to 400 on.
+        if stream and self.log_usage:
+            body["stream_options"] = {"include_usage": True}
+
         # Provider-specific API transformations
         self._apply_provider_overrides(body)
 
@@ -646,6 +664,30 @@ class LLMClient:
             body["system"] = system
         if tools:
             body["tools"] = tools
+
+        # Prompt caching (#47). Anthropic caches in a fixed order — tools,
+        # then system, then messages — and a breakpoint caches everything
+        # up to and including the block it sits on. So a single mark on
+        # `system` covers the ~12.5k tool block behind it; marking both
+        # would spend a second of the four available breakpoints for
+        # nothing.
+        #
+        # Gated on tools because a cache *write* costs 1.25x a normal read.
+        # Act mode re-sends the same prefix on every tool turn, so the
+        # write pays for itself immediately. Plan mode sends no tools
+        # (chat_widget: use_tools requires mode == "act") and often just
+        # one request, which would pay the premium and never read it back.
+        if self.prompt_caching and tools:
+            mark = {"type": "ephemeral"}
+            if system:
+                body["system"] = [
+                    {"type": "text", "text": system, "cache_control": mark}]
+            else:
+                # No system prompt to hang it on — fall back to the last
+                # tool, which caches the tool block alone. Copied, because
+                # the caller reuses its schema list across turns and an
+                # in-place mark would accumulate over the whole session.
+                body["tools"] = tools[:-1] + [dict(tools[-1], cache_control=mark)]
         return body
 
     def _send_anthropic(self, messages: list[dict], system: str, stream: bool = False) -> str:
@@ -759,6 +801,103 @@ class LLMClient:
 
         yield LLMStreamEvent(type="done")
 
+    # ── Token accounting (#47) ──────────────────────────────────
+
+    _USAGE_FIELDS = {
+        # normalised name -> the spellings the two API styles use
+        "input": ("input_tokens", "prompt_tokens"),
+        "output": ("output_tokens", "completion_tokens"),
+        "cache_write": ("cache_creation_input_tokens",),
+        "cache_read": ("cache_read_input_tokens",),
+    }
+
+    @staticmethod
+    def _count(value) -> int | None:
+        # bools are ints in Python, and a provider sending `true` here would
+        # otherwise be recorded as 1 token.
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value
+
+    def _begin_request(self) -> None:
+        """Drop the previous request's counters.
+
+        The client outlives the request — chat_widget keeps one per turn
+        and stream_with_tools loops on it — so without this a response
+        that reports no usage would be logged with the last one's numbers.
+        Stale-but-plausible is worse than absent. ``response_truncated``
+        is deliberately left alone; #52 owns its own lifecycle.
+        """
+        self.last_usage = None
+
+    def _record_usage(self, chunk) -> None:
+        """Merge any usage counters in ``chunk`` into ``last_usage``.
+
+        Called for every response body and every SSE chunk, so it has to
+        cope with four shapes: a non-streaming body with a top-level
+        ``usage``, Anthropic's ``message_start`` (nested under ``message``),
+        Anthropic's ``message_delta`` (output count only, arriving after
+        the input count — hence merge rather than replace), and an
+        OpenAI-style final chunk. Everything else is ignored.
+
+        Never raises. This runs on the response path of every request, and
+        a proxy with creative ideas about the usage block must not be able
+        to take the chat down with it.
+        """
+        if not isinstance(chunk, dict):
+            return
+        raw = chunk.get("usage")
+        if raw is None and isinstance(chunk.get("message"), dict):
+            raw = chunk["message"].get("usage")
+        if not isinstance(raw, dict):
+            return
+
+        found = {}
+        for name, spellings in self._USAGE_FIELDS.items():
+            for spelling in spellings:
+                count = self._count(raw.get(spelling))
+                if count is not None:
+                    found[name] = count
+                    break
+        # OpenAI reports its cache hits nested, and has no write counter at
+        # all — its cache is automatic and writes are not billed.
+        details = raw.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            cached = self._count(details.get("cached_tokens"))
+            if cached is not None:
+                found["cache_read"] = cached
+        if not found:
+            return
+
+        merged = dict(self.last_usage) if self.last_usage else {
+            "input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
+        merged.update(found)
+        self.last_usage = merged
+
+    def _log_usage(self) -> None:
+        """Emit one line per request, to the log and the Report view."""
+        usage = self.last_usage
+        if not self.log_usage or not usage:
+            return
+        # Anthropic's input_tokens EXCLUDES whatever was served from cache;
+        # OpenAI's prompt_tokens already INCLUDES its cached_tokens. Same
+        # idea, different denominator — computing one share both ways would
+        # quietly overstate the hit rate on Anthropic.
+        if self.api_style == "anthropic":
+            prompt = usage["input"] + usage["cache_read"] + usage["cache_write"]
+        else:
+            prompt = usage["input"]
+        share = (100.0 * usage["cache_read"] / prompt) if prompt else 0.0
+        msg = ("tokens: prompt={} (cache read {} = {:.0f}%, written {}), "
+               "completion={}".format(prompt, usage["cache_read"], share,
+                                      usage["cache_write"], usage["output"]))
+        logger.info(msg)
+        try:
+            import FreeCAD as _App
+            _App.Console.PrintMessage("[FreeCAD AI] {}\n".format(msg))
+        except Exception:
+            pass
+
     # ── HTTP helpers ────────────────────────────────────────────
 
     _MAX_RETRIES = 5
@@ -785,6 +924,7 @@ class LLMClient:
 
     def _http_post(self, url: str, headers: dict, body: dict) -> dict:
         """Make an HTTP POST request with retry on 429. Returns parsed JSON."""
+        self._begin_request()
         self._check_ssl(url)
         payload = json.dumps(body).encode("utf-8")
         timeout = 300 if self.provider_name == "ollama" else 120
@@ -794,7 +934,10 @@ class LLMClient:
             req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
             try:
                 with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
+                    data = json.loads(resp.read().decode("utf-8"))
+                    self._record_usage(data)
+                    self._log_usage()
+                    return data
             except urllib.error.HTTPError as e:
                 if e.code == 429 and attempt < self._MAX_RETRIES:
                     delay = self._get_retry_delay(e, attempt)
@@ -815,6 +958,7 @@ class LLMClient:
 
     def _http_stream(self, url: str, headers: dict, body: dict) -> Generator[dict, None, None]:
         """Make a streaming HTTP POST with retry on 429. Yields parsed SSE data chunks."""
+        self._begin_request()
         self._check_ssl(url)
         payload = json.dumps(body).encode("utf-8")
         timeout = 300 if self.provider_name == "ollama" else 120
@@ -867,11 +1011,20 @@ class LLMClient:
                     if text_line.startswith("data: "):
                         json_str = text_line[6:]
                         try:
-                            yield json.loads(json_str)
+                            chunk = json.loads(json_str)
                         except json.JSONDecodeError:
                             continue
+                        # Every streaming path funnels through here, so one
+                        # hook covers all eight of them (#47). Anthropic
+                        # splits its counts over message_start and
+                        # message_delta, so this fires more than once per
+                        # request — _record_usage merges rather than
+                        # replaces, and the summary is logged once below.
+                        self._record_usage(chunk)
+                        yield chunk
         finally:
             resp.close()
+            self._log_usage()
 
 
 # Models that require thinking content to be stripped from conversation
@@ -961,6 +1114,12 @@ def create_client(cfg=None, utility: str | None = None, *,
         temperature=cfg.temperature if temperature is None else temperature,
         thinking=cfg.thinking if thinking is None else thinking,
         model_params=params,
+        # Job settings like the three above, but with no call-site override:
+        # caching is a property of the conversation, not of one call, and a
+        # utility client (reranker, vision probe) sends a different prefix
+        # every time anyway — nothing there would ever be re-read.
+        prompt_caching=cfg.optimize_prompt_caching and utility is None,
+        log_usage=cfg.log_token_usage,
     )
 
 

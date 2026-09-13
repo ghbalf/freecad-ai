@@ -383,7 +383,8 @@ def get_default_system_prompt(mode: str = "act",
 
 def build_system_prompt(mode: str = "plan", agents_md: str = "",
                         tools_enabled: bool = False,
-                        override: str = "") -> str:
+                        override: str = "",
+                        include_document_context: bool = True) -> str:
     """Build the full system prompt.
 
     Args:
@@ -393,6 +394,11 @@ def build_system_prompt(mode: str = "plan", agents_md: str = "",
         override: If non-empty, replaces the static instruction portion of the
                   prompt. Dynamic sections (document context, skills, AGENTS.md)
                   are still appended.
+        include_document_context: When False, omit the live document state so
+                  the prompt is byte-identical between turns and prompt caches
+                  keep hitting (#47). The caller must then deliver it at the
+                  tail itself — see build_document_context_block(). Skills and
+                  AGENTS.md stay put: both are stable for a session.
     """
     # Static instructions — either user override or generated default
     if override:
@@ -402,12 +408,19 @@ def build_system_prompt(mode: str = "plan", agents_md: str = "",
 
     sections = [static]
 
-    # Document context
-    doc_ctx = get_document_context()
-    if doc_ctx:
-        sections.append("## Current Document State")
-        sections.append(doc_ctx)
-        sections.append("")
+    # Document context. Volatile — it changes with every feature the model
+    # adds — and it sits ahead of the instructions, the skill list and (in
+    # the request proper) the ~12.5k tool block. Prompt caches match on a
+    # prefix and stop at the first differing byte, so leaving it here
+    # invalidates everything behind it on every turn (#47). Callers that
+    # want a stable prefix pass include_document_context=False and deliver
+    # the same text at the tail via build_document_context_block().
+    if include_document_context:
+        doc_ctx = get_document_context()
+        if doc_ctx:
+            sections.append("## Current Document State")
+            sections.append(doc_ctx)
+            sections.append("")
 
     # Available skills
     try:
@@ -436,3 +449,46 @@ def build_system_prompt(mode: str = "plan", agents_md: str = "",
         sections.append("")
 
     return "\n".join(sections)
+
+
+def build_document_context_block() -> str:
+    """The live document state, formatted for delivery at the tail.
+
+    Same heading and body build_system_prompt() would have put at the top;
+    only the position differs. Empty string when there is nothing to say,
+    so callers can append unconditionally.
+    """
+    doc_ctx = get_document_context()
+    if not doc_ctx:
+        return ""
+    return "## Current Document State\n" + doc_ctx
+
+
+def append_document_context(messages: list, block: str) -> list:
+    """Return ``messages`` with ``block`` appended to the last user turn.
+
+    Appending to the existing turn rather than adding a message of its own
+    keeps the role sequence exactly as it was — 22 provider endpoints of
+    varying strictness see no structural change, only a longer final user
+    message. The list and the message that changes are copied, because the
+    caller goes on using the conversation it passed in.
+
+    Content arrives as a plain string, or as a block list when an image is
+    attached; appending a string to that list would corrupt the message, so
+    a vision turn gets a trailing text block instead.
+    """
+    if not block:
+        return messages
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") != "user":
+            continue
+        out = list(messages)
+        msg = dict(messages[i])
+        content = msg.get("content")
+        if isinstance(content, list):
+            msg["content"] = content + [{"type": "text", "text": block}]
+        else:
+            msg["content"] = "{}\n\n{}".format(content, block)
+        out[i] = msg
+        return out
+    return messages

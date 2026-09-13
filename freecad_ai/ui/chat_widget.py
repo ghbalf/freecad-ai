@@ -1954,11 +1954,13 @@ class ChatDockWidget(QDockWidget):
                 tools_schema = self._tool_registry.to_openai_schema(filter_names)
             system_prompt = build_system_prompt(
                 mode=mode, tools_enabled=True,
-                override=cfg.system_prompt_override)
+                override=cfg.system_prompt_override,
+                include_document_context=not cfg.optimize_prompt_caching)
         else:
             self._tool_registry = None
             system_prompt = build_system_prompt(
-                mode=mode, override=cfg.system_prompt_override)
+                mode=mode, override=cfg.system_prompt_override,
+                include_document_context=not cfg.optimize_prompt_caching)
 
         # Build describe_fn for non-vision LLMs
         describe_fn = None
@@ -1991,6 +1993,19 @@ class ChatDockWidget(QDockWidget):
         strip_images = not cfg.supports_vision and describe_fn is None
         messages = self.conversation.get_messages_for_api(
             api_style=api_style, strip_images=strip_images, strip_thinking=strip)
+
+        # Prompt caching (#47): the document state was deliberately left out
+        # of the system prompt so the prefix stays byte-identical between
+        # turns. Deliver the same text here instead, at the very end of the
+        # last user message, where changing it invalidates nothing ahead of
+        # it. The model still sees it -- later, and as part of the turn it
+        # actually relates to.
+        if cfg.optimize_prompt_caching:
+            from ..core.system_prompt import (
+                append_document_context, build_document_context_block,
+            )
+            messages = append_document_context(
+                messages, build_document_context_block())
 
         # Start streaming
         self._set_loading(True)
@@ -2493,14 +2508,24 @@ class ChatDockWidget(QDockWidget):
         from ..core.system_prompt import build_system_prompt
         from ..llm.client import should_strip_thinking
         mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
-        system_prompt = build_system_prompt(mode=mode)
         cfg = get_config()
+        system_prompt = build_system_prompt(
+            mode=mode,
+            include_document_context=not cfg.optimize_prompt_caching)
         strip = should_strip_thinking(
             cfg.provider.model, cfg.strip_thinking_history)
         # This retry attached a viewport snapshot above; drop history images
         # for non-vision models so they aren't sent raw (issue #30).
         messages = self.conversation.get_messages_for_api(
             strip_images=not cfg.supports_vision, strip_thinking=strip)
+
+        # Same tail delivery as the main send path (#47).
+        if cfg.optimize_prompt_caching:
+            from ..core.system_prompt import (
+                append_document_context, build_document_context_block,
+            )
+            messages = append_document_context(
+                messages, build_document_context_block())
 
         self._set_loading(True)
         self._streaming_html = ""

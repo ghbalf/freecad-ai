@@ -584,6 +584,44 @@ class SettingsDialog(QDialog):
             self._on_strip_thinking_changed)
         behavior_layout.addWidget(self.strip_thinking_check)
 
+        # Prompt caching (#47). Both default off, so an existing install
+        # behaves exactly as it did before the upgrade.
+        self.prompt_cache_check = QCheckBox(
+            translate("SettingsDialog",
+                      "Optimize prompt for caching (may change replies)")
+        )
+        self.prompt_cache_check.setToolTip(
+            translate("SettingsDialog",
+                      "Providers discount a prompt they have seen before, but\n"
+                      "only while its opening stays byte-identical. The live\n"
+                      "document state sits at the top of the prompt, so it\n"
+                      "changes every time you add a feature and the discount\n"
+                      "is lost -- including on the much larger tool list\n"
+                      "behind it.\n\n"
+                      "This moves the document state to the end of your last\n"
+                      "message instead, and marks a cache point on Anthropic.\n\n"
+                      "The model still sees the same information, but in a\n"
+                      "different place, so its replies may differ. That is why\n"
+                      "this is off by default.")
+        )
+        behavior_layout.addWidget(self.prompt_cache_check)
+
+        self.log_usage_check = QCheckBox(
+            translate("SettingsDialog", "Log token usage to the Report view")
+        )
+        self.log_usage_check.setToolTip(
+            translate("SettingsDialog",
+                      "Print one line per reply with the prompt and completion\n"
+                      "token counts, and how much of the prompt was served\n"
+                      "from cache.\n\n"
+                      "Turn this on first to see what your requests cost now,\n"
+                      "then turn on the caching option above and compare.\n\n"
+                      "On OpenAI-style providers this adds a field to the\n"
+                      "request asking for the counts, which a few unusual\n"
+                      "endpoints may reject.")
+        )
+        behavior_layout.addWidget(self.log_usage_check)
+
         # System prompt
         prompt_group = QGroupBox(translate("SettingsDialog", "System Prompt"))
         prompt_layout = QVBoxLayout()
@@ -997,6 +1035,10 @@ class SettingsDialog(QDialog):
 
         # Strip thinking history — tristate: PartiallyChecked=auto, Checked=on, Unchecked=off
         self._update_strip_thinking_ui(cfg.strip_thinking_history)
+
+        # Prompt caching (#47)
+        self.prompt_cache_check.setChecked(cfg.optimize_prompt_caching)
+        self.log_usage_check.setChecked(cfg.log_token_usage)
 
         # System prompt text: show override if set, otherwise generate default
         default_prompt = self._get_default_prompt_text()
@@ -1611,6 +1653,10 @@ class SettingsDialog(QDialog):
 
         # Strip thinking history — tristate checkbox
         cfg.strip_thinking_history = self._read_strip_thinking_state()
+
+        # Prompt caching (#47)
+        cfg.optimize_prompt_caching = self.prompt_cache_check.isChecked()
+        cfg.log_token_usage = self.log_usage_check.isChecked()
 
         # Save system prompt override (empty if user hasn't changed from default)
         custom_text = self.system_prompt_edit.toPlainText().strip()

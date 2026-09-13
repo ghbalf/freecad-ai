@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The prompt was arranged so that providers could not cache it, which cost
+  you money on every turn (#47).** Providers discount a prompt whose opening
+  they have seen before, but the match is a *prefix* — it compares from the
+  first token and stops at the first byte that differs. The live document
+  state (your object tree, active Body and selection) sat at the very top of
+  the system prompt, ahead of the instructions and the ~12.5k tool list, so
+  adding a single feature changed the opening and invalidated the whole run
+  behind it on the next turn.
+
+  On providers that cache automatically and for free — OpenAI, DeepSeek and
+  most OpenAI-compatible endpoints — this silently gave up a discount the
+  workbench already qualified for, and because nothing read the `usage`
+  figures, it did so invisibly.
+
+  The fix is opt-in, under **Settings → Behavior**, and both switches are
+  **off by default** so nothing changes until you choose it:
+
+  - **Optimize prompt for caching.** Moves the document state from the top of
+    the system prompt to the end of your most recent message, and on Anthropic
+    marks a cache point covering the tool list. In a multi-turn Act session
+    this can cut the repeated part of the prompt by roughly three quarters.
+
+    > ⚠️ **This may change the assistant's replies.** The model is shown the
+    > same information, but in a different position, and models are sensitive
+    > to where information sits in a prompt. It is off by default for exactly
+    > this reason. If answers get worse after you enable it, turn it back off
+    > and please open an issue — that outcome is worth knowing about.
+
+  - **Log token usage to the Report view.** Prints one line per reply with the
+    prompt and completion token counts and how much of the prompt was served
+    from cache. Turn this on *first* to see what you are paying now, then turn
+    on the caching option and compare. On OpenAI-style providers this adds a
+    field to the request asking for the counts, which a small number of unusual
+    endpoints may reject; if yours does, turn it back off.
+
+  Notes on scope: the Anthropic cache point is only emitted in Act mode, where
+  the same prefix is re-sent on every tool turn and so pays for itself. Plan
+  mode sends no tools and often only one request, and an Anthropic cache
+  *write* costs more than a normal read, so marking it there would have made
+  Plan mode more expensive rather than less. Providers with an explicit
+  cache-creation API rather than an inline marker — Moonshot and Google among
+  them — are unaffected by the second half and would need separate work.
+  Tool reranking, if you have enabled it, varies the tool list per message and
+  will limit how much of the prompt can be cached whatever these settings say.
 - **Test Connection no longer writes your in-progress Settings edits into the
   live config, where Cancel could not undo them (#76).** Max Output Tokens,
   Context Window, Max tool-loop turns, Thinking and the System Prompt were
