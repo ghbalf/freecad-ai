@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Test Connection no longer writes your in-progress Settings edits into the
+  live config, where Cancel could not undo them (#76).** Max Output Tokens,
+  Context Window, Max tool-loop turns, Thinking and the System Prompt were
+  staged in the global config so the probe thread could read two of them back
+  off it; nothing restored them on Cancel, and an unrelated save elsewhere in
+  the session then flushed the cancelled edits to disk. The probe is handed
+  its settings directly now, so there is nothing left to roll back. No API key
+  or connection field was ever involved.
 - **The sandbox pre-check no longer blames your code for a document that was
   already broken (#82).** An object that fails to recompute stays `Touched`, so
   FreeCAD re-logs its error on *every* later recompute — including the one your

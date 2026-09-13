@@ -48,41 +48,53 @@ QInputDialog = QtWidgets.QInputDialog
 from ..config import get_config, save_current_config, PROVIDER_PRESETS, ProviderConfig
 from ..llm.providers import get_provider_names
 
+# Thinking combo index -> config value. Shared by _save and _test_connection.
+_THINKING_VALUES = ["off", "on", "extended"]
+
 
 class _TestConnectionThread(QThread):
     """Background thread for testing LLM connection and detecting capabilities.
 
-    Takes provider/URL/key/model/model_params as arguments rather than
-    reading config — so the user can test before saving, and so a profile
-    that isn't cfg.active_profile can't have its values smuggled into the
-    active one through the singleton (see _TestRerankerThread).
+    Takes everything it needs as arguments rather than reading config — so
+    the user can test before saving, and so a profile that isn't
+    cfg.active_profile can't have its values smuggled into the active one
+    through the singleton (see _TestRerankerThread).
+
+    max_tokens/thinking used to arrive the long way round: the dialog wrote
+    the widget values into the singleton (_save_temp) purely so run() could
+    read them back off it. Nothing undid that on Cancel, and an unrelated
+    save_current_config() elsewhere then flushed cancelled edits to disk
+    (#76). temperature is the saved value: the model-params table carries
+    the dialog's own, and LLMClient lets it win over this fallback.
     """
     finished = Signal(bool, str)        # success, message
     vision_result = Signal(bool)        # vision probe result
     capabilities_result = Signal(dict)  # full caps dict (Ollama: vision/tools/thinking)
 
     def __init__(self, provider_name, base_url, api_key, model,
-                 model_params, parent=None):
+                 model_params, max_tokens, temperature, thinking,
+                 parent=None):
         super().__init__(parent)
         self._provider = provider_name
         self._base_url = base_url
         self._api_key = api_key
         self._model = model
         self._model_params = dict(model_params or {})
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+        self._thinking = thinking
 
     def run(self):
         try:
-            from ..config import get_config
             from ..llm.client import LLMClient
-            cfg = get_config()
             client = LLMClient(
                 provider_name=self._provider,
                 base_url=self._base_url,
                 api_key=self._api_key,
                 model=self._model,
-                max_tokens=cfg.max_tokens,
-                temperature=cfg.temperature,
-                thinking=cfg.thinking,
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
+                thinking=self._thinking,
                 model_params=self._model_params,
             )
             response = client.test_connection()
@@ -954,8 +966,9 @@ class SettingsDialog(QDialog):
 
         # Profile edits stay dialog-local until OK. cfg is the live singleton,
         # so mutating its profiles in place makes Cancel a no-op — and an
-        # unrelated save_current_config() (the vision probe calls one) would
-        # flush a discarded edit to disk.
+        # unrelated save_current_config() (chat_widget's dock-layout change
+        # and Plan/Act toggle both call one) would flush a discarded edit to
+        # disk.
         self._profiles = copy.deepcopy(cfg.profiles)
         self._active_profile = cfg.active_profile
         self._utility_profiles = dict(cfg.utility_profiles)
@@ -1594,8 +1607,7 @@ class SettingsDialog(QDialog):
         cfg.auto_execute = self.auto_execute_check.isChecked()
         cfg.keep_dock_on_workbench_switch = self.keep_dock_check.isChecked()
 
-        thinking_values = ["off", "on", "extended"]
-        cfg.thinking = thinking_values[self.thinking_combo.currentIndex()]
+        cfg.thinking = _THINKING_VALUES[self.thinking_combo.currentIndex()]
 
         # Strip thinking history — tristate checkbox
         cfg.strip_thinking_history = self._read_strip_thinking_state()
@@ -1730,13 +1742,13 @@ class SettingsDialog(QDialog):
 
     def _test_connection(self):
         """Test the LLM connection in a background thread."""
-        self._save_temp()
-
         # Resolve provider/URL/key/model/params from the visible widgets
         # directly, rather than through cfg — the visible profile may not be
         # cfg.active_profile (e.g. a profile added but not yet saved), and
         # writing it into the singleton would smuggle it into the wrong
-        # profile (see _save_temp).
+        # profile. The Behavior-tab values below travel the same way, for
+        # the second half of the same reason: nothing rolls a singleton
+        # write back when the user hits Cancel (#76).
         names = get_provider_names()
         idx = self.provider_combo.currentIndex()
         provider_name = names[idx] if 0 <= idx < len(names) else "anthropic"
@@ -1762,7 +1774,13 @@ class SettingsDialog(QDialog):
         self.test_status.setStyleSheet("color: #666;")
 
         self._test_thread = _TestConnectionThread(
-            provider_name, base_url, api_key, model, model_params, self,
+            provider_name, base_url, api_key, model, model_params,
+            max_tokens=self.max_tokens_spin.value(),
+            # The params table supplies the dialog's own temperature and
+            # outranks this inside LLMClient; cfg is only the fallback.
+            temperature=self._cfg.temperature,
+            thinking=_THINKING_VALUES[self.thinking_combo.currentIndex()],
+            parent=self,
         )
         self._test_thread.finished.connect(self._on_test_finished)
         self._test_thread.vision_result.connect(self._on_vision_probed)
@@ -1854,46 +1872,6 @@ class SettingsDialog(QDialog):
                 FreeCAD.Console.PrintMessage(f"FreeCAD AI: {line}\n")
             except ImportError:
                 pass
-
-    def _save_temp(self):
-        """Temporarily apply current UI values to config (for test connection).
-
-        Connection fields (provider/base_url/api_key/model) are deliberately
-        NOT written here — _test_connection reads them straight from the
-        widgets and hands them to _TestConnectionThread, so testing a
-        profile that isn't cfg.active_profile can't leak its values into the
-        active one through this singleton write.
-
-        Model params are the same story: _test_connection reads the table
-        itself and passes it straight to _TestConnectionThread (the vision
-        probe builds its client from that same thread), so writing them
-        into cfg.model_params/cfg.temperature here would feed nothing —
-        it would only leak to disk via the vision-probe's save.
-        """
-        cfg = get_config()
-
-        try:
-            cfg.max_tokens = self.max_tokens_spin.value()
-        except Exception:
-            pass
-        try:
-            cfg.context_window = self.context_window_spin.value()
-        except Exception:
-            pass
-        try:
-            cfg.max_tool_turns = self.max_tool_turns_spin.value()
-        except Exception:
-            pass
-
-        thinking_values = ["off", "on", "extended"]
-        cfg.thinking = thinking_values[self.thinking_combo.currentIndex()]
-
-        custom_text = self.system_prompt_edit.toPlainText().strip()
-        default_text = self._get_default_prompt_text().strip()
-        if custom_text != default_text:
-            cfg.system_prompt_override = custom_text
-        else:
-            cfg.system_prompt_override = ""
 
     @staticmethod
     def _mcp_list_label(entry: dict) -> str:

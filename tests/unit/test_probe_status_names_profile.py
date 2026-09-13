@@ -82,6 +82,9 @@ def _fake_connection_dialog(cfg, displayed, monkeypatch):
     fake.api_key_edit.text.return_value = ""
     fake.model_edit.text.return_value = "claude-sonnet-4-6"
     fake._read_model_params_table.return_value = {}
+    # _test_connection indexes _THINKING_VALUES with this, so a MagicMock
+    # index would be a TypeError rather than a probe.
+    fake.thinking_combo.currentIndex.return_value = 0
     _bind_helpers(fake)
     return fake
 

@@ -463,34 +463,12 @@ class TestWorkingCopyIsIndependent:
         assert cfg.profiles["local"].base_url != "http://mutated:9999/v1"
 
 
-class TestSaveTempDoesNotMutateStoredProfile:
-    """Change 3: Test Connection must stop smuggling the visible widget
-    values into the active profile through `_save_temp`. Once the working
-    state can diverge from cfg, the visible profile may not even be
-    cfg.active_profile — see the fix brief for the concrete hazard."""
-
-    def test_save_temp_leaves_provider_untouched(self, monkeypatch):
-        cfg = _cfg()
-        original_base_url = cfg.provider.base_url
-        original_name = cfg.provider.name
-
-        fake = MagicMock()
-        fake.provider_combo.currentIndex.return_value = 0
-        fake.model_edit.text.return_value = "typed-model"
-        fake.base_url_edit.text.return_value = "http://typed:1234/v1"
-        fake.api_key_edit.text.return_value = "typed-key"
-        fake.thinking_combo.currentIndex.return_value = 0
-        fake.system_prompt_edit.toPlainText.return_value = ""
-        fake._read_model_params_table = lambda: {}
-        fake._get_default_prompt_text = lambda: ""
-
-        monkeypatch.setattr(
-            "freecad_ai.ui.settings_dialog.get_config", lambda: cfg)
-
-        SettingsDialog._save_temp(fake)
-
-        assert cfg.provider.base_url == original_base_url
-        assert cfg.provider.name == original_name
+# Test Connection used to stage the visible widget values in the config
+# singleton via _save_temp, and two classes here pinned the values it must
+# leave alone (the connection fields, then model_params/temperature). #76
+# removed the helper outright — the probe thread is handed its inputs — so
+# the successor assertion is that _test_connection writes *nothing* into the
+# singleton at all. It lives in test_test_connection_config_scope.py.
 
 
 # ── Params table targets the working-copy profile (fix round 2) ────────
@@ -729,34 +707,6 @@ class TestOnModelChangedDoesNotMutateLiveConfig:
         assert fake._last_model_name == "new-model-name"
 
 
-class TestSaveTempLeavesParamsAlone:
-    """_save_temp's model-params write fed nothing (_test_connection reads
-    the table directly) and only leaked edits to disk via the vision
-    probe's save. It must leave cfg.model_params/cfg.temperature alone."""
-
-    def test_save_temp_does_not_touch_model_params_or_temperature(
-            self, monkeypatch):
-        cfg = _cfg()
-        cfg.model_params = {"claude-sonnet-4-6": {"temperature": 0.1}}
-        cfg.temperature = 0.1
-        original_model_params = copy.deepcopy(cfg.model_params)
-
-        fake = MagicMock()
-        fake.model_edit.text.return_value = "claude-sonnet-4-6"
-        fake._read_model_params_table.return_value = {"temperature": 0.9}
-        fake.thinking_combo.currentIndex.return_value = 0
-        fake.system_prompt_edit.toPlainText.return_value = ""
-        fake._get_default_prompt_text = lambda: ""
-
-        monkeypatch.setattr(
-            "freecad_ai.ui.settings_dialog.get_config", lambda: cfg)
-
-        SettingsDialog._save_temp(fake)
-
-        assert cfg.model_params == original_model_params
-        assert cfg.temperature == 0.1
-
-
 class TestTestConnectionKeyResolution:
     """Defect A: the probe must resolve the key exactly as create_client()
     does, or a profile that inherits the vendor-wide key fails Test
@@ -771,11 +721,12 @@ class TestTestConnectionKeyResolution:
         fake.api_key_edit.text.return_value = api_key_text
         fake.model_edit.text.return_value = "some-model"
         fake._read_model_params_table.return_value = {}
+        fake.thinking_combo.currentIndex.return_value = 0
         return fake
 
     def _capture_thread_api_key(self, monkeypatch, captured):
         def fake_thread(provider_name, base_url, api_key, model,
-                        model_params, parent):
+                        model_params, **kwargs):
             captured["api_key"] = api_key
             return MagicMock()
         monkeypatch.setattr(
