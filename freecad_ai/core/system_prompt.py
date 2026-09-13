@@ -454,41 +454,16 @@ def build_system_prompt(mode: str = "plan", agents_md: str = "",
 def build_document_context_block() -> str:
     """The live document state, formatted for delivery at the tail.
 
-    Same heading and body build_system_prompt() would have put at the top;
-    only the position differs. Empty string when there is nothing to say,
-    so callers can append unconditionally.
+    The heading differs from the system-prompt copy on purpose. There is
+    exactly one copy up there and it is always current; down here a
+    snapshot stays pinned to the turn it was taken for, so the transcript
+    accumulates one per turn and calling them all "current" would have
+    each copy contradict the next (#47).
+
+    Empty string when there is nothing to say, so callers can attach
+    unconditionally.
     """
     doc_ctx = get_document_context()
     if not doc_ctx:
         return ""
-    return "## Current Document State\n" + doc_ctx
-
-
-def append_document_context(messages: list, block: str) -> list:
-    """Return ``messages`` with ``block`` appended to the last user turn.
-
-    Appending to the existing turn rather than adding a message of its own
-    keeps the role sequence exactly as it was — 22 provider endpoints of
-    varying strictness see no structural change, only a longer final user
-    message. The list and the message that changes are copied, because the
-    caller goes on using the conversation it passed in.
-
-    Content arrives as a plain string, or as a block list when an image is
-    attached; appending a string to that list would corrupt the message, so
-    a vision turn gets a trailing text block instead.
-    """
-    if not block:
-        return messages
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i].get("role") != "user":
-            continue
-        out = list(messages)
-        msg = dict(messages[i])
-        content = msg.get("content")
-        if isinstance(content, list):
-            msg["content"] = content + [{"type": "text", "text": block}]
-        else:
-            msg["content"] = "{}\n\n{}".format(content, block)
-        out[i] = msg
-        return out
-    return messages
+    return "## Document State (at the time of this message)\n" + doc_ctx

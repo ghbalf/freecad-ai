@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     system prompt and the conversation history, which grow with the session;
     the tool list was already cached on providers that cache implicitly.
 
+    Each turn keeps the document snapshot it was actually sent with, so the
+    conversation reproduces byte-for-byte every time it is re-sent — which is
+    the property the cache match depends on. A side effect you will see in a
+    long session is that the transcript carries one snapshot per turn rather
+    than a single live one; they are labelled as the state at the time of that
+    message, and the newest is always the one nearest the model's answer.
+
     > ⚠️ **This may change the assistant's replies.** The model is shown the
     > same information, but in a different position, and models are sensitive
     > to where information sits in a prompt. It is off by default for exactly

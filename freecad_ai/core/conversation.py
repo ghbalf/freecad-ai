@@ -91,6 +91,64 @@ class Conversation:
         else:
             self.messages.append({"role": "user", "content": prefixed})
 
+    def attach_document_context(self, block: str):
+        """Record ``block`` as the document snapshot for the latest turn.
+
+        Stored beside the content rather than merged into it, for two
+        reasons. The chat pane and the session file render ``content``, so
+        the user's own words stay their own; and the snapshot is pinned to
+        the turn it was taken for, which is what makes re-rendering
+        deterministic.
+
+        That determinism is the whole point (#47). A prefix cache compares
+        from token zero and stops at the first differing byte, so a message
+        that has been sent once must render identically forever. The first
+        attempt at this appended the live block to whichever user message
+        happened to be last, which rewrote earlier turns on every send and
+        threw the cache away at ``messages[0]``.
+
+        Re-attaching replaces, so a retry of the same turn does not stack
+        two snapshots. An empty block records nothing, and a conversation
+        with no user turn is left alone.
+        """
+        if not block:
+            return
+        for msg in reversed(self.messages):
+            if msg.get("role") == "user":
+                msg["doc_context"] = block
+                return
+
+    def clear_document_context(self):
+        """Forget every recorded snapshot.
+
+        Called on each send while ``optimize_prompt_caching`` is off, so
+        turning the switch back off genuinely restores the old behaviour
+        rather than leaving the snapshots from when it was on. The warning
+        on that switch tells people to flip it back if replies get worse,
+        which only works if flipping it back undoes everything.
+        """
+        for msg in self.messages:
+            msg.pop("doc_context", None)
+
+    @staticmethod
+    def _expand_document_context(messages: list) -> list:
+        """Fold each recorded snapshot back onto the end of its message."""
+        out = []
+        for msg in messages:
+            block = msg.get("doc_context")
+            if not block:
+                out.append(msg)
+                continue
+            copy = dict(msg)
+            copy.pop("doc_context", None)
+            content = copy.get("content")
+            if isinstance(content, list):
+                copy["content"] = content + [{"type": "text", "text": block}]
+            else:
+                copy["content"] = "{}\n\n{}".format(content, block)
+            out.append(copy)
+        return out
+
     def get_messages_for_api(self, max_chars: int = 100000,
                              api_style: str = "openai",
                              describe_fn=None,
@@ -125,7 +183,10 @@ class Conversation:
         while i >= 0:
             msg = self.messages[i]
             content = msg.get("content", "")
-            msg_chars = self._content_chars(content)
+            # The snapshot is billed like any other text, so it counts
+            # against the budget even though it lives beside the content.
+            msg_chars = (self._content_chars(content)
+                         + len(msg.get("doc_context", "")))
 
             # If this is a tool_result, we must also include the preceding assistant
             # message that contains the tool_call. Walk back to find the pair.
@@ -158,6 +219,10 @@ class Conversation:
         # Ensure the first message is a user message (API requirement)
         while result and result[0]["role"] not in ("user",):
             result.pop(0)
+
+        # Re-attach the document snapshot each turn was sent with, so a
+        # message renders the same bytes every time it is sent (#47).
+        result = self._expand_document_context(result)
 
         # Replace image blocks with text descriptions if describe_fn is
         # provided, else drop them to a placeholder when strip_images is set.
