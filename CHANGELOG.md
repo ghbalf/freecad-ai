@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A model's reasoning now stays in the conversation history by default, and
+  has its own switch.** It used to be kept only when **Optimize prompt for
+  caching** was ticked, on the theory that this was a cache optimisation. It
+  is not. Moonshot's engineers report that their benchmarks show *"a clear,
+  measurable drop in response quality"* on turns whose `reasoning_content` is
+  missing — in ordinary multi-turn conversation, not merely in tool-calling
+  chains — and recommend preserving every turn's reasoning whether or not you
+  care about caching ([forum thread
+  602](https://forum.moonshot.ai/t/does-thinking-keep-decide-whether-historical-reasoning-content-counts-toward-the-prefix-cache-on-kimi-k2-6-and-later/602)).
+
+  A default that quietly degrades replies is not a conservative default, so
+  **Settings → Behavior → Keep model reasoning in conversation history** ships
+  **on** — the only switch in this project to do so on arrival. Untick it and
+  the history goes back to exactly what it held before. This is a deliberate
+  departure from the rule that a new setting defaults to prior behaviour: the
+  prior behaviour is the one the vendor measures as worse.
+
+  What you will notice: the reasoning is written to your saved session and
+  session log alongside the rest of the turn, and it is re-sent to the
+  provider, so it counts against your token quota where the provider bills
+  for it. What does not change: models that reject reasoning in history are
+  unaffected — **Strip thinking from conversation history** still wins and
+  still auto-detects them — and Anthropic is untouched, since it carries
+  thinking as its own signed content block that this field cannot represent.
+
+  **Scope, stated plainly: this covers assistant turns that called a tool** —
+  the Act-mode loop, which is where a FreeCAD session spends its requests and
+  what the vendor thread was about. A turn that produced only text still
+  stores no reasoning: the final answer that closes an Act run, and every
+  Plan-mode reply. Moonshot's advice covers those too, so this is a gap and
+  not a boundary; closing it means capturing reasoning separately in the
+  non-tool streaming path, which is a change to the main streaming code and
+  is tracked as [#84](https://github.com/ghbalf/freecad-ai/issues/84) rather
+  than folded in here.
+
 ### Added
 
 - **Requests now ask to be routed back to the cache they filled (#47).** A
@@ -54,17 +91,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the cached portion only ever took two values, 12,288 and 14,336, while the
   prompt climbed to 15,620. Both are multiples of 2,048, and `cache read`
   matches `floor(previous request's prompt / 2048) x 2048` on 24 of 28
-  consecutive request pairs -- that provider stores the prefix in 2,048-token
-  blocks. Every exception is a turn boundary, where the re-rendered history
-  stopped matching what had actually been sent.
+  consecutive request pairs. Every exception is a turn boundary.
 
-  Two honest caveats on those numbers. A session that small cannot show this
-  fix working: the entire message history is under one 2,048-token block, so
-  the billed remainder is essentially the prompt's remainder past the last
-  block boundary whatever we do. And the block size is one provider's
-  behaviour, not a rule. The sessions that gain are the long ones, and the
-  gain is that the history *can* be cached at all -- which it could not be
-  before, at any length.
+  Three honest caveats on those numbers, two of them corrected after release
+  by Moonshot's engineers ([forum thread
+  602](https://forum.moonshot.ai/t/does-thinking-keep-decide-whether-historical-reasoning-content-counts-toward-the-prefix-cache-on-kimi-k2-6-and-later/602)).
+  A session that small cannot show this fix working: the whole message
+  history fits inside one 2,048-token block, so the billed remainder is
+  essentially the prompt's remainder past the last block boundary whatever we
+  do. The 2,048 figure is a fit to one session and nothing more -- block
+  granularity is configured per cluster and per model, some of Moonshot's
+  configurations use 256 tokens, and a stable prefix size plus whichever
+  cluster happened to serve the request explains the same numbers equally
+  well. And the turn-boundary misses were not all ours to fix: the k2.x
+  series runs *interleaved thinking*, in which some reasoning from earlier
+  turns never enters the model at all -- and what never enters the model is
+  never tokenized, so it cannot reach the prefix cache however faithfully the
+  client replays it. The sessions that gain are the long ones, and the gain
+  is that the history *can* be cached at all -- which it could not be before,
+  at any length.
 
   On providers that cache automatically and for free — OpenAI, DeepSeek and
   most OpenAI-compatible endpoints — this silently gave up a discount the
@@ -88,10 +133,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     request re-rendered the turn differently and the prefix diverged there;
     it is now kept, which also means it is written to the saved session and
     the session log alongside the rest of the turn. Whether that recovers
-    anything is up to the provider: Moonshot's `kimi-k2.6` documents that it
-    ignores reasoning in history unless the request asks it not to, which the
-    workbench does not do, so there this is a correctness fix rather than a
-    measurable saving. A side effect you will see in a
+    any *money* is up to the provider, and on Kimi it does not: the
+    interleaved thinking described above means earlier reasoning may never
+    reach the cache at all. (An earlier version of this entry said `kimi-k2.6`
+    ignores historical reasoning unless asked not to; its engineers have since
+    confirmed the opposite — the unset default already keeps it.) Keeping it
+    is still the right thing to do, for a reason that has nothing to do with
+    caching; see the Unreleased section. A side effect you will see in a
     long session is that the transcript carries one snapshot per turn rather
     than a single live one; they are labelled as the state at the time of that
     message, and the newest is always the one nearest the model's answer.

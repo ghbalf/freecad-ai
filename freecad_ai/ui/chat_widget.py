@@ -211,6 +211,7 @@ class _LLMWorker(QThread):
         self._max_tool_turns = get_config().max_tool_turns  # 0 = endless
         self._strip_thinking = False  # resolved in run()
         self._optimize_caching = False  # resolved in run()
+        self._preserve_reasoning = True  # resolved in run()
         self._tool_timeline = []  # timing data for summary visualization
         self._response_truncated = False  # response hit the output-token limit
 
@@ -228,6 +229,7 @@ class _LLMWorker(QThread):
             self._strip_thinking = should_strip_thinking(
                 client.model, _get_config().strip_thinking_history)
             self._optimize_caching = _get_config().optimize_prompt_caching
+            self._preserve_reasoning = _get_config().preserve_reasoning_history
 
             # Re-format messages with image interception on worker thread
             if self.conversation and self.describe_fn:
@@ -438,7 +440,7 @@ class _LLMWorker(QThread):
                 # history can re-render it unchanged (#47).
                 "reasoning": reasoning_to_persist(
                     turn_thinking, self._strip_thinking, self._optimize_caching,
-                    self.api_style),
+                    self.api_style, self._preserve_reasoning),
                 "tool_calls": tc_dicts,
                 "results": [
                     {"tool_call_id": tc.id, "content": r["content"] if self.api_style != "anthropic" else r["content"][0]["content"]}

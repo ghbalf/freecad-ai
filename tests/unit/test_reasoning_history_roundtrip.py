@@ -71,11 +71,28 @@ def _store(conv, reasoning):
 class TestTheDecisionToKeepReasoning:
     """Pure, so it can be tested without a loop, a client or a widget."""
 
-    def test_the_default_keeps_nothing(self):
-        assert reasoning_to_persist(THINKING, False, False) == ""
+    def test_the_default_keeps_what_was_sent(self):
+        """Moonshot's engineers report a measurable drop in reply quality on
+        turns whose reasoning is missing -- in ordinary multi-turn chat, not
+        just tool loops -- so preservation no longer waits for the caching
+        switch (forum thread 602)."""
+        assert reasoning_to_persist(THINKING, False, False) == THINKING
 
     def test_caching_mode_keeps_what_was_sent(self):
         assert reasoning_to_persist(THINKING, False, True) == THINKING
+
+    def test_switching_preservation_off_keeps_nothing(self):
+        """The escape hatch: the history goes back to what it held before
+        this release."""
+        assert reasoning_to_persist(
+            THINKING, False, False, "openai", False) == ""
+
+    def test_caching_overrides_preservation_off(self):
+        """Byte-for-byte re-rendering is the whole basis of the cache match,
+        so the caching switch cannot be honoured while dropping thinking the
+        provider was already shown."""
+        assert reasoning_to_persist(
+            THINKING, False, True, "openai", False) == THINKING
 
     def test_a_stripped_model_keeps_nothing(self):
         """Gemma never received the thinking, so storing it would be the
@@ -93,20 +110,22 @@ class TestTheDecisionToKeepReasoning:
         assert reasoning_to_persist(None, False, True) == ""
 
 
-class TestTheDefaultIsUnchanged:
-    """Flag off: byte-for-byte what the conversation stored before."""
+class TestPreservationOffIsTheOldBehaviour:
+    """The escape hatch: byte-for-byte what the conversation stored before."""
 
     def test_no_reasoning_reaches_the_conversation(self):
         conv = Conversation()
         conv.add_user_message("add a pocket")
-        _store(conv, reasoning_to_persist(THINKING, False, False))
+        _store(conv, reasoning_to_persist(
+            THINKING, False, False, "openai", False))
 
         assert all("reasoning_content" not in m for m in conv.messages)
 
     def test_no_reasoning_reaches_the_wire(self):
         conv = Conversation()
         conv.add_user_message("add a pocket")
-        _store(conv, reasoning_to_persist(THINKING, False, False))
+        _store(conv, reasoning_to_persist(
+            THINKING, False, False, "openai", False))
 
         assert all("reasoning_content" not in m
                    for m in conv.get_messages_for_api())

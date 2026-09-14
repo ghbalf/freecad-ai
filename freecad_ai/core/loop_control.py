@@ -30,7 +30,8 @@ def resolve_turn_outcome(truncated: bool, tool_calls: list, interrupted: bool) -
 
 def reasoning_to_persist(turn_thinking: str | None, strip_thinking: bool,
                          optimize_caching: bool,
-                         api_style: str = "openai") -> str:
+                         api_style: str = "openai",
+                         preserve_history: bool = True) -> str:
     """Return the thinking to carry from a finished turn into the history.
 
     The answer is "whatever the provider was actually shown, and nothing
@@ -42,10 +43,24 @@ def reasoning_to_persist(turn_thinking: str | None, strip_thinking: bool,
     ``strip_thinking`` means it was never sent (Gemma), so storing it would
     be the same divergence in reverse, and the same goes for Anthropic --
     it carries thinking as its own signed content block, which this key
-    cannot represent and the loop never sends. ``optimize_caching`` is the
-    #47 switch: with it off the history stays exactly what it was before,
-    which is what makes turning the switch back off a real escape hatch.
+    cannot represent and the loop never sends. Those two are hard
+    exclusions: no switch may override them.
+
+    Everything else is ``preserve_history``, and it defaults on. This used
+    to ride on ``optimize_caching``, on the theory that keeping thinking was
+    a cache optimisation. It is not. Moonshot's engineers report a clear,
+    measurable drop in reply quality on turns whose ``reasoning_content`` is
+    absent -- in ordinary multi-turn chat, not merely in tool loops -- and
+    recommend preserving every turn's reasoning regardless of caching
+    (forum thread 602). Keeping the flag as an escape hatch costs nothing;
+    leaving quality behind a switch labelled for billing was the mistake.
+
+    ``optimize_caching`` still forces preservation on, because a byte-for-
+    byte prefix is exactly what that switch promises and it cannot be kept
+    while dropping bytes the provider has already seen.
     """
-    if strip_thinking or api_style == "anthropic" or not optimize_caching:
+    if strip_thinking or api_style == "anthropic":
+        return ""
+    if not (preserve_history or optimize_caching):
         return ""
     return turn_thinking or ""

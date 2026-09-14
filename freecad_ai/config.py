@@ -461,6 +461,15 @@ class AppConfig:
     enable_tools: bool = True
     thinking: str = "off"  # "off", "on", "extended"
     strip_thinking_history: bool | None = None  # None=auto-detect, True/False=override
+    # Keep each turn's reasoning_content in the stored history, so the next
+    # request re-sends what the provider was already shown. The one Behavior
+    # switch that ships ON: Moonshot's engineers report a measurable drop in
+    # reply quality on turns whose reasoning is missing, in ordinary chat and
+    # not just tool loops (forum thread 602), so the conservative-looking
+    # default is the one that degrades answers. Off is an escape hatch, and
+    # strip_thinking_history still wins -- a model that rejects the key never
+    # receives it whatever this says.
+    preserve_reasoning_history: bool = True
     viewport_capture: str = "off"  # "off", "every_message", "after_changes"
     viewport_resolution: str = "medium"  # "low", "medium", "high"
     mcp_servers: list = field(default_factory=list)

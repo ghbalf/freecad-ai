@@ -584,6 +584,27 @@ class SettingsDialog(QDialog):
             self._on_strip_thinking_changed)
         behavior_layout.addWidget(self.strip_thinking_check)
 
+        # Keeping reasoning in history is a reply-quality setting, not a
+        # caching one, which is why it sits here and ships ticked.
+        self.preserve_reasoning_check = QCheckBox(
+            translate("SettingsDialog",
+                      "Keep model reasoning in conversation history")
+        )
+        self.preserve_reasoning_check.setToolTip(
+            translate("SettingsDialog",
+                      "Store the thinking a model produced for a turn and send\n"
+                      "it back with that turn on later requests, which is what\n"
+                      "the provider already saw.\n\n"
+                      "Moonshot report a measurable drop in reply quality on\n"
+                      "turns whose reasoning is missing, so this is on by\n"
+                      "default. Untick it to keep the history as it was before\n"
+                      "v0.27.0-alpha.\n\n"
+                      "Models that reject reasoning in history (e.g. Gemma) are\n"
+                      "unaffected -- \"Strip thinking from conversation\n"
+                      "history\" above still applies.")
+        )
+        behavior_layout.addWidget(self.preserve_reasoning_check)
+
         # Prompt caching (#47). Both default off, so an existing install
         # behaves exactly as it did before the upgrade.
         self.prompt_cache_check = QCheckBox(
@@ -1037,6 +1058,7 @@ class SettingsDialog(QDialog):
         self._update_strip_thinking_ui(cfg.strip_thinking_history)
 
         # Prompt caching (#47)
+        self.preserve_reasoning_check.setChecked(cfg.preserve_reasoning_history)
         self.prompt_cache_check.setChecked(cfg.optimize_prompt_caching)
         self.log_usage_check.setChecked(cfg.log_token_usage)
 
@@ -1655,6 +1677,8 @@ class SettingsDialog(QDialog):
         cfg.strip_thinking_history = self._read_strip_thinking_state()
 
         # Prompt caching (#47)
+        cfg.preserve_reasoning_history = \
+            self.preserve_reasoning_check.isChecked()
         cfg.optimize_prompt_caching = self.prompt_cache_check.isChecked()
         cfg.log_token_usage = self.log_usage_check.isChecked()
 

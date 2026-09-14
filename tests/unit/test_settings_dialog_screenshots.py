@@ -78,6 +78,7 @@ RECORDED = {
             "Auto-execute code in Act mode (skip confirmation dialog)",
             "Keep chat panel open when switching workbenches",
             "Strip thinking from conversation history",
+            "Keep model reasoning in conversation history",
             "Optimize prompt for caching (may change replies)",
             "Log token usage to the Report view",
         ),
