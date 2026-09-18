@@ -30,7 +30,8 @@ def initgui(monkeypatch):
         """Stand-in for Gui.Workbench, which FreeCADAIWorkbench subclasses."""
 
     gui.Workbench = _Workbench
-    gui.addCommand = lambda *a, **k: None
+    registered = {}
+    gui.addCommand = lambda name, obj, *a, **k: registered.__setitem__(name, obj)
     gui.addWorkbench = lambda *a, **k: None
     gui.addPreferencePage = lambda *a, **k: None
     gui.Command = types.SimpleNamespace(get=lambda name: None)
@@ -60,6 +61,7 @@ def initgui(monkeypatch):
     source = (PROJECT_ROOT / "InitGui.py").read_text()
     namespace = {}
     exec(compile(source, "InitGui.py", "exec"), namespace)
+    namespace["_REGISTERED_COMMANDS"] = registered
     return namespace
 
 
@@ -175,3 +177,45 @@ def test_toggle_reports_a_rejected_allowed_hosts_list(initgui, ticks,
     assert isinstance(reported[0], ValueError)
     assert "*" in str(reported[0])
     assert ticks["FreeCADAI_ToggleMCPServer"] is False
+
+
+# ---------------------------------------------------------------------------
+# Restore from Backup (#49) — menu only, by decision
+# ---------------------------------------------------------------------------
+
+def _shelves(initgui):
+    """Run Initialize() with the shelf calls captured."""
+    wb = initgui["FreeCADAIWorkbench"]()
+    toolbar, menu = {}, {}
+    wb.appendToolbar = lambda name, cmds: toolbar.update({name: cmds})
+    wb.appendMenu = lambda name, cmds: menu.update({name: cmds})
+    wb.Initialize()
+    return toolbar["FreeCAD AI"], menu["FreeCAD AI"]
+
+
+def test_restore_backup_is_reachable_from_the_menu(initgui):
+    """#48 wrote snapshots nothing could read. An unreachable dialog would
+    leave the feature exactly as useful as it was before."""
+    _, menu = _shelves(initgui)
+
+    assert "FreeCADAI_RestoreBackup" in menu
+
+
+def test_restore_backup_stays_off_the_toolbar(initgui):
+    """Deliberate: recovery is a rare, deliberate act, and a one-click button
+    next to the everyday chat and settings icons invites the mis-click."""
+    toolbar, _ = _shelves(initgui)
+
+    assert "FreeCADAI_RestoreBackup" not in toolbar
+
+
+def test_restore_backup_command_is_registered(initgui):
+    """A name in the menu that was never handed to addCommand renders as a
+    dead entry, with no error anywhere."""
+    assert "FreeCADAI_RestoreBackup" in initgui["_REGISTERED_COMMANDS"]
+
+
+def test_restore_backup_is_always_available(initgui):
+    """It must work with no document open — recovering from a crash is
+    precisely the case where nothing is loaded."""
+    assert initgui["RestoreBackupCommand"]().IsActive() is True

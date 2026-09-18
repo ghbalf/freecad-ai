@@ -24,7 +24,8 @@ class FreeCADAIWorkbench(Gui.Workbench):
                                           "FreeCADAI_ToggleMCPServer"])
         self.appendMenu("FreeCAD AI", ["FreeCADAI_OpenChat", "FreeCADAI_OpenSettings",
                                        "FreeCADAI_ToggleMCPServer",
-                                       "FreeCADAI_ToggleKeepDock"])
+                                       "FreeCADAI_ToggleKeepDock",
+                                       "FreeCADAI_RestoreBackup"])
 
     def Activated(self):
         """Called when the workbench is selected."""
@@ -126,6 +127,34 @@ class OpenSettingsCommand:
         dlg.exec()
 
     def IsActive(self):
+        return True
+
+
+class RestoreBackupCommand:
+    """Command to open a pre-execution recovery snapshot (#49).
+
+    Menu only, not the toolbar: recovery is a rare and deliberate act, and a
+    button sitting beside the everyday chat and settings icons is one stray
+    click away from a file dialog nobody asked for.
+    """
+
+    def GetResources(self):
+        from freecad_ai.i18n import translate
+        return {
+            "GroupName": "FreeCAD AI",
+            "MenuText": translate("RestoreBackupCommand", "Restore from Backup..."),
+            "ToolTip": translate(
+                "RestoreBackupCommand",
+                "Open a copy of an automatic snapshot taken before the AI ran code"),
+        }
+
+    def Activated(self, index=0):
+        from freecad_ai.ui.restore_dialog import show_restore_dialog
+        show_restore_dialog(Gui.getMainWindow())
+
+    def IsActive(self):
+        # Deliberately unconditional: recovering after a crash is exactly the
+        # case where no document is open to gate on.
         return True
 
 
@@ -353,4 +382,5 @@ Gui.addCommand("FreeCADAI_OpenChat", OpenChatCommand())
 Gui.addCommand("FreeCADAI_OpenSettings", OpenSettingsCommand())
 Gui.addCommand("FreeCADAI_ToggleKeepDock", ToggleKeepDockCommand())
 Gui.addCommand("FreeCADAI_ToggleMCPServer", ToggleMCPServerCommand())
+Gui.addCommand("FreeCADAI_RestoreBackup", RestoreBackupCommand())
 Gui.addWorkbench(FreeCADAIWorkbench())

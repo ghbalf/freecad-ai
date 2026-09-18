@@ -540,6 +540,7 @@ def _auto_save(namespace: dict):
     try:
         import hashlib
         from ..config import BACKUPS_DIR, get_config, prune_oldest_files
+        from . import backups as backups_index
         from .active_document import resolve_active_document
         doc = resolve_active_document()
         if not doc or not doc.FileName:
@@ -549,7 +550,8 @@ def _auto_save(namespace: dict):
         os.makedirs(BACKUPS_DIR, exist_ok=True)
         stem = os.path.splitext(os.path.basename(original))[0]
         tag = hashlib.sha1(original.encode("utf-8")).hexdigest()[:8]
-        backup = os.path.join(BACKUPS_DIR, f"{stem}.{tag}.ai-backup.FCStd")
+        backup = os.path.join(
+            BACKUPS_DIR, f"{stem}.{tag}{backups_index.SNAPSHOT_SUFFIX}")
         doc.saveAs(backup)
         # saveAs repoints FileName at the snapshot; restore the exact original
         # so the path can't compound across calls (the #45 accretion).
@@ -559,10 +561,16 @@ def _auto_save(namespace: dict):
         # ordinary save would write that name into their file.
         if original_label is not None:
             doc.Label = original_label
+        # Only now: the snapshot cannot say where it came from (FileName is a
+        # transient property, the tag is a one-way hash), so this note is the
+        # whole of what makes it restorable (#49). It is still the lesser
+        # guarantee -- record it after the document is safely back to itself.
+        backups_index.record_snapshot(
+            BACKUPS_DIR, backup, original, label=original_label or "")
         cfg = get_config()
         prune_oldest_files(
             BACKUPS_DIR,
-            lambda n: n.endswith(".ai-backup.FCStd"),
+            backups_index.is_snapshot,
             cfg.max_backups,
             cfg.max_retention_age_days,
         )

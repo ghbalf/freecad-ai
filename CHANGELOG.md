@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Restore from Backup (#49).** The workbench has written a recovery snapshot
+  before every `execute_code` since #48, but nothing could read one back, so a
+  bad script still cost you the work the snapshot was taken to protect. The
+  **FreeCAD AI → Restore from Backup...** menu entry now lists the snapshots
+  with the document each came from and when it was taken, and opens the one
+  you pick.
+
+  It restores by **copying**: the snapshot is copied to a path you choose and
+  that copy is opened, labelled `<document> (recovered)`. Your current
+  document and the snapshot itself are both left untouched, so a restore can
+  never be the thing that loses work, and you can open a snapshot purely to
+  compare it against what you have now. Restoring on top of the document the
+  snapshot came from is refused outright; every other destination is yours to
+  pick.
+
+  A snapshot cannot say where it came from — FreeCAD stores `Document.FileName`
+  as a transient property, so an opened snapshot reports only its own path in
+  the backups folder, and the tag in the filename is a one-way hash. The
+  mapping is therefore recorded in an `index.json` beside the snapshots as
+  each one is taken. Snapshots written by earlier versions have no entry and
+  are still listed, named from their own filename; retention prunes snapshots
+  without consulting the index, so the folder — not the index — decides what
+  exists.
+
 ### Fixed
 
 - **A recovery snapshot no longer renames your document.** `saveAs` repoints

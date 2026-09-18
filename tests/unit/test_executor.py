@@ -8,7 +8,7 @@ import pytest
 
 from unittest.mock import MagicMock, patch
 
-from freecad_ai.core import executor
+from freecad_ai.core import backups, executor
 from freecad_ai.core.executor import (
     ExecutionResult,
     extract_code_blocks,
@@ -549,6 +549,8 @@ class _FakeDoc:
         if not path.endswith(".FCStd"):
             path += ".FCStd"
         self.saved_paths.append(path)
+        with open(path, "w") as f:
+            f.write("<FCStd/>")  # a real file: listing walks the directory
         self.FileName = path
         self.Label = os.path.splitext(os.path.basename(path))[0]
 
@@ -638,6 +640,49 @@ class TestAutoSave:
         doc = _FakeDoc("")
         self._run(doc, str(tmp_path))
         assert doc.saved_paths == []
+
+
+class TestTheSnapshotIsRecordedForRestore:
+    """#49: until this, a snapshot could not be mapped back to a document.
+
+    ``FileName`` is transient and the filename tag is a one-way hash, so the
+    only record of where a snapshot came from is the one written here, at the
+    moment the snapshot is taken.
+    """
+
+    _run = TestAutoSave._run
+
+    def test_the_snapshot_is_offered_with_its_original(self, tmp_path):
+        doc = _FakeDoc("/home/user/project/part.FCStd")
+        self._run(doc, str(tmp_path))
+
+        [snap] = backups.list_snapshots(str(tmp_path))
+
+        assert snap.original_path == "/home/user/project/part.FCStd"
+        assert snap.path == doc.saved_paths[0]
+
+    def test_the_documents_own_label_is_recorded(self, tmp_path):
+        # A Label need not match the filename stem -- FreeCAD renames freely,
+        # and the tree is what the user recognises their document by.
+        doc = _FakeDoc("/home/user/project/part.FCStd")
+        doc.Label = "Enclosure Base"
+
+        self._run(doc, str(tmp_path))
+
+        [snap] = backups.list_snapshots(str(tmp_path))
+        assert snap.label == "Enclosure Base"
+
+    def test_recording_happens_after_the_document_is_restored(self, tmp_path):
+        # _auto_save swallows exceptions wholesale, so anything between the
+        # saveAs and the FileName/Label restore can leave the user's document
+        # renamed. Recording is a nice-to-have; the restore is not.
+        doc = _FakeDoc("/tmp/part.FCStd")
+        with patch.object(backups, "record_snapshot",
+                          side_effect=OSError("disk full")):
+            self._run(doc, str(tmp_path))
+
+        assert doc.FileName == "/tmp/part.FCStd"
+        assert doc.Label == "part"
 
 
 class TestFindFreecadCmd:
