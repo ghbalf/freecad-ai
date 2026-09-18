@@ -212,6 +212,7 @@ class _LLMWorker(QThread):
         self._strip_thinking = False  # resolved in run()
         self._optimize_caching = False  # resolved in run()
         self._preserve_reasoning = True  # resolved in run()
+        self._final_reasoning = ""  # thinking of the turn that ends the run (#84)
         self._tool_timeline = []  # timing data for summary visualization
         self._response_truncated = False  # response hit the output-token limit
 
@@ -263,12 +264,38 @@ class _LLMWorker(QThread):
         return wrapped
 
     def _simple_stream(self, client):
-        """Stream without tools (original behavior)."""
-        for chunk in client.stream(self.messages, system=self.system_prompt):
+        """Stream without tools — Plan mode, and any provider-less request.
+
+        This reads the *event* stream rather than ``client.stream()``. A
+        ``Generator[str]`` has nowhere to put a second kind of content, so
+        the text-only path had no channel for reasoning and dropped it
+        (#84) — and a Plan reply is a whole conversation turn, exactly the
+        case Moonshot measured a quality loss on.
+
+        ``tools=None`` keeps the request byte-identical: both body builders
+        gate tools behind ``if tools:``, and ``_openai_body`` reaches its
+        ``reasoning_effort`` branch either way.
+        """
+        thinking_parts = []
+        for event in client.stream_with_tools(
+            self.messages, system=self.system_prompt, tools=None
+        ):
             if self.isInterruptionRequested():
                 break
-            self._full_response += chunk
-            self.token_received.emit(chunk)
+            if event.type == "text_delta":
+                self._full_response += event.text
+                self.token_received.emit(event.text)
+            elif event.type == "thinking_delta":
+                thinking_parts.append(event.text)
+                self._thinking_text += event.text
+                self.thinking_received.emit(event.text)
+            elif event.type == "done":
+                break
+        # A Plan reply is the turn that ends the run, so it never reaches
+        # _tool_results; _final_reasoning is how it travels to the writer.
+        self._final_reasoning = reasoning_to_persist(
+            "".join(thinking_parts), self._strip_thinking,
+            self._optimize_caching, self.api_style, self._preserve_reasoning)
         self._response_truncated = client.response_truncated
         self.response_finished.emit(self._full_response)
 
@@ -310,6 +337,15 @@ class _LLMWorker(QThread):
 
             outcome = resolve_turn_outcome(
                 client.response_truncated, tool_calls, self.isInterruptionRequested())
+            if outcome in ("stopped", "truncated", "done"):
+                # A turn that ends the run produced no tool calls, so it is
+                # never appended to _tool_results and its thinking has no
+                # other way out of this loop (#84). Turns that continue are
+                # carried by the _tool_results entry built further down.
+                self._final_reasoning = reasoning_to_persist(
+                    turn_thinking, self._strip_thinking,
+                    self._optimize_caching, self.api_style,
+                    self._preserve_reasoning)
             if outcome == "stopped":
                 self._full_response += "\n\n_⏹ Stopped by user._"
                 self.response_finished.emit(self._full_response)
@@ -2193,9 +2229,11 @@ class ChatDockWidget(QDockWidget):
 
     def _store_tool_results(self, full_response=""):
         """Store tool results from worker into conversation. Idempotent — skips if already stored."""
+        final_reasoning = getattr(self._worker, "_final_reasoning", "")
         if not (self._worker and self._worker._tool_results):
             if full_response:
-                self.conversation.add_assistant_message(full_response)
+                self.conversation.add_assistant_message(
+                    full_response, reasoning_content=final_reasoning)
             return
 
         # Guard against double-storage (e.g., if both response_finished and error fire)
@@ -2219,7 +2257,8 @@ class ChatDockWidget(QDockWidget):
             )
             final_text = full_response[last_tool_end:] if last_tool_end < len(full_response) else full_response
             if final_text.strip():
-                self.conversation.add_assistant_message(final_text)
+                self.conversation.add_assistant_message(
+                    final_text, reasoning_content=final_reasoning)
         except Exception as e:
             try:
                 import FreeCAD

@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Reasoning is now kept on every turn, not only the ones that called a tool
+  (#84).** v0.27.0-alpha shipped **Keep model reasoning in conversation
+  history** switched on, then reached only assistant turns carrying
+  `tool_calls`. The two text-only turns stored nothing whatever the switch
+  said: the final answer that closes an Act run, and every Plan-mode reply —
+  which is the whole of Plan mode. Since the reason for keeping reasoning is
+  reply quality rather than caching, and Moonshot's measurement covers
+  ordinary multi-turn chat, the setting was not doing what its label said for
+  anyone working in Plan mode.
+
+  Two unrelated causes, one per exit. The non-tool path consumed a text-only
+  stream with nowhere to put a second kind of content, so reasoning was
+  parsed and discarded before it could be stored; it now reads the same event
+  stream Act mode uses, which separates reasoning from the reply. The tool
+  loop accumulated each turn's reasoning but returned out of its exit paths
+  without carrying the last turn's copy anywhere the conversation writer
+  could see it.
+
+  The request sent to the provider is unchanged — Plan mode still sends no
+  tools, and a reasoning model still gets its `reasoning_effort`. Precedence
+  is unchanged and still resolved in one place: **Strip thinking from
+  conversation history** wins, Anthropic is excluded, **Optimize prompt for
+  caching** forces preservation on, and the switch decides the rest.
+
+  One visible change: Plan mode now renders the thinking bubble as the
+  reasoning arrives, the way Act mode always has. Previously those deltas
+  were parsed and dropped, so a thinking model looked idle until its answer
+  began.
+
 ## [0.27.0-alpha] - 2026-09-14
 
 ### Changed

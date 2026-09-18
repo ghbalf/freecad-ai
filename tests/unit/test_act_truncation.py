@@ -182,6 +182,12 @@ def _fake_worker(max_turns=30):
         _full_response="",
         _thinking_text="",
         _strip_thinking=False,
+        # Every exit path now resolves the turn's reasoning before it
+        # returns, so the halt paths read these too (#84).
+        _optimize_caching=False,
+        _preserve_reasoning=True,
+        _final_reasoning="",
+        _tool_results=[],
         _tool_timeline=[],
         _response_truncated=False,
         isInterruptionRequested=lambda: False,
