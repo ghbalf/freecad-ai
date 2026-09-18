@@ -259,8 +259,9 @@ class TestTheStreamIsDrainedPastTheFinishReason:
 
     Found live: a five-turn Act session on moonshot/kimi-k2.6 with the
     switch on printed not one line, because every turn in Act mode takes
-    this path. Plan mode was never affected -- `_stream_openai` has no
-    early return and runs the stream to exhaustion.
+    this path. Plan mode was on its own parser then and ran the stream to
+    exhaustion, so it was never affected; since #84 it shares this one and
+    is covered by the same drain.
     """
 
     @staticmethod

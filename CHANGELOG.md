@@ -38,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   were parsed and dropped, so a thinking model looked idle until its answer
   began.
 
+### Removed
+
+- **`LLMClient.stream()` and its two text-only SSE parsers.** Moving Plan mode
+  onto the event stream (#84 above) left them with no caller in the workbench;
+  the only code still reaching them was the test that had been guarding Plan
+  mode's truncation warning, which was therefore no longer guarding anything a
+  user can reach. That coverage now runs against the path Plan mode actually
+  takes. Anyone who was calling `stream()` from a hook or a fork can get the
+  same sequence from `stream_with_tools(messages, system, tools=None)` by
+  keeping the events whose `type` is `text_delta`.
+
 ## [0.27.0-alpha] - 2026-09-14
 
 ### Changed

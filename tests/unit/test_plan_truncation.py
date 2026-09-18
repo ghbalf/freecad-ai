@@ -10,13 +10,12 @@ Covers three defects:
      rendered as code but never got an Execute button (independent of truncation).
   2. A truncated (unterminated) block produced no code block and no buttons.
   3. finish_reason="length" / stop_reason="max_tokens" was discarded, so nothing
-     told the user the plan was cut off.
+     told the user the plan was cut off. That half now lives in
+     test_reasoning_on_text_only_turns.py: #84 moved Plan mode onto the event
+     stream, and the parser these tests drove no longer runs in production.
 """
 
-from unittest.mock import patch
-
 from freecad_ai.core.executor import extract_code_blocks, extract_truncated_block
-from freecad_ai.llm.client import LLMClient
 from freecad_ai.ui.message_view import render_message, render_plan_buttons
 
 TRUNCATED_PLAN = """Here is the plan:
@@ -113,70 +112,3 @@ class TestTruncatedRendering:
     def test_prose_before_truncated_fence_is_preserved(self):
         html = render_message("assistant", TRUNCATED_PLAN)
         assert "Here is the plan:" in html
-
-
-def _make_client(api_style="openai"):
-    client = LLMClient(
-        provider_name="openai",
-        base_url="https://api.openai.com/v1",
-        api_key="test-key",
-        model="gpt-4o",
-    )
-    client.api_style = api_style  # derived from provider_name; override for the SSE shape
-    return client
-
-
-class TestTruncationSignal:
-    """Defect 3 — the provider's truncation signal must survive to the UI."""
-
-    def test_openai_stream_records_length_finish(self):
-        client = _make_client()
-        chunks = [
-            {"choices": [{"delta": {"content": "```python\na = 1"}, "finish_reason": None}]},
-            {"choices": [{"delta": {}, "finish_reason": "length"}]},
-        ]
-        with patch.object(client, "_http_stream", return_value=iter(chunks)):
-            list(client.stream([], ""))
-        assert client.response_truncated is True
-
-    def test_openai_stream_normal_stop_is_not_truncated(self):
-        client = _make_client()
-        chunks = [
-            {"choices": [{"delta": {"content": "done"}, "finish_reason": None}]},
-            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
-        ]
-        with patch.object(client, "_http_stream", return_value=iter(chunks)):
-            list(client.stream([], ""))
-        assert client.response_truncated is False
-
-    def test_anthropic_stream_records_max_tokens(self):
-        client = _make_client(api_style="anthropic")
-        chunks = [
-            {"type": "content_block_delta", "delta": {"text": "```python\na = 1"}},
-            {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}},
-        ]
-        with patch.object(client, "_http_stream", return_value=iter(chunks)):
-            list(client.stream([], ""))
-        assert client.response_truncated is True
-
-    def test_anthropic_stream_normal_end_turn_is_not_truncated(self):
-        client = _make_client(api_style="anthropic")
-        chunks = [
-            {"type": "content_block_delta", "delta": {"text": "done"}},
-            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
-        ]
-        with patch.object(client, "_http_stream", return_value=iter(chunks)):
-            list(client.stream([], ""))
-        assert client.response_truncated is False
-
-    def test_truncation_flag_resets_between_streams(self):
-        client = _make_client()
-        truncated = [{"choices": [{"delta": {}, "finish_reason": "length"}]}]
-        with patch.object(client, "_http_stream", return_value=iter(truncated)):
-            list(client.stream([], ""))
-        assert client.response_truncated is True
-
-        clean = [{"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]}]
-        with patch.object(client, "_http_stream", return_value=iter(clean)):
-            list(client.stream([], ""))
-        assert client.response_truncated is False, "stale truncation warning must not persist"

@@ -249,14 +249,6 @@ class LLMClient:
         else:
             return self._send_openai(messages, system, stream=False)
 
-    def stream(self, messages: list[dict], system: str = "") -> Generator[str, None, None]:
-        """Send a streaming request. Yields text deltas as they arrive."""
-        self.response_truncated = False  # never carry a stale warning into a new turn
-        if self.api_style == "anthropic":
-            yield from self._stream_anthropic(messages, system)
-        else:
-            yield from self._stream_openai(messages, system)
-
     def send_with_tools(self, messages: list[dict], system: str = "",
                         tools: list[dict] | None = None) -> LLMResponse:
         """Send a non-streaming request with tool definitions. Returns full response."""
@@ -518,23 +510,6 @@ class LLMClient:
         except (KeyError, IndexError, json.JSONDecodeError) as e:
             raise LLMError(f"Unexpected response format: {e}\n{json.dumps(data, indent=2)}")
 
-    def _stream_openai(self, messages: list[dict], system: str) -> Generator[str, None, None]:
-        body = self._openai_body(messages, system, stream=True)
-        for chunk in self._http_stream(self._openai_url(), self._openai_headers(), body):
-            # OpenAI SSE: data contains choices[0].delta.content
-            try:
-                choices = chunk.get("choices", [])
-                if choices:
-                    delta = choices[0].get("delta", {})
-                    content = delta.get("content")
-                    if content:
-                        yield content
-                    if choices[0].get("finish_reason") == "length":
-                        self.response_truncated = True
-                    # Skip reasoning_content in simple stream mode
-            except (KeyError, IndexError):
-                continue
-
     def _stream_openai_tools(self, messages: list[dict], system: str,
                              tools: list[dict] | None) -> Generator[LLMStreamEvent, None, None]:
         body = self._openai_body(messages, system, stream=True, tools=tools)
@@ -750,20 +725,6 @@ class LLMClient:
             return LLMResponse(text=text, tool_calls=tool_calls, stop_reason=stop_reason)
         except (KeyError, IndexError) as e:
             raise LLMError(f"Unexpected response format: {e}\n{json.dumps(data, indent=2)}")
-
-    def _stream_anthropic(self, messages: list[dict], system: str) -> Generator[str, None, None]:
-        body = self._anthropic_body(messages, system, stream=True)
-        for chunk in self._http_stream(self._anthropic_url(), self._anthropic_headers(), body):
-            # Anthropic SSE: content_block_delta events with delta.text
-            event_type = chunk.get("type", "")
-            if event_type == "content_block_delta":
-                delta = chunk.get("delta", {})
-                text = delta.get("text")
-                if text:
-                    yield text
-            elif event_type == "message_delta":
-                if chunk.get("delta", {}).get("stop_reason") == "max_tokens":
-                    self.response_truncated = True
 
     def _stream_anthropic_tools(self, messages: list[dict], system: str,
                                 tools: list[dict] | None) -> Generator[LLMStreamEvent, None, None]:

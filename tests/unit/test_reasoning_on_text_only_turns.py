@@ -15,8 +15,11 @@ Two text-only turns still stored nothing, whatever it was set to:
 Two independent causes, one per exit:
 
   1. ``_simple_stream`` consumed ``client.stream()``, a ``Generator[str]``
-     with nowhere to put a second kind of content; ``_stream_openai``
-     dropped ``reasoning_content`` on the floor by design.
+     with nowhere to put a second kind of content; its OpenAI parser
+     dropped ``reasoning_content`` on the floor by design. (That whole
+     text-only parser pair lost its last caller here and was deleted;
+     ``TestThePlanTruncationSignalStillReachesTheUI`` below inherited the
+     #50 coverage that used to sit on it.)
   2. ``_tool_loop`` accumulated ``turn_thinking`` per turn but returned
      out of its three exit paths without carrying the last turn's copy
      anywhere ``_store_tool_results`` could see it.
@@ -166,13 +169,48 @@ class TestAPlanReplyKeepsItsReasoning:
 
         assert worker._final_reasoning == ""
 
-    def test_it_still_reports_truncation(self):
-        """#52's warning rides on the same path and must survive the move."""
+
+class TestThePlanTruncationSignalStillReachesTheUI:
+    """#50 defect 3, re-homed onto the path Plan mode actually runs.
+
+    A plan cut off at max_tokens loses its closing fence, so the Execute
+    button never renders; the truncation flag is the only thing that tells
+    the user why. That guarantee used to be tested against
+    ``LLMClient.stream()``, which #84 left with no production caller and
+    which was then deleted -- tests on an unreachable parser would have
+    stayed green through a real regression here.
+    """
+
+    def _anthropic_sse(self, stop_reason):
+        return [
+            {"type": "content_block_delta",
+             "delta": {"type": "text_delta", "text": "```python\na = 1"}},
+            {"type": "message_delta", "delta": {"stop_reason": stop_reason}},
+        ]
+
+    def test_openai_length_is_reported(self):
         worker = _Worker()
 
         _run_simple(worker, _client(), _openai_sse(finish="length"))
 
         assert worker._response_truncated is True
+
+    def test_anthropic_max_tokens_is_reported(self):
+        worker = _Worker(api_style="anthropic")
+
+        _run_simple(worker, _client(api_style="anthropic"),
+                    self._anthropic_sse("max_tokens"))
+
+        assert worker._response_truncated is True
+
+    def test_anthropic_end_turn_is_clean(self):
+        worker = _Worker(api_style="anthropic")
+
+        _run_simple(worker, _client(api_style="anthropic"),
+                    self._anthropic_sse("end_turn"))
+
+        assert worker._response_truncated is False, \
+            "a stale warning on a complete plan is its own bug"
 
 
 class TestThePlanRequestIsUnchanged:

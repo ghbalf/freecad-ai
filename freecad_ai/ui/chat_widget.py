@@ -266,11 +266,12 @@ class _LLMWorker(QThread):
     def _simple_stream(self, client):
         """Stream without tools — Plan mode, and any provider-less request.
 
-        This reads the *event* stream rather than ``client.stream()``. A
-        ``Generator[str]`` has nowhere to put a second kind of content, so
-        the text-only path had no channel for reasoning and dropped it
-        (#84) — and a Plan reply is a whole conversation turn, exactly the
-        case Moonshot measured a quality loss on.
+        This reads the *event* stream, the one the tool loop uses. The
+        text-only path used to consume a plain ``Generator[str]``, which
+        has nowhere to put a second kind of content, so it had no channel
+        for reasoning and dropped it (#84) — and a Plan reply is a whole
+        conversation turn, exactly the case Moonshot measured a quality
+        loss on. That generator had no caller left afterwards and is gone.
 
         ``tools=None`` keeps the request byte-identical: both body builders
         gate tools behind ``if tools:``, and ``_openai_body`` reaches its
