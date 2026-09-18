@@ -545,6 +545,7 @@ def _auto_save(namespace: dict):
         if not doc or not doc.FileName:
             return  # Unsaved document, nothing to back up
         original = doc.FileName
+        original_label = getattr(doc, "Label", None)
         os.makedirs(BACKUPS_DIR, exist_ok=True)
         stem = os.path.splitext(os.path.basename(original))[0]
         tag = hashlib.sha1(original.encode("utf-8")).hexdigest()[:8]
@@ -553,6 +554,11 @@ def _auto_save(namespace: dict):
         # saveAs repoints FileName at the snapshot; restore the exact original
         # so the path can't compound across calls (the #45 accretion).
         doc.FileName = original
+        # It renames the document too — Label becomes the snapshot's stem, so
+        # the tree would read "part.4e8d53db.ai-backup" and the user's next
+        # ordinary save would write that name into their file.
+        if original_label is not None:
+            doc.Label = original_label
         cfg = get_config()
         prune_oldest_files(
             BACKUPS_DIR,

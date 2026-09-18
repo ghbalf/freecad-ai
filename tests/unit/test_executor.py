@@ -532,10 +532,17 @@ class _FakeDoc:
     Mirrors the surprising part of FreeCAD's ``saveAs``: it writes the file
     *and* repoints ``FileName`` at the saved path, appending ``.FCStd`` when
     the target lacks that extension (``.ai-backup`` -> ``.ai-backup.FCStd``).
+
+    It also renames the document: ``Label`` becomes the saved file's stem.
+    Verified against FreeCAD 1.1.1 -- saving ``probe49c.FCStd`` as
+    ``probe49c.deadbeef.ai-backup.FCStd`` left the *still-open* document
+    labelled ``probe49c.deadbeef.ai-backup``. A fake that models only the
+    ``FileName`` half cannot see that half of the damage.
     """
 
     def __init__(self, filename):
         self.FileName = filename
+        self.Label = os.path.splitext(os.path.basename(filename))[0]
         self.saved_paths = []
 
     def saveAs(self, path):
@@ -543,6 +550,7 @@ class _FakeDoc:
             path += ".FCStd"
         self.saved_paths.append(path)
         self.FileName = path
+        self.Label = os.path.splitext(os.path.basename(path))[0]
 
 
 class TestAutoSave:
@@ -565,6 +573,17 @@ class TestAutoSave:
         doc = _FakeDoc("/tmp/part.FCStd")
         self._run(doc, str(tmp_path))
         assert doc.FileName == "/tmp/part.FCStd"
+
+    def test_preserves_document_label(self, tmp_path):
+        # saveAs renames the open document after the snapshot file, so without
+        # a restore the user's document is silently relabelled
+        # ``part.<hash>.ai-backup`` in the tree -- and the next ordinary save
+        # writes that name into their file. FileName was restored from the
+        # start (#45); Label is the same omission on the sibling property.
+        doc = _FakeDoc("/tmp/part.FCStd")
+        self._run(doc, str(tmp_path))
+        assert doc.Label == "part", \
+            "a recovery snapshot must not rename the user's document"
 
     def test_backup_written_to_managed_dir(self, tmp_path):
         # #46: the snapshot lands in the managed BACKUPS_DIR, not beside the

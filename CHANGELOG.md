@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A recovery snapshot no longer renames your document.** `saveAs` repoints
+  two things at the file it writes, not one: `FileName` and `Label`. The
+  snapshot path was being restored (#45) but the label was not, so every
+  `execute_code` on a saved document silently relabelled it
+  `part.4e8d53db.ai-backup` in the model tree — and the next ordinary save
+  wrote that name into the user's file. Both are now restored. Found while
+  probing FreeCAD's `saveAs` for #49; the existing tests missed it because
+  their fake document modelled only the `FileName` half of the rename.
+
 - **Reasoning is now kept on every turn, not only the ones that called a tool
   (#84).** v0.27.0-alpha shipped **Keep model reasoning in conversation
   history** switched on, then reached only assistant turns carrying
