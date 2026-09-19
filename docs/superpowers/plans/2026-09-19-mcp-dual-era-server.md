@@ -24,7 +24,7 @@
 
 ## Sequencing Note
 
-Task 1 widens `SUPPORTED_PROTOCOL_VERSIONS` to include `2026-07-28`, which makes the transport stop rejecting that header before the server can serve that era. **The branch is only conformant after Task 8.** Do not merge or release between Task 1 and Task 8. Work on a branch:
+Task 1 widens `SUPPORTED_PROTOCOL_VERSIONS` to include `2026-07-28`. The transport reads that constant to decide what it accepts, so Task 1 also repoints that one check at `LEGACY_VERSIONS` — the same three revisions as before — keeping every intermediate tree green and behaviourally unchanged. Task 8 rewrites the check for real. **The branch is only conformant after Task 8**; do not merge or release before it. Work on a branch:
 
 ```bash
 git checkout -b feat/64-dual-era-mcp-server
@@ -48,7 +48,9 @@ git checkout -b feat/64-dual-era-mcp-server
 
 **Files:**
 - Modify: `freecad_ai/mcp/protocol.py:19-33`
+- Modify: `freecad_ai/mcp/transport.py:919-926` (constant swap only — see Step 5)
 - Modify: `tests/unit/test_protocol.py:157-160`
+- Modify: `tests/unit/test_mcp_streamable_server.py:301-310`
 - Test: `tests/unit/test_mcp_dual_era.py` (create)
 
 **Interfaces:**
@@ -276,7 +278,35 @@ Check `make_error`'s signature before wiring `unsupported_version_error`: if it 
 Run: `env PYTHONPATH= .venv/bin/pytest tests/unit/test_mcp_dual_era.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Invert the now-false test in `test_protocol.py`**
+- [ ] **Step 5: Keep the transport's accepted set where it was**
+
+Widening `SUPPORTED_PROTOCOL_VERSIONS` silently widens what `_handle_streamable`
+accepts, because line 919 reads that constant. Point it at the set that means
+what it meant before, so this task changes no behaviour at all:
+
+```python
+                version = self.headers.get("MCP-Protocol-Version")
+                if (version is not None
+                        and version not in protocol.LEGACY_VERSIONS):
+                    self._send_json(400, protocol.make_error(
+                        None, protocol.INVALID_REQUEST,
+                        "Unsupported MCP-Protocol-Version %r. This server "
+                        "speaks %s." % (
+                            version,
+                            ", ".join(sorted(protocol.LEGACY_VERSIONS)))))
+                    return
+```
+
+`LEGACY_VERSIONS` holds exactly the three revisions the old frozenset did, so
+the wire behaviour is unchanged. Task 8 rewrites this block properly; this step
+only stops Task 1 from changing a behaviour it has no business changing.
+
+Then make `test_the_rejection_names_what_we_support` in
+`tests/unit/test_mcp_streamable_server.py` loop over `protocol.LEGACY_VERSIONS`
+instead of `protocol.SUPPORTED_PROTOCOL_VERSIONS` — it posts a
+`2026-07-28` header, which that set now contains.
+
+- [ ] **Step 6: Invert the now-false test in `test_protocol.py`**
 
 `test_supported_protocol_versions_exclude_the_2026_redesign` asserted the debt this task pays off. Replace it with the assertion that replaces it:
 
@@ -295,15 +325,18 @@ def test_supported_protocol_versions_include_the_2026_redesign():
     assert protocol.era_of("2026-07-28") == protocol.MODERN
 ```
 
-- [ ] **Step 6: Run the protocol tests**
+- [ ] **Step 7: Run the full suite**
 
-Run: `env PYTHONPATH= .venv/bin/pytest tests/unit/test_protocol.py tests/unit/test_mcp_dual_era.py -q`
-Expected: PASS.
+Run: `env PYTHONPATH= .venv/bin/pytest tests/unit/ --ignore=tests/unit/test_document_attach.py -q`
+Expected: PASS. Step 5 is what makes this true — without it the streamable
+tests fail on a header the transport has silently started accepting.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add freecad_ai/mcp/protocol.py tests/unit/test_mcp_dual_era.py tests/unit/test_protocol.py
+git add freecad_ai/mcp/protocol.py freecad_ai/mcp/transport.py \
+        tests/unit/test_mcp_dual_era.py tests/unit/test_protocol.py \
+        tests/unit/test_mcp_streamable_server.py
 git commit -m "$(cat <<'EOF'
 feat(mcp): a revision table with an era per protocol version (#64)
 
@@ -312,8 +345,9 @@ reads the request shape (params._meta carrying the reserved protocolVersion
 key), not the version string, so a revision we cannot serve is refused as a
 modern request rather than silently answered in the legacy shape.
 
-Nothing routes the modern era yet; the transport will accept the 2026-07-28
-header from here until that lands. Not shippable until the routing does.
+Nothing routes the modern era yet, so the transport keeps accepting exactly
+the three revisions it accepted before — the widened set is not yet what the
+HTTP layer gates on.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 EOF
@@ -819,7 +853,9 @@ PROTOCOL_VERSION = protocol.DEFAULT_PROTOCOL_VERSION
                 ttl_ms=ttl, cache_scope=scope))
 
         if method == "tools/call":
-            return self._handle_tool_call(msg_id, params, modern=True)
+            # No `modern=True` yet: the keyword arrives in Task 6, which also
+            # updates this call site. Passing it now would be a TypeError.
+            return self._handle_tool_call(msg_id, params)
 
         return self._unknown_method(msg_id, method)
 
@@ -1082,6 +1118,15 @@ Expected: FAIL — unsorted names, and no `resultType` on a modern `tools/call`.
         """
         return sorted(self._registry.to_mcp_schema(), key=lambda t: t["name"])
 ```
+
+First, update the call site in `_handle_modern` to pass the new keyword:
+
+```python
+        if method == "tools/call":
+            return self._handle_tool_call(msg_id, params, modern=True)
+```
+
+Then the handler itself:
 
 ```python
     def _handle_tool_call(self, msg_id, params: dict, modern: bool = False) -> dict:
