@@ -271,7 +271,7 @@ MISSING_REQUIRED_CLIENT_CAPABILITY = -32021
 UNSUPPORTED_PROTOCOL_VERSION = -32022
 ```
 
-Check `make_error`'s signature before wiring `unsupported_version_error`: if it does not already take a `data` argument, add `data=None` and attach it as `error["data"]` only when it is not None.
+`make_error(id, code, message, data=None)` already takes `data` and attaches it only when it is not None (`protocol.py:60`), so `unsupported_version_error` needs no change there.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
