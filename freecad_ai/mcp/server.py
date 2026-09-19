@@ -32,6 +32,18 @@ DISCOVER_INSTRUCTIONS = (
 def _coerce_ttl(value, fallback):
     if value is None or value == "":
         return fallback
+    # An env value is always a str, so int()/ValueError below is the only
+    # path that matters there. A hand-edited config.json can hold a bool or
+    # a float, and int() accepts both silently: int(True) == 1, int(3.7) ==
+    # 3. Neither is a TTL a client asked for, even though isinstance(True,
+    # int) is True in Python — reject both explicitly rather than let
+    # int() coerce them into a value that looks intentional.
+    if isinstance(value, bool):
+        logger.warning("Ignoring non-numeric MCP tools TTL %r", value)
+        return fallback
+    if isinstance(value, float):
+        logger.warning("Ignoring non-integer MCP tools TTL %r", value)
+        return fallback
     try:
         ttl = int(value)
     except (TypeError, ValueError):

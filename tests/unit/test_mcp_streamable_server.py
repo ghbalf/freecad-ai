@@ -13,7 +13,9 @@ import urllib.request
 import pytest
 
 from freecad_ai.mcp import protocol
+from freecad_ai.mcp.server import MCPServer
 from freecad_ai.mcp.transport import MAX_REQUEST_BODY, HTTPServerTransport
+from freecad_ai.tools.registry import ToolDefinition, ToolRegistry, ToolResult
 
 
 def _echo_handler(msg):
@@ -572,3 +574,46 @@ class TestDualEraStatusCodes:
 
         assert status == 400
         assert json.loads(body)["error"]["code"] == protocol.HEADER_MISMATCH
+
+
+class TestRealServerOverRealTransport:
+    """Wires the actual MCPServer._handle into a really-bound
+    HTTPServerTransport, instead of the hand-written _dual_era_handler stand-
+    in every other test in this module uses. That stand-in tests the
+    transport's HTTP-status half honestly, but if MCPServer._handle stopped
+    returning -32601 for a modern ping, every test above would still pass —
+    nothing in CI would notice the two halves had drifted apart."""
+
+    @staticmethod
+    def _server():
+        registry = ToolRegistry()
+        registry.register(ToolDefinition(
+            "a", "does a", [],
+            handler=lambda: ToolResult(True, "ran a")))
+        return MCPServer(registry, cache_hints=(0, "private"))
+
+    def test_a_modern_tools_list_is_a_200(self):
+        with _RunningServer(handler=self._server()._handle) as srv:
+            status, body, _ = _post(
+                srv.port, _modern_body("tools/list"),
+                headers=_modern_headers("tools/list"))
+
+        assert status == 200
+        assert json.loads(body)["result"]["resultType"] == "complete"
+
+    def test_a_modern_ping_is_a_404_the_method_is_legacy_only(self):
+        with _RunningServer(handler=self._server()._handle) as srv:
+            status, body, _ = _post(
+                srv.port, _modern_body("ping"),
+                headers=_modern_headers("ping"))
+
+        assert status == 404
+        assert json.loads(body)["error"]["code"] == protocol.METHOD_NOT_FOUND
+
+    def test_a_legacy_unknown_method_is_a_200(self):
+        with _RunningServer(handler=self._server()._handle) as srv:
+            status, body, _ = _post(
+                srv.port, {"jsonrpc": "2.0", "id": 1, "method": "nonsense"})
+
+        assert status == 200
+        assert json.loads(body)["error"]["code"] == protocol.METHOD_NOT_FOUND

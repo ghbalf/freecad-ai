@@ -186,6 +186,14 @@ class TestModernResultEnvelope:
         assert result["ttlMs"] == 0
         assert result["cacheScope"] == "public"
 
+    def test_the_payload_cannot_overwrite_resulttype(self):
+        """Not reachable from any current caller, but the envelope's one
+        invariant should not depend on callers behaving: a payload carrying
+        its own resultType must not leak onto the wire."""
+        result = protocol.modern_result(
+            {"resultType": "input_required"}, self._INFO)
+        assert result["resultType"] == "complete"
+
 
 class _Cfg:
     """Config stand-in: getattr-compatible, and nothing else is required."""
@@ -198,6 +206,17 @@ class _Cfg:
 
 
 class TestResolveCacheHints:
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        """Every test in this class assumes an unconfigured environment. The
+        wiki documents MCP_TOOLS_TTL_MS / MCP_TOOLS_CACHE_SCOPE as the two
+        env overrides users are told to set, so a developer with either
+        exported would otherwise see most of this class fail — env beats
+        config beats defaults, and a leaked value beats the test's own
+        _Cfg."""
+        monkeypatch.delenv("MCP_TOOLS_TTL_MS", raising=False)
+        monkeypatch.delenv("MCP_TOOLS_CACHE_SCOPE", raising=False)
+
     def test_defaults_when_nothing_is_configured(self):
         assert server_mod.resolve_cache_hints(_Cfg()) == (
             protocol.DEFAULT_TOOLS_TTL_MS, protocol.DEFAULT_CACHE_SCOPE)
@@ -231,6 +250,20 @@ class TestResolveCacheHints:
 
     def test_a_negative_ttl_falls_back(self):
         assert server_mod.resolve_cache_hints(_Cfg(-1, "private"))[0] == \
+            protocol.DEFAULT_TOOLS_TTL_MS
+
+    def test_a_float_ttl_falls_back(self):
+        """int(3.7) silently becomes 3 — only reachable from a hand-edited
+        config.json (an env value is always a string), but the spec calls a
+        non-integer TTL invalid, and a float is one."""
+        assert server_mod.resolve_cache_hints(_Cfg(3.7, "private"))[0] == \
+            protocol.DEFAULT_TOOLS_TTL_MS
+
+    def test_a_bool_ttl_falls_back(self):
+        """isinstance(True, int) is True in Python, but a bool is not a TTL —
+        int(True) silently becoming 1 would be exactly as wrong as int(3.7)
+        becoming 3."""
+        assert server_mod.resolve_cache_hints(_Cfg(True, "private"))[0] == \
             protocol.DEFAULT_TOOLS_TTL_MS
 
     def test_an_unknown_scope_falls_back_and_warns(self, caplog):

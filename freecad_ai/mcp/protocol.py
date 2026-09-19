@@ -131,8 +131,12 @@ def modern_result(payload: dict, server_info: dict,
     this revision, ``tools/list`` and ``server/discover``. Emitting them on
     ``tools/call`` would invite a client to cache a geometry mutation.
     """
-    result: dict[str, Any] = {"resultType": "complete"}
+    # resultType is assigned AFTER the payload update: the envelope's one
+    # invariant (we are always "complete") must not depend on the payload
+    # not happening to carry its own resultType key.
+    result: dict[str, Any] = {}
     result.update(payload)
+    result["resultType"] = "complete"
     result["_meta"] = {META_SERVER_INFO: server_info}
     if ttl_ms is not None:
         result["ttlMs"] = ttl_ms
