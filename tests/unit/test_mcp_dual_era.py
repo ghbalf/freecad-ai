@@ -1,7 +1,10 @@
 """Dual-era MCP: one endpoint answering the 2025-03-26 handshake and the
 stateless 2026-07-28 per-request _meta era (#64 phase 3)."""
 
+import os
+
 from freecad_ai.mcp import protocol
+from freecad_ai.mcp import server as server_mod
 
 
 class TestRevisionTable:
@@ -135,3 +138,74 @@ class TestModernResultEnvelope:
             {"tools": []}, self._INFO, ttl_ms=0, cache_scope="public")
         assert result["ttlMs"] == 0
         assert result["cacheScope"] == "public"
+
+
+class _Cfg:
+    """Config stand-in: getattr-compatible, and nothing else is required."""
+
+    def __init__(self, ttl=None, scope=None):
+        if ttl is not None:
+            self.mcp_server_tools_ttl_ms = ttl
+        if scope is not None:
+            self.mcp_server_tools_cache_scope = scope
+
+
+class TestResolveCacheHints:
+    def test_defaults_when_nothing_is_configured(self):
+        assert server_mod.resolve_cache_hints(_Cfg()) == (
+            protocol.DEFAULT_TOOLS_TTL_MS, protocol.DEFAULT_CACHE_SCOPE)
+
+    def test_config_beats_the_default(self):
+        assert server_mod.resolve_cache_hints(_Cfg(60000, "public")) == (
+            60000, "public")
+
+    def test_env_beats_config(self, monkeypatch):
+        """Matches MCP_HOST / MCP_PORT / MCP_AUTH_TOKEN, so every documented
+        command-line recipe keeps working the same way."""
+        monkeypatch.setenv("MCP_TOOLS_TTL_MS", "0")
+        monkeypatch.setenv("MCP_TOOLS_CACHE_SCOPE", "public")
+        assert server_mod.resolve_cache_hints(_Cfg(60000, "private")) == (
+            0, "public")
+
+    def test_zero_is_honoured_not_treated_as_unset(self):
+        """ttlMs=0 is the only way to say "do not cache" — the field is
+        REQUIRED, so falling back to 300000 here would silently ignore the
+        one setting a user reaches for."""
+        assert server_mod.resolve_cache_hints(_Cfg(0, "private")) == (
+            0, "private")
+
+    def test_a_non_numeric_ttl_falls_back_and_warns(self, caplog):
+        """Both fields are REQUIRED on the wire: serialising a bad value would
+        break conformance for every client, not just for whoever set it."""
+        with caplog.at_level("WARNING"):
+            ttl, _ = server_mod.resolve_cache_hints(_Cfg("soon", "private"))
+        assert ttl == protocol.DEFAULT_TOOLS_TTL_MS
+        assert "soon" in caplog.text
+
+    def test_a_negative_ttl_falls_back(self):
+        assert server_mod.resolve_cache_hints(_Cfg(-1, "private"))[0] == \
+            protocol.DEFAULT_TOOLS_TTL_MS
+
+    def test_an_unknown_scope_falls_back_and_warns(self, caplog):
+        with caplog.at_level("WARNING"):
+            _, scope = server_mod.resolve_cache_hints(_Cfg(60000, "shared"))
+        assert scope == protocol.DEFAULT_CACHE_SCOPE
+        assert "shared" in caplog.text
+
+    def test_no_config_at_all_still_resolves(self, monkeypatch):
+        """mcp_server_entry.py builds MCPServer(registry) with no config."""
+        monkeypatch.delenv("MCP_TOOLS_TTL_MS", raising=False)
+        monkeypatch.delenv("MCP_TOOLS_CACHE_SCOPE", raising=False)
+        ttl, scope = server_mod.resolve_cache_hints()
+        assert isinstance(ttl, int)
+        assert scope in protocol.CACHE_SCOPES
+
+
+def test_the_config_defaults_match_the_protocol_defaults():
+    """config.py cannot import freecad_ai.mcp, so its defaults are literals.
+    This is the only thing keeping the two copies from drifting."""
+    from freecad_ai.config import AppConfig
+
+    cfg = AppConfig()
+    assert cfg.mcp_server_tools_ttl_ms == protocol.DEFAULT_TOOLS_TTL_MS
+    assert cfg.mcp_server_tools_cache_scope == protocol.DEFAULT_CACHE_SCOPE

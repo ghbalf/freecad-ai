@@ -5,6 +5,7 @@ transport (STDIO or HTTP/SSE).
 """
 
 import logging
+import os
 
 from .. import __version__
 from ..tools.registry import ToolRegistry
@@ -17,6 +18,62 @@ logger = logging.getLogger(__name__)
 # every MCP client reported "FreeCAD AI 0.1.0" regardless of what was installed.
 SERVER_INFO = {"name": "FreeCAD AI", "version": __version__}
 PROTOCOL_VERSION = "2025-03-26"
+
+
+def _coerce_ttl(value, fallback):
+    if value is None or value == "":
+        return fallback
+    try:
+        ttl = int(value)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring non-numeric MCP tools TTL %r", value)
+        return fallback
+    if ttl < 0:
+        logger.warning("Ignoring negative MCP tools TTL %r", value)
+        return fallback
+    return ttl
+
+
+def _coerce_scope(value, fallback):
+    if value is None or value == "":
+        return fallback
+    if value not in protocol.CACHE_SCOPES:
+        logger.warning("Ignoring unknown MCP cacheScope %r (expected %s)",
+                       value, " or ".join(protocol.CACHE_SCOPES))
+        return fallback
+    return value
+
+
+def resolve_cache_hints(cfg=None):
+    """Return ``(ttl_ms, cache_scope)`` for tools/list: env beats config,
+    config beats defaults — the same precedence as MCP_HOST / MCP_PORT.
+
+    A malformed value falls back and warns instead of reaching the wire.
+    Both fields are REQUIRED in 2026-07-28, so serialising nonsense would
+    break conformance for every client rather than only for whoever set it.
+
+    ``cfg`` is loaded lazily and its absence is survivable: the STDIO entry
+    point builds MCPServer(registry) in a headless process where the config
+    layer may not be importable at all.
+    """
+    ttl = protocol.DEFAULT_TOOLS_TTL_MS
+    scope = protocol.DEFAULT_CACHE_SCOPE
+
+    if cfg is None:
+        try:
+            from ..config import get_config
+            cfg = get_config()
+        except Exception:
+            logger.debug("No config available; using default MCP cache hints")
+
+    if cfg is not None:
+        ttl = _coerce_ttl(getattr(cfg, "mcp_server_tools_ttl_ms", None), ttl)
+        scope = _coerce_scope(
+            getattr(cfg, "mcp_server_tools_cache_scope", None), scope)
+
+    ttl = _coerce_ttl(os.environ.get("MCP_TOOLS_TTL_MS"), ttl)
+    scope = _coerce_scope(os.environ.get("MCP_TOOLS_CACHE_SCOPE"), scope)
+    return ttl, scope
 
 
 class MCPServer:
