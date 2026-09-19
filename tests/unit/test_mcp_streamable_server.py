@@ -6,6 +6,7 @@ because the behaviour under test is HTTP status codes and headers.
 """
 
 import json
+import socket
 import threading
 import urllib.error
 import urllib.request
@@ -617,3 +618,88 @@ class TestRealServerOverRealTransport:
 
         assert status == 200
         assert json.loads(body)["error"]["code"] == protocol.METHOD_NOT_FOUND
+
+
+def _raw_post(port, headers, body):
+    """POST with the header lines exactly as given, duplicates included.
+
+    urllib collapses repeated headers, so the case this module most needs to
+    cover cannot be sent through it: a client that smuggles a second Mcp-Name
+    past a proxy which read only the first.
+    """
+    payload = json.dumps(body).encode()
+    lines = ["POST /mcp HTTP/1.1",
+             "Host: 127.0.0.1:%d" % port,
+             "Content-Type: application/json",
+             "Content-Length: %d" % len(payload),
+             "Connection: close"]
+    lines += ["%s: %s" % pair for pair in headers]
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode() + payload)
+        chunks = []
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    head, _, tail = b"".join(chunks).partition(b"\r\n\r\n")
+    return int(head.split(b"\r\n", 1)[0].split()[1]), tail
+
+
+class TestADuplicateHeaderNeverReachesATool:
+    """The end-to-end half of the duplicate-header rejection.
+
+    validate_modern_headers is unit-tested directly, and a header *mismatch*
+    is covered over a real socket. Neither proves _handle_streamable still
+    calls the check for a duplicate, which is the shape that actually walks
+    past a policy layer: intermediaries disagree about which copy they read,
+    so a rule enforced anywhere but on the request that runs is not a rule.
+    """
+
+    @staticmethod
+    def _server(ran):
+        registry = ToolRegistry()
+        registry.register(ToolDefinition(
+            "create_box", "creates a box", [],
+            handler=lambda: (ran.append("create_box"),
+                             ToolResult(True, "made one"))[1]))
+        return MCPServer(registry, cache_hints=(0, "private"))
+
+    _CALL = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "_meta": {protocol.META_PROTOCOL_VERSION: "2026-07-28"},
+        "name": "create_box", "arguments": {}}}
+
+    @pytest.mark.parametrize("names", [
+        ("create_box", "read_document"),
+        ("read_document", "create_box"),
+    ])
+    def test_a_smuggled_second_name_is_refused_in_either_order(self, names):
+        """Both orders, because the bug WAS the order: get() returned the
+        first copy, so whether the smuggle worked depended only on which one
+        the client put first."""
+        ran = []
+        with _RunningServer(handler=self._server(ran)._handle) as srv:
+            status, body = _raw_post(srv.port, [
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "tools/call"),
+                ("Mcp-Name", names[0]),
+                ("Mcp-Name", names[1]),
+            ], self._CALL)
+
+        assert status == 400
+        assert json.loads(body)["error"]["code"] == protocol.HEADER_MISMATCH
+        assert ran == []
+
+    def test_the_same_call_with_one_name_header_runs_the_tool(self):
+        """The control: without it, a test that rejects everything passes."""
+        ran = []
+        with _RunningServer(handler=self._server(ran)._handle) as srv:
+            status, body = _raw_post(srv.port, [
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "tools/call"),
+                ("Mcp-Name", "create_box"),
+            ], self._CALL)
+
+        assert status == 200
+        assert json.loads(body)["result"]["isError"] is False
+        assert ran == ["create_box"]

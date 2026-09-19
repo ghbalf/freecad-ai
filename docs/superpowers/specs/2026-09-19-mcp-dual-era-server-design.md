@@ -250,6 +250,16 @@ All `-32020` / HTTP `400` unless noted:
 - version not in `MODERN_VERSIONS` → **`-32022`** with `data: {supported, requested}`
 - `Mcp-Method` missing or unequal to `method`
 - `Mcp-Name` missing or unequal to `params.name` on `tools/call`
+- any of the three mirrored headers sent **more than once**, whatever the
+  copies say
+
+A repeat is refused rather than resolved, and that is the whole point of the
+check. `email.message.Message.get()` returns the first copy; nginx's
+`$http_mcp_name` also takes the first, Envoy joins duplicates with a comma,
+and some WAFs take the last. Picking any one of those makes the header agree
+with whichever intermediary happens to share our choice, which is not a
+guarantee — a mirrored header is only worth routing on when there is exactly
+one of it.
 
 `Mcp-Name` is compared **after** decoding the `=?base64?…?=` sentinel. All 56 of
 our tool names are plain ASCII, but a conforming client may encode any value
@@ -276,6 +286,15 @@ rebuilt by the shared `-32022` helper, so its wording changes from
 `Unsupported MCP-Protocol-Version %r.` to `Unsupported MCP protocol version
 %r.`; one helper phrasing both eras is worth more than a string no client
 parses. All of it churns assertions in `test_mcp_streamable_server.py`.
+
+One further movement, not designed but accepted: a legacy request whose
+`params` is not an object — `"params": 5` — used to reach `params.get()` and
+raise, which the transport rendered as `-32603`. It is now coerced to `{}`
+before any handler sees it, so `tools/call` answers `isError` with an empty
+tool name instead. Both are error answers to malformed input; replacing an
+internal error with a well-formed one on an endpoint that is unauthenticated
+by default is the right direction, and `-32602` would be more precise still
+if this ever matters to a real client.
 
 ### Status mapping is era-dependent
 

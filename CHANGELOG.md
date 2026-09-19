@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   identity in per-result `_meta`, and `tools/list` carries the `ttlMs` and
   `cacheScope` freshness hints the revision requires.
 
+  A modern request also mirrors its `method` into an `Mcp-Method` header, and
+  its tool name into `Mcp-Name` on `tools/call`, so a proxy or gateway in
+  front of the server can allow or deny a call without parsing the body. The
+  server refuses a request whose headers disagree with its body, or that
+  repeats one of those headers, with `-32020` and HTTP 400 — headers are only
+  worth routing on while what they say is what runs.
+
 - **Configurable `tools/list` cache hints.** `mcp_server_tools_ttl_ms`
   (default `300000`) and `mcp_server_tools_cache_scope` (default `private`),
   overridable with `MCP_TOOLS_TTL_MS` and `MCP_TOOLS_CACHE_SCOPE`. Set the
