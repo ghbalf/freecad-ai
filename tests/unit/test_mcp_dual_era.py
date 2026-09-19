@@ -84,6 +84,27 @@ class TestEraDetection:
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list",
              "params": {"_meta": {"vendor.example/trace": "abc"}}})
 
+    def test_an_empty_meta_is_legacy(self):
+        assert not protocol.is_modern_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+             "params": {"_meta": {}}})
+
+    def test_a_null_meta_is_legacy(self):
+        assert not protocol.is_modern_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+             "params": {"_meta": None}})
+
+    def test_a_present_but_null_protocol_version_is_modern(self):
+        """The spec's decision table: era is modern iff params._meta CARRIES
+        the key, whatever its value. A key present with a null value is a
+        modern client that sent a broken version, not an absent key — and
+        must not be indistinguishable from one, or it is served the legacy
+        way with no header validation at all."""
+        msg = {"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+               "params": {"_meta": {protocol.META_PROTOCOL_VERSION: None}}}
+        assert protocol.is_modern_request(msg)
+        assert protocol.request_protocol_version(msg) is None
+
     def test_a_non_dict_params_does_not_raise(self):
         """The endpoint is unauthenticated (#59); malformed input must not 500."""
         assert not protocol.is_modern_request(
@@ -303,6 +324,16 @@ class TestEraRouting:
         resp = _server()._handle(_modern("tools/list", version="2027-05-01"))
         assert resp["error"]["code"] == protocol.UNSUPPORTED_PROTOCOL_VERSION
         assert resp["error"]["data"]["supported"] == list(protocol.MODERN_VERSIONS)
+
+    def test_a_null_meta_protocol_version_is_refused_not_downgraded(self):
+        """A present-but-null protocolVersion key is a modern request to
+        refuse (-32022), never a silent fall-through to the legacy shape —
+        straight through _handle with no transport header check in the way."""
+        msg = {"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+               "params": {"_meta": {protocol.META_PROTOCOL_VERSION: None}}}
+        resp = _server()._handle(msg)
+        assert resp["error"]["code"] == protocol.UNSUPPORTED_PROTOCOL_VERSION
+        assert resp["error"]["data"]["requested"] is None
 
     def test_a_legacy_version_named_in_meta_is_refused_not_downgraded(self):
         """_meta means the client speaks the modern era. A legacy revision

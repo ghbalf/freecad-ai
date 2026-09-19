@@ -73,26 +73,40 @@ def era_of(version):
     return _ERA_BY_VERSION.get(version)
 
 
-def request_protocol_version(msg: dict):
-    """Return the revision named in per-request ``_meta``, or None."""
+def _request_meta(msg: dict):
+    """The per-request ``_meta`` mapping, or None when there is not one."""
     params = msg.get("params")
     if not isinstance(params, dict):
         return None
     meta = params.get("_meta")
-    if not isinstance(meta, dict):
-        return None
-    return meta.get(META_PROTOCOL_VERSION)
+    return meta if isinstance(meta, dict) else None
+
+
+def request_protocol_version(msg: dict):
+    """Return the revision named in per-request ``_meta``, or None.
+
+    None is returned both when there is no ``_meta`` at all and when
+    ``_meta`` carries the key with a null value — callers that need to tell
+    those two apart use ``is_modern_request``, which checks for the key's
+    presence rather than relying on this return value.
+    """
+    meta = _request_meta(msg)
+    return meta.get(META_PROTOCOL_VERSION) if meta is not None else None
 
 
 def is_modern_request(msg: dict) -> bool:
     """True when the request carries 2026-07-28 per-request metadata.
 
-    Presence decides the era, not the value: only a modern client sends this
-    key, so a request naming a revision we cannot serve is a modern request to
+    Presence of the KEY decides the era, not its value: only a modern client
+    sends this key at all, so a null or unknown value is a modern request to
     refuse with UNSUPPORTED_PROTOCOL_VERSION — never a legacy request to
-    answer in the old shape.
+    answer in the old shape. Testing ``request_protocol_version(msg) is not
+    None`` would conflate "no key" with "key present, value null", and the
+    spec requires the second to be a refusal, not a silent fall-through to
+    legacy semantics.
     """
-    return request_protocol_version(msg) is not None
+    meta = _request_meta(msg)
+    return meta is not None and META_PROTOCOL_VERSION in meta
 
 
 def unsupported_version_error(msg_id, requested, supported):
