@@ -47,6 +47,7 @@ removed truthfully.
 | `initialize` | Now **echoes** the client's requested version when supported, else `2025-11-25` |
 | `ping` | Legacy only. Modern gets `-32601` — the revision removed it |
 | Legacy results | **Byte-identical to v0.28.0-alpha.** No `resultType`, no `_meta` |
+| Cache hints | `ttlMs` / `cacheScope` **configurable** via config + env, no GUI. Invalid values fall back and warn |
 | `tools/list` order | **Sorted by name**, both eras |
 | HTTP status | **Era-dependent.** Legacy always `200`; modern maps `-32601` to `404` and `-3202x` to `400` |
 | Scope | Server only. Client-side `server/discover` probing is a follow-up |
@@ -162,13 +163,59 @@ Every modern result carries `resultType: "complete"` and
 `SERVER_INFO` already is. We never return `input_required`: no tool of ours needs
 to ask the user for anything mid-call.
 
-`tools/list` additionally carries `ttlMs: 300000` and `cacheScope: "private"`.
-Private rather than public because the server supports bearer-token auth (#59),
-which makes a response potentially authorization-scoped; on a localhost listener
-there is no shared intermediary for `public` to benefit anyway.
+`tools/list` additionally carries `ttlMs` and `cacheScope`, both **configurable**
+— see below.
+
+The defaults are `ttlMs: 300000` and `cacheScope: "private"`. Private rather than
+public because the server supports bearer-token auth (#59), which makes a
+response potentially authorization-scoped; on a localhost listener there is no
+shared intermediary for `public` to benefit anyway. Five minutes is the spec's
+own example value, and our tool set is fixed for the life of the process.
 
 Tools are sorted by name in both eras. It is a `SHOULD` from `2025-11-25`, and
 per #47 a stable prefix is what lets a provider's prompt cache hit.
+
+### The cache hints are configurable
+
+Both values are tuning knobs whose right setting depends on a deployment we
+cannot see from here — how far the server is exposed, whether anything caches in
+front of it, how a given client polls. So they are configuration rather than
+constants:
+
+| Field | Env override | Default |
+|-------|--------------|---------|
+| `mcp_server_tools_ttl_ms` | `MCP_TOOLS_TTL_MS` | `300000` |
+| `mcp_server_tools_cache_scope` | `MCP_TOOLS_CACHE_SCOPE` | `"private"` |
+
+Env overrides rather than config alone, because that is what the other four MCP
+server settings do (`MCP_HOST`, `MCP_PORT`, `MCP_ALLOWED_HOSTS`,
+`MCP_AUTH_TOKEN`) and what makes the headless `mcp_server_http.py` entry point
+configurable without editing `config.json`.
+
+**No GUI.** These belong with `dangerous_mode` and the retention knobs:
+documented as hand-edit-only rather than half-surfaced. The MCP section of the
+Settings dialog is already dense, and a spinbox labelled "cache scope" helps
+nobody who does not already know what the field does. The wiki documents both,
+with their defaults.
+
+**`ttlMs: 0` means "do not cache" and is still emitted.** The revision makes both
+fields REQUIRED on `tools/list`, so opting out of caching is expressed as a zero
+TTL, never as an absent field. There is no configuration that makes the result
+non-conformant.
+
+**Invalid values fall back to the default and log a warning.** A negative or
+non-integer TTL, or a `cacheScope` outside `{"public", "private"}`, would put a
+malformed value on the wire and break conformance for every client — so
+resolution validates before use. This lives in `server.py` as
+`resolve_cache_hints(cfg=None)`, not in `protocol.py`: reading config and the
+environment is application knowledge, and `protocol.py` stays pure JSON-RPC
+shape. `protocol.py` holds only `DEFAULT_TOOLS_TTL_MS`, `DEFAULT_CACHE_SCOPE`
+and the `CACHE_SCOPES` tuple.
+
+Resolution happens **once, at `MCPServer.__init__`**, and is injectable
+(`MCPServer(registry, ..., cache_hints=None)`) so tests never touch a config
+file. Per-request resolution would mean a config read on every `tools/list`,
+which buys a liveness nobody asked for.
 
 ## Transport
 
@@ -270,6 +317,11 @@ required behaviour.
 - `ping` answered under legacy, `-32601` under modern
 - `initialize` echoing each of the three legacy versions, falling back to `2025-11-25` for an unknown one
 
+**New — cache-hint resolution** (in the dual-era test file): the default pair,
+a config override, an env override winning over config, `0` accepted and emitted
+verbatim, and each invalid form (negative TTL, non-integer TTL, unknown
+`cacheScope`) falling back to the default rather than reaching the wire.
+
 **Extended — `test_mcp_streamable_server.py`:** the header matrix as a
 parametrised table (each mismatch, plus a base64-encoded `Mcp-Name`), and the
 status-code mapping for both eras.
@@ -292,6 +344,8 @@ geometry change in the document.
 
 ## Out of scope
 
+- **A GUI for the cache hints.** Deliberate, per the decision above; the wiki
+  carries them instead.
 - **Client-side dual-era.** Teaching `client.py` to probe with `server/discover`
   and fall back is the follow-up. Our client keeps speaking `2025-03-26` to our
   own server over the legacy path, so nothing self-breaks.
