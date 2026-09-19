@@ -263,9 +263,19 @@ Legacy-shaped bodies keep today's lenient handling: an absent header means
 A named-but-unsupported version now answers `-32022` instead of `-32600`. This is
 required rather than cosmetic: a recognized modern error is precisely the signal
 that tells a dual-era client *"modern server, retry with a supported version"*
-instead of *"legacy server, fall back to initialize."* The human-readable
-`message` stays as it is; the machine-readable `data` is what is new. It churns
-assertions in `test_mcp_streamable_server.py`.
+instead of *"legacy server, fall back to initialize."* The machine-readable
+`data` is what a client acts on, and it is new.
+
+Three smaller things move with it, and they are sanctioned here rather than
+discovered later. The rejection now carries the request's real `id` instead of
+a null one, because the body is parsed before the check and the client can
+finally correlate the answer with what it sent. The revisions are listed in
+table order, newest first, rather than `sorted()` — the useful order for a
+client choosing what to retry with. And the human-readable `message` is
+rebuilt by the shared `-32022` helper, so its wording changes from
+`Unsupported MCP-Protocol-Version %r.` to `Unsupported MCP protocol version
+%r.`; one helper phrasing both eras is worth more than a string no client
+parses. All of it churns assertions in `test_mcp_streamable_server.py`.
 
 ### Status mapping is era-dependent
 
@@ -274,11 +284,19 @@ assertions in `test_mcp_streamable_server.py`.
 | success | `200` | `200` |
 | `-32601` method not found | `200` | **`404`** |
 | `-32020` / `-32021` / `-32022` | `400` | `400` |
-| notification | `202` | `202` |
+| notification | `202` | `202` — unless its mirrored headers disagree |
 
 Legacy must keep answering `200`-with-error, because that is what every revision
 through `2025-11-25` specifies. Returning `404` there would break clients that
 work today.
+
+The one qualification on `202`: a modern notification is header-validated before
+its missing `id` is noticed, so a mirrored-header mismatch answers `400` with a
+`-32020` body carrying `"id": null` rather than `202`. JSON-RPC says never to
+answer a notification, but the header contract is an HTTP-layer one — a request
+an intermediary could have mis-routed must be refused whether or not it wanted a
+reply, and staying silent would leave the client believing a smuggled
+notification was accepted.
 
 ### The other two transports come free
 
