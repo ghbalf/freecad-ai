@@ -491,3 +491,14 @@ class TestModernHeaderValidation:
         err = transport_mod.validate_modern_headers(
             self._ok_headers(**{"Mcp-Method": "tools/list"}), self._CALL)
         assert err["id"] == self._CALL["id"]
+
+    def test_an_undecodable_name_is_rejected_even_with_no_name_in_the_body(self):
+        """A value we cannot read is not a value we can confirm agrees.
+
+        Both sides being None is not agreement: the header says the client
+        meant to name a tool, and we could not read which."""
+        err = transport_mod.validate_modern_headers(
+            self._ok_headers(**{"Mcp-Name": "=?base64?!!!notb64!!!?="}),
+            _modern("tools/call"))
+        assert err is not None
+        assert err["error"]["code"] == protocol.HEADER_MISMATCH
