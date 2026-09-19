@@ -1367,7 +1367,11 @@ def validate_modern_headers(headers, msg):
         if raw_name is None:
             return mismatch("Missing required Mcp-Name header on tools/call.")
         wanted = (msg.get("params") or {}).get("name")
-        if _decode_header_value(raw_name) != wanted:
+        decoded_name = _decode_header_value(raw_name)
+        # A decode failure is a mismatch on its own. Comparing the two
+        # directly would call it agreement when the body names no tool
+        # either: None from "unreadable" is not None from "absent".
+        if decoded_name is None or decoded_name != wanted:
             return mismatch(
                 "Header mismatch: Mcp-Name %r does not name the tool the body "
                 "calls (%r)." % (raw_name, wanted))
