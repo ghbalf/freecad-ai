@@ -44,7 +44,7 @@ removed truthfully.
 | Unknown modern version | `UnsupportedProtocolVersionError` (`-32022`), **never** a silent fall-through to legacy |
 | `supported` list in `-32022` | Era-matched: `MODERN_VERSIONS` for a modern-shaped request, `LEGACY_VERSIONS` for a legacy-shaped one |
 | `server/discover` | Answered in **both** eras; advertises modern versions only |
-| `initialize` | Now **echoes** the client's requested version when supported, else `2025-11-25` |
+| `initialize` | Now **echoes** the client's requested version when it is one we speak *in the legacy era*, else `2025-11-25`. Clamped to that era because `initialize` exists in no modern revision — echoing `2026-07-28` would promise the shape that revision deleted |
 | `ping` | Legacy only. Modern gets `-32601` — the revision removed it |
 | Legacy results | **Byte-identical to v0.28.0-alpha.** No `resultType`, no `_meta` |
 | Cache hints | `ttlMs` / `cacheScope` **configurable** via config + env, no GUI. Invalid values fall back and warn |
