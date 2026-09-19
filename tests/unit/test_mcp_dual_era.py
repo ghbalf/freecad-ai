@@ -1,12 +1,15 @@
 """Dual-era MCP: one endpoint answering the 2025-03-26 handshake and the
 stateless 2026-07-28 per-request _meta era (#64 phase 3)."""
 
+import base64
 import os
+from email.message import Message
 
 import pytest
 
 from freecad_ai.mcp import protocol
 from freecad_ai.mcp import server as server_mod
+from freecad_ai.mcp import transport as transport_mod
 from freecad_ai.tools.registry import ToolRegistry
 
 
@@ -398,3 +401,93 @@ class TestToolsCallShape:
             _modern("tools/call", name="missing", arguments={}))["result"]
         assert result["isError"] is True
         assert result["resultType"] == "complete"
+
+
+def _headers(mapping):
+    """A case-insensitive header object, as http.server hands the handler."""
+    msg = Message()
+    for key, value in mapping.items():
+        msg[key] = value
+    return msg
+
+
+class TestModernHeaderValidation:
+    _CALL = _modern("tools/call", name="create_box", arguments={})
+
+    def _ok_headers(self, **overrides):
+        base = {"MCP-Protocol-Version": "2026-07-28",
+                "Mcp-Method": "tools/call",
+                "Mcp-Name": "create_box"}
+        base.update(overrides)
+        return _headers(base)
+
+    def test_agreeing_headers_pass(self):
+        assert transport_mod.validate_modern_headers(
+            self._ok_headers(), self._CALL) is None
+
+    def test_header_casing_does_not_matter(self):
+        """Clients and proxies normalise header case freely."""
+        assert transport_mod.validate_modern_headers(
+            _headers({"mcp-protocol-version": "2026-07-28",
+                      "mcp-method": "tools/call",
+                      "mcp-name": "create_box"}), self._CALL) is None
+
+    def test_a_disagreeing_version_is_rejected(self):
+        """The headers mirror the body so an intermediary can route without
+        parsing it. A mismatch means the two readers see different requests —
+        a routing bug at best and a bypass at worst, so the spec makes it a
+        MUST-reject rather than a preference for the body."""
+        err = transport_mod.validate_modern_headers(
+            self._ok_headers(**{"MCP-Protocol-Version": "2025-03-26"}),
+            self._CALL)
+        assert err["error"]["code"] == protocol.HEADER_MISMATCH
+
+    def test_a_missing_version_header_is_rejected(self):
+        err = transport_mod.validate_modern_headers(
+            _headers({"Mcp-Method": "tools/call", "Mcp-Name": "create_box"}),
+            self._CALL)
+        assert err["error"]["code"] == protocol.HEADER_MISMATCH
+
+    def test_a_disagreeing_method_is_rejected(self):
+        err = transport_mod.validate_modern_headers(
+            self._ok_headers(**{"Mcp-Method": "tools/list"}), self._CALL)
+        assert err["error"]["code"] == protocol.HEADER_MISMATCH
+
+    def test_a_disagreeing_tool_name_is_rejected(self):
+        """The one that matters: Mcp-Name is what a policy layer in front of
+        us would allow or deny on, so a body naming a different tool is how
+        such a layer gets walked past."""
+        err = transport_mod.validate_modern_headers(
+            self._ok_headers(**{"Mcp-Name": "read_document"}), self._CALL)
+        assert err["error"]["code"] == protocol.HEADER_MISMATCH
+
+    def test_a_missing_name_on_tools_call_is_rejected(self):
+        err = transport_mod.validate_modern_headers(
+            _headers({"MCP-Protocol-Version": "2026-07-28",
+                      "Mcp-Method": "tools/call"}), self._CALL)
+        assert err["error"]["code"] == protocol.HEADER_MISMATCH
+
+    def test_no_name_header_is_required_off_tools_call(self):
+        msg = _modern("tools/list")
+        assert transport_mod.validate_modern_headers(
+            _headers({"MCP-Protocol-Version": "2026-07-28",
+                      "Mcp-Method": "tools/list"}), msg) is None
+
+    def test_a_base64_encoded_name_is_decoded_before_comparing(self):
+        """The sentinel encoding exists for values that cannot go in a header
+        raw. Comparing it undecoded would reject every client that uses it."""
+        encoded = "=?base64?%s?=" % base64.b64encode(b"create_box").decode()
+        assert transport_mod.validate_modern_headers(
+            self._ok_headers(**{"Mcp-Name": encoded}), self._CALL) is None
+
+    def test_undecodable_base64_is_rejected_not_crashed(self):
+        """This endpoint is unauthenticated (#59)."""
+        err = transport_mod.validate_modern_headers(
+            self._ok_headers(**{"Mcp-Name": "=?base64?!!!notb64!!!?="}),
+            self._CALL)
+        assert err["error"]["code"] == protocol.HEADER_MISMATCH
+
+    def test_the_error_carries_the_request_id(self):
+        err = transport_mod.validate_modern_headers(
+            self._ok_headers(**{"Mcp-Method": "tools/list"}), self._CALL)
+        assert err["id"] == self._CALL["id"]

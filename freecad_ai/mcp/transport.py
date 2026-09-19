@@ -5,6 +5,7 @@ StdioServerTransport — reads stdin / writes stdout (server side).
 HTTPServerTransport — serves MCP over HTTP: Streamable HTTP and HTTP+SSE.
 """
 
+import base64
 import hmac
 import json
 import logging
@@ -22,6 +23,76 @@ from typing import Any, Callable
 from . import protocol
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_header_value(raw):
+    """Decode the ``=?base64?…?=`` sentinel a mirrored header value may use.
+
+    2026-07-28 defines it for values that cannot travel in a header raw — a
+    tool name with a non-ASCII character, say. Returns None when the payload
+    will not decode, which the caller treats as a mismatch: a value we cannot
+    read is not a value we can confirm agrees with the body.
+    """
+    if raw is None:
+        return None
+    if raw.startswith("=?base64?") and raw.endswith("?="):
+        try:
+            return base64.b64decode(raw[len("=?base64?"):-len("?=")],
+                                    validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+    return raw
+
+
+def validate_modern_headers(headers, msg):
+    """Return a JSON-RPC error when the mirrored headers disagree with the
+    body, or None when they agree.
+
+    2026-07-28 mirrors selected body fields into headers so an intermediary
+    can route, authorize or rate-limit without parsing the body. That only
+    holds if the two always say the same thing: a request whose header names
+    one tool and whose body names another is how a policy layer in front of
+    this server gets walked past. So a mismatch is a MUST-reject, not a
+    preference for one source over the other.
+
+    Module level, not a method of the nested RequestHandler: that class is
+    built inside HTTPServerTransport._make_server() and cannot be reached
+    without binding a socket.
+    """
+    msg_id = msg.get("id")
+
+    def mismatch(text):
+        return protocol.make_error(msg_id, protocol.HEADER_MISMATCH, text)
+
+    version = protocol.request_protocol_version(msg)
+    header_version = headers.get("MCP-Protocol-Version")
+    if header_version is None:
+        return mismatch("Missing required MCP-Protocol-Version header.")
+    if header_version != version:
+        return mismatch(
+            "Header mismatch: MCP-Protocol-Version %r does not match the %r "
+            "in params._meta." % (header_version, version))
+
+    method = msg.get("method", "")
+    header_method = headers.get("Mcp-Method")
+    if header_method is None:
+        return mismatch("Missing required Mcp-Method header.")
+    if header_method != method:
+        return mismatch(
+            "Header mismatch: Mcp-Method %r does not match the body's method "
+            "%r." % (header_method, method))
+
+    if method == "tools/call":
+        raw_name = headers.get("Mcp-Name")
+        if raw_name is None:
+            return mismatch("Missing required Mcp-Name header on tools/call.")
+        wanted = (msg.get("params") or {}).get("name")
+        if _decode_header_value(raw_name) != wanted:
+            return mismatch(
+                "Header mismatch: Mcp-Name %r does not name the tool the body "
+                "calls (%r)." % (raw_name, wanted))
+
+    return None
 
 
 def _iter_sse_events(fp):
