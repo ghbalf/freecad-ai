@@ -6,6 +6,7 @@ because the behaviour under test is HTTP status codes and headers.
 """
 
 import json
+import socket
 import threading
 import urllib.error
 import urllib.request
@@ -13,7 +14,9 @@ import urllib.request
 import pytest
 
 from freecad_ai.mcp import protocol
+from freecad_ai.mcp.server import MCPServer
 from freecad_ai.mcp.transport import MAX_REQUEST_BODY, HTTPServerTransport
+from freecad_ai.tools.registry import ToolDefinition, ToolRegistry, ToolResult
 
 
 def _echo_handler(msg):
@@ -289,7 +292,8 @@ class TestProtocolVersionHeader:
                 headers={"MCP-Protocol-Version": "2026-07-28"})
 
         assert status == 400
-        assert json.loads(body)["error"]["code"] == protocol.INVALID_REQUEST
+        assert json.loads(body)["error"]["code"] == \
+            protocol.UNSUPPORTED_PROTOCOL_VERSION
 
     def test_a_garbage_version_is_rejected(self):
         with _RunningServer() as srv:
@@ -307,7 +311,7 @@ class TestProtocolVersionHeader:
                 headers={"MCP-Protocol-Version": "2026-07-28"})
 
         message = json.loads(body)["error"]["message"]
-        for version in protocol.SUPPORTED_PROTOCOL_VERSIONS:
+        for version in protocol.LEGACY_VERSIONS:
             assert version in message
 
     def test_the_legacy_messages_path_ignores_the_header(self):
@@ -472,3 +476,230 @@ class TestLegacyMessagesParsing:
 
         assert status == 400
         assert json.loads(body)["error"]["code"] == protocol.PARSE_ERROR
+
+
+def _dual_era_handler(msg):
+    """A handler with the shape the real server has after #64."""
+    msg_id = msg.get("id")
+    if msg_id is None:
+        return None
+    if protocol.is_modern_request(msg):
+        version = protocol.request_protocol_version(msg)
+        if version not in protocol.MODERN_VERSIONS:
+            return protocol.unsupported_version_error(
+                msg_id, version, protocol.MODERN_VERSIONS)
+        if msg.get("method") == "tools/list":
+            return protocol.make_response(msg_id, protocol.modern_result(
+                {"tools": []}, {"name": "t", "version": "0"},
+                ttl_ms=0, cache_scope="private"))
+        return protocol.make_error(msg_id, protocol.METHOD_NOT_FOUND,
+                                   msg.get("method"))
+    if msg.get("method") == "ping":
+        return protocol.make_response(msg_id, {})
+    return protocol.make_error(msg_id, protocol.METHOD_NOT_FOUND,
+                               msg.get("method"))
+
+
+def _modern_body(method, version="2026-07-28", **params):
+    params["_meta"] = {protocol.META_PROTOCOL_VERSION: version}
+    return {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+
+
+def _modern_headers(method, name=None, version="2026-07-28"):
+    headers = {"MCP-Protocol-Version": version, "Mcp-Method": method}
+    if name is not None:
+        headers["Mcp-Name"] = name
+    return headers
+
+
+class TestDualEraStatusCodes:
+    def test_a_modern_request_is_served_from_the_same_endpoint(self):
+        with _RunningServer(handler=_dual_era_handler) as srv:
+            status, body, _ = _post(
+                srv.port, _modern_body("tools/list"),
+                headers=_modern_headers("tools/list"))
+
+        assert status == 200
+        assert json.loads(body)["result"]["resultType"] == "complete"
+
+    def test_an_unknown_modern_method_is_a_404(self):
+        """2026-07-28 maps method-not-found onto HTTP, so an intermediary can
+        see it without parsing the body. Legacy keeps answering 200."""
+        with _RunningServer(handler=_dual_era_handler) as srv:
+            status, body, _ = _post(
+                srv.port, _modern_body("nonsense/method"),
+                headers=_modern_headers("nonsense/method"))
+
+        assert status == 404
+        assert json.loads(body)["error"]["code"] == protocol.METHOD_NOT_FOUND
+
+    def test_an_unknown_legacy_method_stays_a_200(self):
+        """Changing this would break every client this work is not about."""
+        with _RunningServer(handler=_dual_era_handler) as srv:
+            status, body, _ = _post(
+                srv.port, {"jsonrpc": "2.0", "id": 1, "method": "nope"})
+
+        assert status == 200
+        assert json.loads(body)["error"]["code"] == protocol.METHOD_NOT_FOUND
+
+    def test_an_unservable_modern_version_is_a_400(self):
+        with _RunningServer(handler=_dual_era_handler) as srv:
+            status, body, _ = _post(
+                srv.port, _modern_body("tools/list", version="2027-05-01"),
+                headers=_modern_headers("tools/list", version="2027-05-01"))
+        # The body names 2027-05-01 in _meta and the header agrees, so this is
+        # the server refusing the version, not the header check firing.
+        assert status == 400
+        assert json.loads(body)["error"]["code"] == \
+            protocol.UNSUPPORTED_PROTOCOL_VERSION
+
+    def test_a_header_body_mismatch_is_a_400_before_the_handler_runs(self):
+        with _RunningServer(handler=_dual_era_handler) as srv:
+            status, body, _ = _post(
+                srv.port, _modern_body("tools/call", name="create_box"),
+                headers=_modern_headers("tools/call", name="read_document"))
+
+        assert status == 400
+        assert json.loads(body)["error"]["code"] == protocol.HEADER_MISMATCH
+
+    def test_the_body_is_drained_before_a_rejection(self):
+        """The old early 400 skipped the body, safe only while
+        protocol_version stayed HTTP/1.0. After the reorder a client can send
+        a large body and still read its rejection cleanly."""
+        payload = _modern_body("tools/call", name="create_box",
+                               arguments={"pad": "x" * 100000})
+        with _RunningServer(handler=_dual_era_handler) as srv:
+            status, body, _ = _post(
+                srv.port, payload,
+                headers=_modern_headers("tools/call", name="other"))
+
+        assert status == 400
+        assert json.loads(body)["error"]["code"] == protocol.HEADER_MISMATCH
+
+
+class TestRealServerOverRealTransport:
+    """Wires the actual MCPServer._handle into a really-bound
+    HTTPServerTransport, instead of the hand-written _dual_era_handler stand-
+    in every other test in this module uses. That stand-in tests the
+    transport's HTTP-status half honestly, but if MCPServer._handle stopped
+    returning -32601 for a modern ping, every test above would still pass —
+    nothing in CI would notice the two halves had drifted apart."""
+
+    @staticmethod
+    def _server():
+        registry = ToolRegistry()
+        registry.register(ToolDefinition(
+            "a", "does a", [],
+            handler=lambda: ToolResult(True, "ran a")))
+        return MCPServer(registry, cache_hints=(0, "private"))
+
+    def test_a_modern_tools_list_is_a_200(self):
+        with _RunningServer(handler=self._server()._handle) as srv:
+            status, body, _ = _post(
+                srv.port, _modern_body("tools/list"),
+                headers=_modern_headers("tools/list"))
+
+        assert status == 200
+        assert json.loads(body)["result"]["resultType"] == "complete"
+
+    def test_a_modern_ping_is_a_404_the_method_is_legacy_only(self):
+        with _RunningServer(handler=self._server()._handle) as srv:
+            status, body, _ = _post(
+                srv.port, _modern_body("ping"),
+                headers=_modern_headers("ping"))
+
+        assert status == 404
+        assert json.loads(body)["error"]["code"] == protocol.METHOD_NOT_FOUND
+
+    def test_a_legacy_unknown_method_is_a_200(self):
+        with _RunningServer(handler=self._server()._handle) as srv:
+            status, body, _ = _post(
+                srv.port, {"jsonrpc": "2.0", "id": 1, "method": "nonsense"})
+
+        assert status == 200
+        assert json.loads(body)["error"]["code"] == protocol.METHOD_NOT_FOUND
+
+
+def _raw_post(port, headers, body):
+    """POST with the header lines exactly as given, duplicates included.
+
+    urllib collapses repeated headers, so the case this module most needs to
+    cover cannot be sent through it: a client that smuggles a second Mcp-Name
+    past a proxy which read only the first.
+    """
+    payload = json.dumps(body).encode()
+    lines = ["POST /mcp HTTP/1.1",
+             "Host: 127.0.0.1:%d" % port,
+             "Content-Type: application/json",
+             "Content-Length: %d" % len(payload),
+             "Connection: close"]
+    lines += ["%s: %s" % pair for pair in headers]
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode() + payload)
+        chunks = []
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    head, _, tail = b"".join(chunks).partition(b"\r\n\r\n")
+    return int(head.split(b"\r\n", 1)[0].split()[1]), tail
+
+
+class TestADuplicateHeaderNeverReachesATool:
+    """The end-to-end half of the duplicate-header rejection.
+
+    validate_modern_headers is unit-tested directly, and a header *mismatch*
+    is covered over a real socket. Neither proves _handle_streamable still
+    calls the check for a duplicate, which is the shape that actually walks
+    past a policy layer: intermediaries disagree about which copy they read,
+    so a rule enforced anywhere but on the request that runs is not a rule.
+    """
+
+    @staticmethod
+    def _server(ran):
+        registry = ToolRegistry()
+        registry.register(ToolDefinition(
+            "create_box", "creates a box", [],
+            handler=lambda: (ran.append("create_box"),
+                             ToolResult(True, "made one"))[1]))
+        return MCPServer(registry, cache_hints=(0, "private"))
+
+    _CALL = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "_meta": {protocol.META_PROTOCOL_VERSION: "2026-07-28"},
+        "name": "create_box", "arguments": {}}}
+
+    @pytest.mark.parametrize("names", [
+        ("create_box", "read_document"),
+        ("read_document", "create_box"),
+    ])
+    def test_a_smuggled_second_name_is_refused_in_either_order(self, names):
+        """Both orders, because the bug WAS the order: get() returned the
+        first copy, so whether the smuggle worked depended only on which one
+        the client put first."""
+        ran = []
+        with _RunningServer(handler=self._server(ran)._handle) as srv:
+            status, body = _raw_post(srv.port, [
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "tools/call"),
+                ("Mcp-Name", names[0]),
+                ("Mcp-Name", names[1]),
+            ], self._CALL)
+
+        assert status == 400
+        assert json.loads(body)["error"]["code"] == protocol.HEADER_MISMATCH
+        assert ran == []
+
+    def test_the_same_call_with_one_name_header_runs_the_tool(self):
+        """The control: without it, a test that rejects everything passes."""
+        ran = []
+        with _RunningServer(handler=self._server(ran)._handle) as srv:
+            status, body = _raw_post(srv.port, [
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "tools/call"),
+                ("Mcp-Name", "create_box"),
+            ], self._CALL)
+
+        assert status == 200
+        assert json.loads(body)["result"]["isError"] is False
+        assert ran == ["create_box"]

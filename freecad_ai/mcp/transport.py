@@ -5,6 +5,7 @@ StdioServerTransport — reads stdin / writes stdout (server side).
 HTTPServerTransport — serves MCP over HTTP: Streamable HTTP and HTTP+SSE.
 """
 
+import base64
 import hmac
 import json
 import logging
@@ -22,6 +23,112 @@ from typing import Any, Callable
 from . import protocol
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_header_value(raw):
+    """Decode the ``=?base64?…?=`` sentinel a mirrored header value may use.
+
+    2026-07-28 defines it for values that cannot travel in a header raw — a
+    tool name with a non-ASCII character, say. Returns None when the payload
+    will not decode, which the caller treats as a mismatch: a value we cannot
+    read is not a value we can confirm agrees with the body.
+    """
+    if raw is None:
+        return None
+    if raw.startswith("=?base64?") and raw.endswith("?="):
+        try:
+            return base64.b64decode(raw[len("=?base64?"):-len("?=")],
+                                    validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+    return raw
+
+
+def validate_modern_headers(headers, msg):
+    """Return a JSON-RPC error when the mirrored headers disagree with the
+    body, or None when they agree.
+
+    2026-07-28 mirrors selected body fields into headers so an intermediary
+    can route, authorize or rate-limit without parsing the body. That only
+    holds if the two always say the same thing: a request whose header names
+    one tool and whose body names another is how a policy layer in front of
+    this server gets walked past. So a mismatch is a MUST-reject, not a
+    preference for one source over the other.
+
+    Reads each mirrored header with ``.get_all()`` where available (guarded,
+    since a caller may pass a plain mapping) rather than ``.get()`` alone.
+    ``.get()`` on an ``email.message.Message`` silently returns only the
+    FIRST occurrence of a repeated header, so a smuggled second copy would
+    validate or not purely on which one comes first — and intermediaries
+    disagree on that (nginx keeps the first, Envoy joins duplicates with a
+    comma, some WAFs keep the last). A duplicate is therefore rejected
+    outright rather than resolved by picking one: there is no rule for
+    "use the first" that every intermediary in front of us also follows,
+    so any such rule would just relocate the bypass.
+
+    Module level, not a method of the nested RequestHandler: that class is
+    built inside HTTPServerTransport._make_server() and cannot be reached
+    without binding a socket.
+    """
+    msg_id = msg.get("id")
+
+    def mismatch(text):
+        return protocol.make_error(msg_id, protocol.HEADER_MISMATCH, text)
+
+    get_all = getattr(headers, "get_all", None)
+    if get_all is not None:
+        for name in ("MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"):
+            if len(get_all(name) or ()) > 1:
+                return mismatch("Header %s appears more than once." % name)
+
+    version = protocol.request_protocol_version(msg)
+    header_version = headers.get("MCP-Protocol-Version")
+    if header_version is None:
+        return mismatch("Missing required MCP-Protocol-Version header.")
+    if header_version != version:
+        return mismatch(
+            "Header mismatch: MCP-Protocol-Version %r does not match the %r "
+            "in params._meta." % (header_version, version))
+
+    method = msg.get("method", "")
+    header_method = headers.get("Mcp-Method")
+    if header_method is None:
+        return mismatch("Missing required Mcp-Method header.")
+    if header_method != method:
+        return mismatch(
+            "Header mismatch: Mcp-Method %r does not match the body's method "
+            "%r." % (header_method, method))
+
+    if method == "tools/call":
+        raw_name = headers.get("Mcp-Name")
+        if raw_name is None:
+            return mismatch("Missing required Mcp-Name header on tools/call.")
+        wanted = (msg.get("params") or {}).get("name")
+        decoded_name = _decode_header_value(raw_name)
+        if decoded_name is None or decoded_name != wanted:
+            return mismatch(
+                "Header mismatch: Mcp-Name %r does not name the tool the body "
+                "calls (%r)." % (raw_name, wanted))
+
+    return None
+
+
+# 2026-07-28 maps these onto HTTP so an intermediary can act on them without
+# parsing the body. Legacy answers 200-with-error for everything, so this map
+# is applied only to a modern response.
+MODERN_ERROR_STATUS = {
+    protocol.METHOD_NOT_FOUND: 404,
+    protocol.HEADER_MISMATCH: 400,
+    protocol.MISSING_REQUIRED_CLIENT_CAPABILITY: 400,
+    protocol.UNSUPPORTED_PROTOCOL_VERSION: 400,
+}
+
+
+def _status_for(response, modern):
+    """The HTTP status a JSON-RPC response travels under."""
+    if not modern or "error" not in response:
+        return 200
+    return MODERN_ERROR_STATUS.get(response["error"].get("code"), 200)
 
 
 def _iter_sse_events(fp):
@@ -874,6 +981,12 @@ class HTTPServerTransport:
                     self._send_json(400, err)
                     return
 
+                # A modern-shaped message is served modern here too (both
+                # endpoints share MCPServer._handle), but without the header
+                # validation /mcp applies. Deliberate: mirrored headers exist
+                # so an intermediary can route without parsing the body, and
+                # this deprecated localhost SSE pair (#65) has none. Not worth
+                # extending a transport on a removal clock.
                 try:
                     response = transport._handler(msg) if transport._handler else None
                 except Exception as e:
@@ -903,29 +1016,6 @@ class HTTPServerTransport:
                 response is a server bug, and answering it with a bare 202
                 would surface as an unparseable empty body on the client.
                 """
-                # Absent means "assume 2025-03-26" (spec SHOULD), which is what
-                # we speak. A named revision we cannot serve is a 400 (spec
-                # MUST) whose body says which ones we can — a rejection the
-                # client cannot act on is how #60 read to its users.
-                #
-                # This 400 is sent without draining the request body, which is
-                # only safe because self.protocol_version stays the stdlib
-                # default "HTTP/1.0": the connection closes after this
-                # response regardless, so there is no keep-alive stream to
-                # desynchronise. If protocol_version is ever raised to
-                # "HTTP/1.1", this early return needs to drain the body first.
-                version = self.headers.get("MCP-Protocol-Version")
-                if (version is not None
-                        and version not in protocol.SUPPORTED_PROTOCOL_VERSIONS):
-                    self._send_json(400, protocol.make_error(
-                        None, protocol.INVALID_REQUEST,
-                        "Unsupported MCP-Protocol-Version %r. This server "
-                        "speaks %s." % (
-                            version,
-                            ", ".join(sorted(
-                                protocol.SUPPORTED_PROTOCOL_VERSIONS)))))
-                    return
-
                 try:
                     length = int(self.headers.get("Content-Length", 0))
                     if length < 0 or length > MAX_REQUEST_BODY:
@@ -951,6 +1041,28 @@ class HTTPServerTransport:
                         "are not supported."))
                     return
 
+                # Era is decided by the body, so the body must be read first.
+                # This is why the version check no longer runs before it —
+                # which also retires the old caveat about answering without
+                # draining, safe only while protocol_version stayed HTTP/1.0.
+                modern = protocol.is_modern_request(msg)
+                if modern:
+                    err = validate_modern_headers(self.headers, msg)
+                    if err is not None:
+                        self._send_json(400, err)
+                        return
+                else:
+                    # Absent means "assume 2025-03-26" (spec SHOULD), which is
+                    # what we speak. A body with no _meta naming a modern
+                    # revision in the header is a broken client: the list it
+                    # can act on is the legacy one.
+                    version = self.headers.get("MCP-Protocol-Version")
+                    if (version is not None
+                            and version not in protocol.LEGACY_VERSIONS):
+                        self._send_json(400, protocol.unsupported_version_error(
+                            msg.get("id"), version, protocol.LEGACY_VERSIONS))
+                        return
+
                 msg_id = msg.get("id")
                 try:
                     response = transport._handler(msg) if transport._handler else None
@@ -970,7 +1082,7 @@ class HTTPServerTransport:
                         "Server produced no response for method %r"
                         % msg.get("method"))
 
-                self._send_json(200, response)
+                self._send_json(_status_for(response, modern), response)
 
             def _send_json(self, code: int, msg: dict):
                 data = json.dumps(msg, separators=(",", ":")).encode()

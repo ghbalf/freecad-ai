@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Dual-era MCP server (#64).** The MCP server now answers the stateless
+  `2026-07-28` revision alongside the `initialize` handshake it has always
+  spoken, from the same `POST /mcp` endpoint. A client says which era it
+  speaks per request, by carrying `io.modelcontextprotocol/protocolVersion`
+  in `params._meta`; a request without it is served exactly as before.
+
+  `server/discover` is implemented — the bootstrap a stateless client uses in
+  place of the handshake. Modern results carry `resultType` and the server's
+  identity in per-result `_meta`, and `tools/list` carries the `ttlMs` and
+  `cacheScope` freshness hints the revision requires.
+
+  A modern request also mirrors its `method` into an `Mcp-Method` header, and
+  its tool name into `Mcp-Name` on `tools/call`, so a proxy or gateway in
+  front of the server can allow or deny a call without parsing the body. The
+  server refuses a request whose headers disagree with its body, or that
+  repeats one of those headers, with `-32020` and HTTP 400 — headers are only
+  worth routing on while what they say is what runs.
+
+- **Configurable `tools/list` cache hints.** `mcp_server_tools_ttl_ms`
+  (default `300000`) and `mcp_server_tools_cache_scope` (default `private`),
+  overridable with `MCP_TOOLS_TTL_MS` and `MCP_TOOLS_CACHE_SCOPE`. Set the
+  TTL to `0` to tell clients not to cache the tool list at all.
+
+### Changed
+
+- **`initialize` echoes the client's protocol revision** when it is one we
+  speak, instead of always replying `2025-03-26`. A `2025-11-25` client used
+  to be told to negotiate down for no reason. A client that names no version
+  still gets `2025-03-26`, because it asked for nothing to echo; one that
+  names a version we do not speak is answered `2025-11-25`, the newest
+  revision this handshake has to offer.
+
+- **`tools/list` is sorted by name.** It followed registration order, which
+  is import order, so it moved when nothing about the tools had.
+
+- **An unsupported protocol version is now `-32022`**, the revision's
+  `UnsupportedProtocolVersion`, rather than the generic `-32600`, and the
+  rejection carries the request's id instead of a null one.
+
 ## [0.28.0-alpha] - 2026-09-18
 
 ### Added

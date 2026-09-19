@@ -492,6 +492,12 @@ class AppConfig:
     # default) leaves the server unauthenticated, same as before this field
     # existed. MCP_AUTH_TOKEN overrides.
     mcp_server_auth_token: str = ""
+    # tools/list freshness hints (2026-07-28 CacheableResult). Both fields are
+    # REQUIRED on the wire, so "do not cache" is ttl 0, not an empty value.
+    # Defaults duplicated from freecad_ai.mcp.protocol: config.py must not
+    # import the mcp package. A test pins the two together.
+    mcp_server_tools_ttl_ms: int = 300000
+    mcp_server_tools_cache_scope: str = "private"
     user_tools_disabled: list = field(default_factory=list)
     scan_freecad_macros: bool = False
     # Dangerous mode: relaxes executor safety layers (static pattern blocking,
