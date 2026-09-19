@@ -163,9 +163,11 @@ class MCPServer:
     def _handle_modern(self, msg_id, method: str, params: dict) -> dict | None:
         """The 2026-07-28 stateless world.
 
-        initialize, notifications/initialized, ping and logging/setLevel are
-        all gone from this revision, so they fall through to METHOD_NOT_FOUND
-        — which the transport renders as a 404, not a 200.
+        initialize, notifications/initialized and ping are all gone from this
+        revision, so they fall through to METHOD_NOT_FOUND — which the
+        transport renders as a 404, not a 200. The revision drops
+        logging/setLevel too, but naming it here would imply we ever served
+        it; we did not.
         """
         if method == "tools/list":
             ttl, scope = self._cache_hints
