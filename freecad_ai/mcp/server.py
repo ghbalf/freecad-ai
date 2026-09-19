@@ -114,7 +114,14 @@ class MCPServer:
         """
         method = msg.get("method", "")
         msg_id = msg.get("id")
-        params = msg.get("params") or {}
+        # `or {}` let a non-dict `params` (e.g. `5`, `[]`, a bare string)
+        # through intact; the legacy `initialize` branch then does
+        # `"protocolVersion" not in params` followed by `params.get(...)`,
+        # which raises for exactly those shapes. An isinstance guard makes
+        # every downstream reader see a plain dict instead.
+        params = msg.get("params")
+        if not isinstance(params, dict):
+            params = {}
 
         if not protocol.is_modern_request(msg):
             return self._handle_legacy(msg_id, method, params)

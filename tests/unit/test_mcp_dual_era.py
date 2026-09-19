@@ -92,6 +92,26 @@ class TestEraDetection:
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list",
              "params": {"_meta": "nonsense"}})
 
+    @pytest.mark.parametrize("bad_params", [5, [], ["protocolVersion"],
+                                            "protocolVersion"])
+    @pytest.mark.parametrize("method", ["initialize", "tools/call"])
+    def test_a_non_dict_params_does_not_raise_through_handle(
+            self, bad_params, method):
+        """The endpoint is unauthenticated (#59); malformed input must not
+        500. This drives MCPServer._handle itself — is_modern_request alone
+        (above) never touches the code path where the raise actually
+        happens: ``or {}`` lets a non-dict ``params`` through, and the
+        legacy ``initialize`` branch is the one that then does
+        ``"protocolVersion" not in params`` / ``params.get(...)``."""
+        msg = {"jsonrpc": "2.0", "id": 1, "method": method,
+               "params": bad_params}
+        resp = server_mod.MCPServer(ToolRegistry(),
+                                    cache_hints=(300000, "private"))._handle(msg)
+        assert isinstance(resp, dict)
+        if method == "initialize":
+            assert resp["result"]["protocolVersion"] == \
+                protocol.DEFAULT_PROTOCOL_VERSION
+
 
 class TestErrorCodes:
     def test_the_2026_numbering(self):
