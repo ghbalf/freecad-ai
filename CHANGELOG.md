@@ -29,13 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **`initialize` echoes the client's protocol revision** when it is one we
   speak, instead of always replying `2025-03-26`. A `2025-11-25` client used
-  to be told to negotiate down for no reason.
+  to be told to negotiate down for no reason. A client that names no version
+  still gets `2025-03-26`, because it asked for nothing to echo; one that
+  names a version we do not speak is answered `2025-11-25`, the newest
+  revision this handshake has to offer.
 
 - **`tools/list` is sorted by name.** It followed registration order, which
   is import order, so it moved when nothing about the tools had.
 
-- **An unsupported protocol version is now `-32022`** (`UnsupportedProtocol\
-Version`) rather than `-32600`, and the rejection carries the request's id.
+- **An unsupported protocol version is now `-32022`**, the revision's
+  `UnsupportedProtocolVersion`, rather than the generic `-32600`, and the
+  rejection carries the request's id instead of a null one.
 
 ## [0.28.0-alpha] - 2026-09-18
 
