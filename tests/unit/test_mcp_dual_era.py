@@ -101,3 +101,37 @@ class TestErrorCodes:
         assert err["error"]["data"]["supported"] == list(protocol.MODERN_VERSIONS)
         for version in protocol.MODERN_VERSIONS:
             assert version in err["error"]["message"]
+
+
+class TestModernResultEnvelope:
+    _INFO = {"name": "FreeCAD AI", "version": "0.28.0-alpha"}
+
+    def test_every_modern_result_declares_a_result_type(self):
+        """resultType is required in 2026-07-28. We are always "complete":
+        no tool of ours asks for input mid-call, so MRTR never applies."""
+        result = protocol.modern_result({"tools": []}, self._INFO)
+        assert result["resultType"] == "complete"
+
+    def test_server_info_travels_in_meta(self):
+        """The handshake is gone; per-result _meta is where identity lives now."""
+        result = protocol.modern_result({"tools": []}, self._INFO)
+        assert result["_meta"][protocol.META_SERVER_INFO] == self._INFO
+
+    def test_the_payload_is_carried_through(self):
+        result = protocol.modern_result(
+            {"content": [{"type": "text", "text": "ok"}], "isError": False},
+            self._INFO)
+        assert result["content"] == [{"type": "text", "text": "ok"}]
+        assert result["isError"] is False
+
+    def test_cache_hints_are_omitted_when_not_asked_for(self):
+        """tools/call is not a CacheableResult; emitting ttlMs there is noise."""
+        result = protocol.modern_result({"isError": False}, self._INFO)
+        assert "ttlMs" not in result
+        assert "cacheScope" not in result
+
+    def test_cache_hints_are_emitted_when_given(self):
+        result = protocol.modern_result(
+            {"tools": []}, self._INFO, ttl_ms=0, cache_scope="public")
+        assert result["ttlMs"] == 0
+        assert result["cacheScope"] == "public"

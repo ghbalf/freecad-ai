@@ -104,6 +104,29 @@ def unsupported_version_error(msg_id, requested, supported):
         {"requested": requested, "supported": list(supported)})
 
 
+def modern_result(payload: dict, server_info: dict,
+                  ttl_ms: int | None = None,
+                  cache_scope: str | None = None) -> dict:
+    """Shape a ``result`` object for a modern (2026-07-28) request.
+
+    ``resultType`` is required on every result. Ours is always ``complete``:
+    the other value, ``input_required``, belongs to multi-round tool responses,
+    and no FreeCAD tool asks the caller a question mid-call.
+
+    ``ttl_ms``/``cache_scope`` are passed only for a CacheableResult — as of
+    this revision, ``tools/list`` and ``server/discover``. Emitting them on
+    ``tools/call`` would invite a client to cache a geometry mutation.
+    """
+    result: dict[str, Any] = {"resultType": "complete"}
+    result.update(payload)
+    result["_meta"] = {META_SERVER_INFO: server_info}
+    if ttl_ms is not None:
+        result["ttlMs"] = ttl_ms
+    if cache_scope is not None:
+        result["cacheScope"] = cache_scope
+    return result
+
+
 def encode(msg: dict) -> bytes:
     """Serialize a JSON-RPC message to bytes (JSON + newline)."""
     return (json.dumps(msg, separators=(",", ":")) + "\n").encode("utf-8")
