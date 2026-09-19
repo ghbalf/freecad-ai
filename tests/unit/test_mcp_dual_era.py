@@ -301,3 +301,34 @@ class TestEraRouting:
     def test_an_unknown_legacy_method_still_errors(self):
         resp = _server()._handle(_legacy("nonsense/method"))
         assert resp["error"]["code"] == protocol.METHOD_NOT_FOUND
+
+
+class TestServerDiscover:
+    def test_it_advertises_only_the_modern_era(self):
+        """supportedVersions answers "what can you be addressed as, now".
+        Listing the legacy revisions would invite a modern client to send
+        _meta naming one, which Task 4 refuses."""
+        result = _server()._handle(_modern("server/discover"))["result"]
+        assert result["supportedVersions"] == list(protocol.MODERN_VERSIONS)
+
+    def test_it_is_answerable_before_any_era_is_declared(self):
+        """A modern client has no handshake to announce itself with, so
+        discover must work from a bare request or it cannot bootstrap."""
+        result = _server()._handle(_legacy("server/discover"))["result"]
+        assert result["supportedVersions"] == list(protocol.MODERN_VERSIONS)
+        assert result["resultType"] == "complete"
+
+    def test_it_reports_our_capabilities_and_identity(self):
+        result = _server()._handle(_modern("server/discover"))["result"]
+        assert result["capabilities"] == {"tools": {}}
+        assert result["_meta"][protocol.META_SERVER_INFO] == server_mod.SERVER_INFO
+
+    def test_it_is_cacheable(self):
+        result = _server(cache_hints=(60000, "public"))._handle(
+            _modern("server/discover"))["result"]
+        assert result["ttlMs"] == 60000
+        assert result["cacheScope"] == "public"
+
+    def test_it_carries_instructions(self):
+        result = _server()._handle(_modern("server/discover"))["result"]
+        assert "FreeCAD" in result["instructions"]

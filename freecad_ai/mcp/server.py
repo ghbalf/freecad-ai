@@ -22,6 +22,12 @@ SERVER_INFO = {"name": "FreeCAD AI", "version": __version__}
 # in the revision table.
 PROTOCOL_VERSION = protocol.DEFAULT_PROTOCOL_VERSION
 
+# Shown to a model before it picks a tool. Short on purpose: it is prepended
+# to a context window that the tool schemas already fill.
+DISCOVER_INSTRUCTIONS = (
+    "Tools for inspecting and modifying geometry in a running FreeCAD "
+    "session. Every call acts on the document that is open right now.")
+
 
 def _coerce_ttl(value, fallback):
     if value is None or value == "":
@@ -158,6 +164,9 @@ class MCPServer:
         if method == "ping":
             return protocol.make_response(msg_id, {})
 
+        if method == "server/discover":
+            return self._handle_discover(msg_id)
+
         return self._unknown_method(msg_id, method)
 
     def _handle_modern(self, msg_id, method: str, params: dict) -> dict | None:
@@ -180,7 +189,25 @@ class MCPServer:
             # updates this call site. Passing it now would be a TypeError.
             return self._handle_tool_call(msg_id, params)
 
+        if method == "server/discover":
+            return self._handle_discover(msg_id)
+
         return self._unknown_method(msg_id, method)
+
+    def _handle_discover(self, msg_id) -> dict:
+        """Answer server/discover — how a modern client bootstraps.
+
+        Always the modern DiscoverResult shape, in either era: the method
+        exists in no legacy revision, so there is no older shape to preserve,
+        and a client that has not yet learned what we speak cannot be expected
+        to address us correctly first.
+        """
+        ttl, scope = self._cache_hints
+        return protocol.make_response(msg_id, protocol.modern_result({
+            "supportedVersions": list(protocol.MODERN_VERSIONS),
+            "capabilities": {"tools": {}},
+            "instructions": DISCOVER_INSTRUCTIONS,
+        }, SERVER_INFO, ttl_ms=ttl, cache_scope=scope))
 
     def _unknown_method(self, msg_id, method: str) -> dict | None:
         if msg_id is None:
