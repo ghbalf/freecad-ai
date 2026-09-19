@@ -289,7 +289,8 @@ class TestProtocolVersionHeader:
                 headers={"MCP-Protocol-Version": "2026-07-28"})
 
         assert status == 400
-        assert json.loads(body)["error"]["code"] == protocol.INVALID_REQUEST
+        assert json.loads(body)["error"]["code"] == \
+            protocol.UNSUPPORTED_PROTOCOL_VERSION
 
     def test_a_garbage_version_is_rejected(self):
         with _RunningServer() as srv:
@@ -472,3 +473,102 @@ class TestLegacyMessagesParsing:
 
         assert status == 400
         assert json.loads(body)["error"]["code"] == protocol.PARSE_ERROR
+
+
+def _dual_era_handler(msg):
+    """A handler with the shape the real server has after #64."""
+    msg_id = msg.get("id")
+    if msg_id is None:
+        return None
+    if protocol.is_modern_request(msg):
+        version = protocol.request_protocol_version(msg)
+        if version not in protocol.MODERN_VERSIONS:
+            return protocol.unsupported_version_error(
+                msg_id, version, protocol.MODERN_VERSIONS)
+        if msg.get("method") == "tools/list":
+            return protocol.make_response(msg_id, protocol.modern_result(
+                {"tools": []}, {"name": "t", "version": "0"},
+                ttl_ms=0, cache_scope="private"))
+        return protocol.make_error(msg_id, protocol.METHOD_NOT_FOUND,
+                                   msg.get("method"))
+    if msg.get("method") == "ping":
+        return protocol.make_response(msg_id, {})
+    return protocol.make_error(msg_id, protocol.METHOD_NOT_FOUND,
+                               msg.get("method"))
+
+
+def _modern_body(method, version="2026-07-28", **params):
+    params["_meta"] = {protocol.META_PROTOCOL_VERSION: version}
+    return {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+
+
+def _modern_headers(method, name=None, version="2026-07-28"):
+    headers = {"MCP-Protocol-Version": version, "Mcp-Method": method}
+    if name is not None:
+        headers["Mcp-Name"] = name
+    return headers
+
+
+class TestDualEraStatusCodes:
+    def test_a_modern_request_is_served_from_the_same_endpoint(self):
+        with _RunningServer(handler=_dual_era_handler) as srv:
+            status, body, _ = _post(
+                srv.port, _modern_body("tools/list"),
+                headers=_modern_headers("tools/list"))
+
+        assert status == 200
+        assert json.loads(body)["result"]["resultType"] == "complete"
+
+    def test_an_unknown_modern_method_is_a_404(self):
+        """2026-07-28 maps method-not-found onto HTTP, so an intermediary can
+        see it without parsing the body. Legacy keeps answering 200."""
+        with _RunningServer(handler=_dual_era_handler) as srv:
+            status, body, _ = _post(
+                srv.port, _modern_body("nonsense/method"),
+                headers=_modern_headers("nonsense/method"))
+
+        assert status == 404
+        assert json.loads(body)["error"]["code"] == protocol.METHOD_NOT_FOUND
+
+    def test_an_unknown_legacy_method_stays_a_200(self):
+        """Changing this would break every client this work is not about."""
+        with _RunningServer(handler=_dual_era_handler) as srv:
+            status, body, _ = _post(
+                srv.port, {"jsonrpc": "2.0", "id": 1, "method": "nope"})
+
+        assert status == 200
+        assert json.loads(body)["error"]["code"] == protocol.METHOD_NOT_FOUND
+
+    def test_an_unservable_modern_version_is_a_400(self):
+        with _RunningServer(handler=_dual_era_handler) as srv:
+            status, body, _ = _post(
+                srv.port, _modern_body("tools/list", version="2027-05-01"),
+                headers=_modern_headers("tools/list", version="2027-05-01"))
+        # The body names 2027-05-01 in _meta and the header agrees, so this is
+        # the server refusing the version, not the header check firing.
+        assert status == 400
+        assert json.loads(body)["error"]["code"] == \
+            protocol.UNSUPPORTED_PROTOCOL_VERSION
+
+    def test_a_header_body_mismatch_is_a_400_before_the_handler_runs(self):
+        with _RunningServer(handler=_dual_era_handler) as srv:
+            status, body, _ = _post(
+                srv.port, _modern_body("tools/call", name="create_box"),
+                headers=_modern_headers("tools/call", name="read_document"))
+
+        assert status == 400
+        assert json.loads(body)["error"]["code"] == protocol.HEADER_MISMATCH
+
+    def test_the_body_is_drained_before_a_rejection(self):
+        """The old early 400 skipped the body, safe only while
+        protocol_version stayed HTTP/1.0. After the reorder a client can send
+        a large body and still read its rejection cleanly."""
+        payload = _modern_body("tools/call", name="create_box",
+                               arguments={"pad": "x" * 100000})
+        with _RunningServer(handler=_dual_era_handler) as srv:
+            status, body, _ = _post(
+                srv.port, payload,
+                headers=_modern_headers("tools/call", name="other"))
+
+        assert status == 400
+        assert json.loads(body)["error"]["code"] == protocol.HEADER_MISMATCH

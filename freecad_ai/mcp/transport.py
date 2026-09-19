@@ -96,6 +96,24 @@ def validate_modern_headers(headers, msg):
     return None
 
 
+# 2026-07-28 maps these onto HTTP so an intermediary can act on them without
+# parsing the body. Legacy answers 200-with-error for everything, so this map
+# is applied only to a modern response.
+MODERN_ERROR_STATUS = {
+    protocol.METHOD_NOT_FOUND: 404,
+    protocol.HEADER_MISMATCH: 400,
+    protocol.MISSING_REQUIRED_CLIENT_CAPABILITY: 400,
+    protocol.UNSUPPORTED_PROTOCOL_VERSION: 400,
+}
+
+
+def _status_for(response, modern):
+    """The HTTP status a JSON-RPC response travels under."""
+    if not modern or "error" not in response:
+        return 200
+    return MODERN_ERROR_STATUS.get(response["error"].get("code"), 200)
+
+
 def _iter_sse_events(fp):
     """Yield (event, data) tuples from a streaming SSE file object.
 
@@ -946,6 +964,12 @@ class HTTPServerTransport:
                     self._send_json(400, err)
                     return
 
+                # A modern-shaped message is served modern here too (both
+                # endpoints share MCPServer._handle), but without the header
+                # validation /mcp applies. Deliberate: mirrored headers exist
+                # so an intermediary can route without parsing the body, and
+                # this deprecated localhost SSE pair (#65) has none. Not worth
+                # extending a transport on a removal clock.
                 try:
                     response = transport._handler(msg) if transport._handler else None
                 except Exception as e:
@@ -975,28 +999,6 @@ class HTTPServerTransport:
                 response is a server bug, and answering it with a bare 202
                 would surface as an unparseable empty body on the client.
                 """
-                # Absent means "assume 2025-03-26" (spec SHOULD), which is what
-                # we speak. A named revision we cannot serve is a 400 (spec
-                # MUST) whose body says which ones we can — a rejection the
-                # client cannot act on is how #60 read to its users.
-                #
-                # This 400 is sent without draining the request body, which is
-                # only safe because self.protocol_version stays the stdlib
-                # default "HTTP/1.0": the connection closes after this
-                # response regardless, so there is no keep-alive stream to
-                # desynchronise. If protocol_version is ever raised to
-                # "HTTP/1.1", this early return needs to drain the body first.
-                version = self.headers.get("MCP-Protocol-Version")
-                if (version is not None
-                        and version not in protocol.LEGACY_VERSIONS):
-                    self._send_json(400, protocol.make_error(
-                        None, protocol.INVALID_REQUEST,
-                        "Unsupported MCP-Protocol-Version %r. This server "
-                        "speaks %s." % (
-                            version,
-                            ", ".join(sorted(protocol.LEGACY_VERSIONS)))))
-                    return
-
                 try:
                     length = int(self.headers.get("Content-Length", 0))
                     if length < 0 or length > MAX_REQUEST_BODY:
@@ -1022,6 +1024,28 @@ class HTTPServerTransport:
                         "are not supported."))
                     return
 
+                # Era is decided by the body, so the body must be read first.
+                # This is why the version check no longer runs before it —
+                # which also retires the old caveat about answering without
+                # draining, safe only while protocol_version stayed HTTP/1.0.
+                modern = protocol.is_modern_request(msg)
+                if modern:
+                    err = validate_modern_headers(self.headers, msg)
+                    if err is not None:
+                        self._send_json(400, err)
+                        return
+                else:
+                    # Absent means "assume 2025-03-26" (spec SHOULD), which is
+                    # what we speak. A body with no _meta naming a modern
+                    # revision in the header is a broken client: the list it
+                    # can act on is the legacy one.
+                    version = self.headers.get("MCP-Protocol-Version")
+                    if (version is not None
+                            and version not in protocol.LEGACY_VERSIONS):
+                        self._send_json(400, protocol.unsupported_version_error(
+                            msg.get("id"), version, protocol.LEGACY_VERSIONS))
+                        return
+
                 msg_id = msg.get("id")
                 try:
                     response = transport._handler(msg) if transport._handler else None
@@ -1041,7 +1065,7 @@ class HTTPServerTransport:
                         "Server produced no response for method %r"
                         % msg.get("method"))
 
-                self._send_json(200, response)
+                self._send_json(_status_for(response, modern), response)
 
             def _send_json(self, code: int, msg: dict):
                 data = json.dumps(msg, separators=(",", ":")).encode()
