@@ -153,8 +153,15 @@ def test_supported_protocol_versions_contain_the_default():
     assert protocol.DEFAULT_PROTOCOL_VERSION in protocol.SUPPORTED_PROTOCOL_VERSIONS
 
 
-def test_supported_protocol_versions_exclude_the_2026_redesign():
-    """2026-07-28 is a redesign we do not serve — claiming it would be a lie."""
+def test_supported_protocol_versions_include_the_2026_redesign():
+    """Was excluded until #64 phase 3: we now route the modern era for real.
+
+    The old test guarded against advertising a revision we did not serve. The
+    guard that replaces it is test_every_derived_set_comes_from_the_table in
+    test_mcp_dual_era.py — the advertised set cannot drift from the routed one
+    because both read PROTOCOL_REVISIONS.
+    """
     from freecad_ai.mcp import protocol
 
-    assert "2026-07-28" not in protocol.SUPPORTED_PROTOCOL_VERSIONS
+    assert "2026-07-28" in protocol.SUPPORTED_PROTOCOL_VERSIONS
+    assert protocol.era_of("2026-07-28") == protocol.MODERN

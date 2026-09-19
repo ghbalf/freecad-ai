@@ -307,7 +307,7 @@ class TestProtocolVersionHeader:
                 headers={"MCP-Protocol-Version": "2026-07-28"})
 
         message = json.loads(body)["error"]["message"]
-        for version in protocol.SUPPORTED_PROTOCOL_VERSIONS:
+        for version in protocol.LEGACY_VERSIONS:
             assert version in message
 
     def test_the_legacy_messages_path_ignores_the_header(self):

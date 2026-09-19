@@ -916,14 +916,13 @@ class HTTPServerTransport:
                 # "HTTP/1.1", this early return needs to drain the body first.
                 version = self.headers.get("MCP-Protocol-Version")
                 if (version is not None
-                        and version not in protocol.SUPPORTED_PROTOCOL_VERSIONS):
+                        and version not in protocol.LEGACY_VERSIONS):
                     self._send_json(400, protocol.make_error(
                         None, protocol.INVALID_REQUEST,
                         "Unsupported MCP-Protocol-Version %r. This server "
                         "speaks %s." % (
                             version,
-                            ", ".join(sorted(
-                                protocol.SUPPORTED_PROTOCOL_VERSIONS)))))
+                            ", ".join(sorted(protocol.LEGACY_VERSIONS)))))
                     return
 
                 try:
