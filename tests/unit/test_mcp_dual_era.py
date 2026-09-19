@@ -3,8 +3,11 @@ stateless 2026-07-28 per-request _meta era (#64 phase 3)."""
 
 import os
 
+import pytest
+
 from freecad_ai.mcp import protocol
 from freecad_ai.mcp import server as server_mod
+from freecad_ai.tools.registry import ToolRegistry
 
 
 class TestRevisionTable:
@@ -209,3 +212,92 @@ def test_the_config_defaults_match_the_protocol_defaults():
     cfg = AppConfig()
     assert cfg.mcp_server_tools_ttl_ms == protocol.DEFAULT_TOOLS_TTL_MS
     assert cfg.mcp_server_tools_cache_scope == protocol.DEFAULT_CACHE_SCOPE
+
+
+def _server(registry=None, **kw):
+    kw.setdefault("cache_hints", (300000, "private"))
+    return server_mod.MCPServer(registry or ToolRegistry(), **kw)
+
+
+def _modern(method, msg_id=1, version="2026-07-28", **params):
+    params["_meta"] = {protocol.META_PROTOCOL_VERSION: version}
+    return {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}
+
+
+def _legacy(method, msg_id=1, **params):
+    return {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}
+
+
+class TestInitializeEcho:
+    def test_a_client_naming_no_version_gets_the_historical_default(self):
+        resp = _server()._handle(_legacy("initialize", capabilities={}))
+        assert resp["result"]["protocolVersion"] == protocol.DEFAULT_PROTOCOL_VERSION
+
+    @pytest.mark.parametrize("version", protocol.LEGACY_VERSIONS)
+    def test_every_legacy_version_we_speak_is_echoed(self, version):
+        """Replying 2025-03-26 to a 2025-11-25 client made it negotiate down
+        for no reason: we speak its revision, we just never said so.
+
+        Parametrised over the table rather than a fixed three, so adding a
+        legacy revision cannot leave this test behind."""
+        resp = _server()._handle(
+            _legacy("initialize", protocolVersion=version))
+        assert resp["result"]["protocolVersion"] == version
+
+    def test_an_unknown_version_gets_the_newest_legacy_revision(self):
+        resp = _server()._handle(
+            _legacy("initialize", protocolVersion="2019-01-01"))
+        assert resp["result"]["protocolVersion"] == protocol.LATEST_LEGACY_VERSION
+
+    def test_a_modern_version_over_the_handshake_is_not_echoed(self):
+        """initialize exists in no modern revision. Echoing 2026-07-28 here
+        would promise the very shape that revision deleted."""
+        resp = _server()._handle(
+            _legacy("initialize", protocolVersion="2026-07-28"))
+        assert resp["result"]["protocolVersion"] == protocol.LATEST_LEGACY_VERSION
+
+    def test_the_rest_of_the_handshake_is_unchanged(self):
+        result = _server()._handle(_legacy("initialize"))["result"]
+        assert result["capabilities"] == {"tools": {}}
+        assert result["serverInfo"] == server_mod.SERVER_INFO
+
+
+class TestEraRouting:
+    def test_initialize_is_gone_in_the_modern_era(self):
+        """2026-07-28 removed the handshake; answering it would tell a modern
+        client we are something we are not."""
+        resp = _server()._handle(_modern("initialize"))
+        assert resp["error"]["code"] == protocol.METHOD_NOT_FOUND
+
+    def test_ping_is_gone_in_the_modern_era(self):
+        resp = _server()._handle(_modern("ping"))
+        assert resp["error"]["code"] == protocol.METHOD_NOT_FOUND
+
+    def test_ping_still_answers_a_legacy_client(self):
+        assert _server()._handle(_legacy("ping"))["result"] == {}
+
+    def test_an_unservable_modern_version_is_refused(self):
+        resp = _server()._handle(_modern("tools/list", version="2027-05-01"))
+        assert resp["error"]["code"] == protocol.UNSUPPORTED_PROTOCOL_VERSION
+        assert resp["error"]["data"]["supported"] == list(protocol.MODERN_VERSIONS)
+
+    def test_a_legacy_version_named_in_meta_is_refused_not_downgraded(self):
+        """_meta means the client speaks the modern era. A legacy revision
+        there is a contradiction, and answering it in the legacy shape would
+        hide a client bug behind output that looks fine."""
+        resp = _server()._handle(_modern("tools/list", version="2025-03-26"))
+        assert resp["error"]["code"] == protocol.UNSUPPORTED_PROTOCOL_VERSION
+
+    def test_an_unservable_version_on_a_notification_is_silent(self):
+        """A notification has no id; JSON-RPC forbids answering it at all."""
+        msg = _modern("notifications/whatever", version="2027-05-01")
+        del msg["id"]
+        assert _server()._handle(msg) is None
+
+    def test_the_initialized_notification_is_still_silent(self):
+        assert _server()._handle(
+            {"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
+
+    def test_an_unknown_legacy_method_still_errors(self):
+        resp = _server()._handle(_legacy("nonsense/method"))
+        assert resp["error"]["code"] == protocol.METHOD_NOT_FOUND

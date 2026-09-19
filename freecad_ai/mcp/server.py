@@ -1,7 +1,8 @@
 """MCP Server — exposes FreeCAD tools to external MCP clients.
 
-Handles initialize, tools/list, tools/call, and ping requests over
-transport (STDIO or HTTP/SSE).
+Answers both eras from one endpoint: the legacy initialize/tools.list/
+tools.call/ping handshake world, and the stateless 2026-07-28 per-request
+_meta world. Served over transport (STDIO or HTTP/SSE).
 """
 
 import logging
@@ -17,7 +18,9 @@ logger = logging.getLogger(__name__)
 # Derived, never a literal: this was pinned at "0.1.0" for twenty releases, so
 # every MCP client reported "FreeCAD AI 0.1.0" regardless of what was installed.
 SERVER_INFO = {"name": "FreeCAD AI", "version": __version__}
-PROTOCOL_VERSION = "2025-03-26"
+# Kept as the name the rest of the tree already imports; the value now lives
+# in the revision table.
+PROTOCOL_VERSION = protocol.DEFAULT_PROTOCOL_VERSION
 
 
 def _coerce_ttl(value, fallback):
@@ -79,10 +82,15 @@ def resolve_cache_hints(cfg=None):
 class MCPServer:
     """Exposes a ToolRegistry as an MCP server."""
 
-    def __init__(self, registry: ToolRegistry, transport=None, executor=None):
+    def __init__(self, registry: ToolRegistry, transport=None, executor=None,
+                 cache_hints=None):
         self._registry = registry
         self._transport = transport
         self._executor = executor
+        # Resolved once: a per-request config read would put a JSON file in
+        # the path of every tools/list, and these values cannot change without
+        # a restart anyway.
+        self._cache_hints = cache_hints or resolve_cache_hints()
 
     def run(self):
         """Start the server (blocking)."""
@@ -91,14 +99,47 @@ class MCPServer:
         transport.run(self._handle)
 
     def _handle(self, msg: dict) -> dict | None:
-        """Route a JSON-RPC message to the appropriate handler."""
+        """Route a JSON-RPC message, choosing an era by the request's shape.
+
+        2026-07-28 removed the handshake, so there is no negotiated state to
+        consult: each request says which era it speaks, or says nothing and is
+        legacy. One endpoint serving both is what the spec calls a dual-era
+        server, and it is why existing clients see no change at all.
+        """
         method = msg.get("method", "")
         msg_id = msg.get("id")
-        params = msg.get("params", {})
+        params = msg.get("params") or {}
 
+        if not protocol.is_modern_request(msg):
+            return self._handle_legacy(msg_id, method, params)
+
+        version = protocol.request_protocol_version(msg)
+        if version not in protocol.MODERN_VERSIONS:
+            if msg_id is None:
+                return None
+            return protocol.unsupported_version_error(
+                msg_id, version, protocol.MODERN_VERSIONS)
+        return self._handle_modern(msg_id, method, params)
+
+    def _handle_legacy(self, msg_id, method: str, params: dict) -> dict | None:
+        """The 2025-era handshake world. Output here must not move."""
         if method == "initialize":
+            # Echo the client's revision when we speak it. Replying with a
+            # fixed 2025-03-26 made every newer client negotiate down for no
+            # reason. Clamped to the legacy era: initialize exists in no
+            # modern revision, so echoing one would promise a shape that
+            # revision deleted. A client naming no version at all gets the
+            # historical default rather than our newest legacy revision —
+            # that default is what every existing configuration negotiated,
+            # and nothing about naming no version asks for an upgrade.
+            if "protocolVersion" not in params:
+                speak = protocol.DEFAULT_PROTOCOL_VERSION
+            else:
+                want = params.get("protocolVersion")
+                speak = (want if want in protocol.LEGACY_VERSIONS
+                         else protocol.LATEST_LEGACY_VERSION)
             return protocol.make_response(msg_id, {
-                "protocolVersion": PROTOCOL_VERSION,
+                "protocolVersion": speak,
                 "capabilities": {"tools": {}},
                 "serverInfo": SERVER_INFO,
             })
@@ -108,7 +149,7 @@ class MCPServer:
 
         if method == "tools/list":
             return protocol.make_response(msg_id, {
-                "tools": self._registry.to_mcp_schema(),
+                "tools": self._tools_schema(),
             })
 
         if method == "tools/call":
@@ -117,13 +158,39 @@ class MCPServer:
         if method == "ping":
             return protocol.make_response(msg_id, {})
 
-        # Unknown method
-        if msg_id is not None:
-            return protocol.make_error(
-                msg_id, protocol.METHOD_NOT_FOUND,
-                f"Method not found: {method}",
-            )
-        return None  # Unknown notification, ignore
+        return self._unknown_method(msg_id, method)
+
+    def _handle_modern(self, msg_id, method: str, params: dict) -> dict | None:
+        """The 2026-07-28 stateless world.
+
+        initialize, notifications/initialized, ping and logging/setLevel are
+        all gone from this revision, so they fall through to METHOD_NOT_FOUND
+        — which the transport renders as a 404, not a 200.
+        """
+        if method == "tools/list":
+            ttl, scope = self._cache_hints
+            return protocol.make_response(msg_id, protocol.modern_result(
+                {"tools": self._tools_schema()}, SERVER_INFO,
+                ttl_ms=ttl, cache_scope=scope))
+
+        if method == "tools/call":
+            # No `modern=True` yet: the keyword arrives in Task 6, which also
+            # updates this call site. Passing it now would be a TypeError.
+            return self._handle_tool_call(msg_id, params)
+
+        return self._unknown_method(msg_id, method)
+
+    def _unknown_method(self, msg_id, method: str) -> dict | None:
+        if msg_id is None:
+            return None  # Unknown notification, ignore
+        return protocol.make_error(
+            msg_id, protocol.METHOD_NOT_FOUND,
+            f"Method not found: {method}",
+        )
+
+    def _tools_schema(self):
+        """The registry's tools in MCP schema form."""
+        return self._registry.to_mcp_schema()
 
     def _handle_tool_call(self, msg_id, params: dict) -> dict:
         """Execute a tool and return the result in MCP format."""
