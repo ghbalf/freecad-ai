@@ -44,7 +44,7 @@ removed truthfully.
 | Unknown modern version | `UnsupportedProtocolVersionError` (`-32022`), **never** a silent fall-through to legacy |
 | `supported` list in `-32022` | Era-matched: `MODERN_VERSIONS` for a modern-shaped request, `LEGACY_VERSIONS` for a legacy-shaped one |
 | `server/discover` | Answered in **both** eras; advertises modern versions only |
-| `initialize` | Now **echoes** the client's requested version when it is one we speak *in the legacy era*, else `2025-11-25`. Clamped to that era because `initialize` exists in no modern revision — echoing `2026-07-28` would promise the shape that revision deleted |
+| `initialize` | Now **echoes** the client's requested version when it is one we speak *in the legacy era*; a version we do not speak gets `2025-11-25`, and a request naming no version at all keeps the historical `2025-03-26` — it has no requested version to echo, so answering it anything else would move legacy output. Clamped to the legacy era because `initialize` exists in no modern revision — echoing `2026-07-28` would promise the shape that revision deleted |
 | `ping` | Legacy only. Modern gets `-32601` — the revision removed it |
 | Legacy results | **Byte-identical to v0.28.0-alpha.** No `resultType`, no `_meta` |
 | Cache hints | `ttlMs` / `cacheScope` **configurable** via config + env, no GUI. Invalid values fall back and warn |
@@ -123,7 +123,7 @@ route table.
 
 | Method | Legacy | Modern |
 |--------|--------|--------|
-| `initialize` | echoes requested version | `-32601` |
+| `initialize` | echoes requested version; `2025-11-25` for an unknown one, `2025-03-26` for none | `-32601` |
 | `notifications/initialized` | silent | ignored |
 | `ping` | answered | `-32601` — removed in this revision |
 | `tools/list` | today's shape | `+ resultType`, `ttlMs`, `cacheScope` |
@@ -315,7 +315,7 @@ required behaviour.
 - `resultType` present on modern results and **absent** on legacy ones
 - `-32022` payload shape for both eras' `supported` lists
 - `ping` answered under legacy, `-32601` under modern
-- `initialize` echoing each of the three legacy versions, falling back to `2025-11-25` for an unknown one
+- `initialize` echoing each of the three legacy versions, falling back to `2025-11-25` for an unknown one and to `2025-03-26` when no version is named
 
 **New — cache-hint resolution** (in the dual-era test file): the default pair,
 a config override, an env override winning over config, `0` accepted and emitted
