@@ -332,3 +332,69 @@ class TestServerDiscover:
     def test_it_carries_instructions(self):
         result = _server()._handle(_modern("server/discover"))["result"]
         assert "FreeCAD" in result["instructions"]
+
+
+def _registry_with(*names):
+    from freecad_ai.tools.registry import ToolDefinition, ToolResult
+
+    reg = ToolRegistry()
+    for name in names:
+        reg.register(ToolDefinition(
+            name, "does %s" % name, [],
+            handler=lambda _n=name: ToolResult(True, "ran %s" % _n)))
+    return reg
+
+
+class TestToolsListShape:
+    def test_tools_are_sorted_by_name_in_both_eras(self):
+        """A SHOULD from 2025-11-25, and per #47 a stable prefix is what lets
+        a provider's prompt cache hit: registration order is an accident of
+        import order, so it moves when nothing about the tools has."""
+        reg = _registry_with("zeta", "alpha", "mid")
+        for msg in (_legacy("tools/list"), _modern("tools/list")):
+            names = [t["name"] for t in
+                     _server(reg)._handle(msg)["result"]["tools"]]
+            assert names == ["alpha", "mid", "zeta"]
+
+    def test_the_legacy_result_gains_nothing(self):
+        """Byte-identical to v0.28.0-alpha apart from the ordering above."""
+        result = _server(_registry_with("a"))._handle(_legacy("tools/list"))["result"]
+        assert set(result) == {"tools"}
+
+    def test_the_modern_result_is_a_cacheable_result(self):
+        result = _server(_registry_with("a"), cache_hints=(0, "public"))._handle(
+            _modern("tools/list"))["result"]
+        assert result["resultType"] == "complete"
+        assert result["ttlMs"] == 0
+        assert result["cacheScope"] == "public"
+        assert result["_meta"][protocol.META_SERVER_INFO] == server_mod.SERVER_INFO
+        assert [t["name"] for t in result["tools"]] == ["a"]
+
+
+class TestToolsCallShape:
+    def test_the_legacy_result_gains_nothing(self):
+        result = _server(_registry_with("a"))._handle(
+            _legacy("tools/call", name="a", arguments={}))["result"]
+        assert set(result) == {"content", "isError"}
+        assert result["isError"] is False
+
+    def test_the_modern_result_declares_its_type(self):
+        result = _server(_registry_with("a"))._handle(
+            _modern("tools/call", name="a", arguments={}))["result"]
+        assert result["resultType"] == "complete"
+        assert result["content"][0]["text"] == "ran a"
+        assert result["_meta"][protocol.META_SERVER_INFO] == server_mod.SERVER_INFO
+
+    def test_a_modern_call_is_never_advertised_as_cacheable(self):
+        """tools/call mutates a document. A ttlMs here would invite a client
+        to replay a stale answer for a model that has since changed."""
+        result = _server(_registry_with("a"))._handle(
+            _modern("tools/call", name="a", arguments={}))["result"]
+        assert "ttlMs" not in result
+        assert "cacheScope" not in result
+
+    def test_a_failing_modern_call_still_carries_the_envelope(self):
+        result = _server(_registry_with("a"))._handle(
+            _modern("tools/call", name="missing", arguments={}))["result"]
+        assert result["isError"] is True
+        assert result["resultType"] == "complete"

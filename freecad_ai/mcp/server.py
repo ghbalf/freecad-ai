@@ -185,9 +185,7 @@ class MCPServer:
                 ttl_ms=ttl, cache_scope=scope))
 
         if method == "tools/call":
-            # No `modern=True` yet: the keyword arrives in Task 6, which also
-            # updates this call site. Passing it now would be a TypeError.
-            return self._handle_tool_call(msg_id, params)
+            return self._handle_tool_call(msg_id, params, modern=True)
 
         if method == "server/discover":
             return self._handle_discover(msg_id)
@@ -218,10 +216,15 @@ class MCPServer:
         )
 
     def _tools_schema(self):
-        """The registry's tools in MCP schema form."""
-        return self._registry.to_mcp_schema()
+        """The registry's tools, sorted by name.
 
-    def _handle_tool_call(self, msg_id, params: dict) -> dict:
+        to_mcp_schema() yields registration order, which is import order —
+        it moves when nothing about the tools has. A SHOULD since 2025-11-25,
+        and per #47 a stable prefix is what a provider's prompt cache needs.
+        """
+        return sorted(self._registry.to_mcp_schema(), key=lambda t: t["name"])
+
+    def _handle_tool_call(self, msg_id, params: dict, modern: bool = False) -> dict:
         """Execute a tool and return the result in MCP format."""
         tool_name = params.get("name", "")
         arguments = params.get("arguments", {})
@@ -235,12 +238,20 @@ class MCPServer:
             content = [{"type": "text", "text": result.output}]
             if result.data:
                 content.append({"type": "text", "text": str(result.data)})
-            return protocol.make_response(msg_id, {
-                "content": content,
-                "isError": False,
-            })
+            payload = {"content": content, "isError": False}
         else:
-            return protocol.make_response(msg_id, {
-                "content": [{"type": "text", "text": result.error or "Unknown error"}],
+            payload = {
+                "content": [{"type": "text",
+                             "text": result.error or "Unknown error"}],
                 "isError": True,
-            })
+            }
+
+        if modern:
+            # No cache hints: a tool call mutates the document, and a client
+            # replaying a cached answer would be acting on a model that has
+            # since changed. resultType stays "complete" even when isError —
+            # the call finished; isError is the tool's verdict, not the
+            # round-trip's.
+            return protocol.make_response(
+                msg_id, protocol.modern_result(payload, SERVER_INFO))
+        return protocol.make_response(msg_id, payload)
