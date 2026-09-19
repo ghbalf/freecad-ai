@@ -431,6 +431,21 @@ def _headers(mapping):
     return msg
 
 
+def _headers_with_duplicate(base, name, first, second):
+    """Like ``_headers``, but ``name`` is assigned twice (a genuine
+    duplicate, as ``email.message.Message`` records it) instead of once.
+
+    ``base`` supplies every other header; ``name`` must not be a key in it.
+    """
+    msg = Message()
+    for key, value in base.items():
+        if key.lower() != name.lower():
+            msg[key] = value
+    msg[name] = first
+    msg[name] = second
+    return msg
+
+
 class TestModernHeaderValidation:
     _CALL = _modern("tools/call", name="create_box", arguments={})
 
@@ -522,3 +537,50 @@ class TestModernHeaderValidation:
             _modern("tools/call"))
         assert err is not None
         assert err["error"]["code"] == protocol.HEADER_MISMATCH
+
+    @pytest.mark.parametrize("first,second", [
+        ("create_box", "read_document"), ("read_document", "create_box")])
+    def test_a_duplicated_mcp_name_is_rejected_in_either_order(
+            self, first, second):
+        """``headers.get()`` on an ``email.message.Message`` returns only the
+        FIRST occurrence. A smuggled second ``Mcp-Name`` therefore validates
+        or not depending purely on which copy comes first — and the body
+        always calls ``create_box`` here, so a policy layer reading a
+        different copy than we dispatch is exactly the bypass this function
+        exists to prevent. Both orders must be rejected, not just one."""
+        headers = _headers_with_duplicate(
+            {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call"},
+            "Mcp-Name", first, second)
+        err = transport_mod.validate_modern_headers(headers, self._CALL)
+        assert err is not None
+        assert err["error"]["code"] == protocol.HEADER_MISMATCH
+
+    @pytest.mark.parametrize("first,second", [
+        ("tools/call", "tools/list"), ("tools/list", "tools/call")])
+    def test_a_duplicated_mcp_method_is_rejected_in_either_order(
+            self, first, second):
+        headers = _headers_with_duplicate(
+            {"MCP-Protocol-Version": "2026-07-28", "Mcp-Name": "create_box"},
+            "Mcp-Method", first, second)
+        err = transport_mod.validate_modern_headers(headers, self._CALL)
+        assert err is not None
+        assert err["error"]["code"] == protocol.HEADER_MISMATCH
+
+    @pytest.mark.parametrize("first,second", [
+        ("2026-07-28", "2025-03-26"), ("2025-03-26", "2026-07-28")])
+    def test_a_duplicated_protocol_version_is_rejected_in_either_order(
+            self, first, second):
+        headers = _headers_with_duplicate(
+            {"Mcp-Method": "tools/call", "Mcp-Name": "create_box"},
+            "MCP-Protocol-Version", first, second)
+        err = transport_mod.validate_modern_headers(headers, self._CALL)
+        assert err is not None
+        assert err["error"]["code"] == protocol.HEADER_MISMATCH
+
+    def test_a_plain_mapping_with_no_get_all_still_works(self):
+        """A caller passing a plain dict (no ``get_all``, so a duplicate
+        cannot even be represented) must degrade to the old single-value
+        behaviour rather than raising."""
+        assert transport_mod.validate_modern_headers(
+            {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call",
+             "Mcp-Name": "create_box"}, self._CALL) is None

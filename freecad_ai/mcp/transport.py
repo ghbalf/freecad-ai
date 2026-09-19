@@ -55,6 +55,17 @@ def validate_modern_headers(headers, msg):
     this server gets walked past. So a mismatch is a MUST-reject, not a
     preference for one source over the other.
 
+    Reads each mirrored header with ``.get_all()`` where available (guarded,
+    since a caller may pass a plain mapping) rather than ``.get()`` alone.
+    ``.get()`` on an ``email.message.Message`` silently returns only the
+    FIRST occurrence of a repeated header, so a smuggled second copy would
+    validate or not purely on which one comes first — and intermediaries
+    disagree on that (nginx keeps the first, Envoy joins duplicates with a
+    comma, some WAFs keep the last). A duplicate is therefore rejected
+    outright rather than resolved by picking one: there is no rule for
+    "use the first" that every intermediary in front of us also follows,
+    so any such rule would just relocate the bypass.
+
     Module level, not a method of the nested RequestHandler: that class is
     built inside HTTPServerTransport._make_server() and cannot be reached
     without binding a socket.
@@ -63,6 +74,12 @@ def validate_modern_headers(headers, msg):
 
     def mismatch(text):
         return protocol.make_error(msg_id, protocol.HEADER_MISMATCH, text)
+
+    get_all = getattr(headers, "get_all", None)
+    if get_all is not None:
+        for name in ("MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"):
+            if len(get_all(name) or ()) > 1:
+                return mismatch("Header %s appears more than once." % name)
 
     version = protocol.request_protocol_version(msg)
     header_version = headers.get("MCP-Protocol-Version")
