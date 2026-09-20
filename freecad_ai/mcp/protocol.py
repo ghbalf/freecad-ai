@@ -4,6 +4,7 @@ Provides encode/decode functions and message constructors for the
 Model Context Protocol, which uses JSON-RPC 2.0 over STDIO.
 """
 
+import base64
 import json
 from typing import Any, NamedTuple
 
@@ -71,6 +72,53 @@ DEFAULT_CACHE_SCOPE = "private"
 def era_of(version):
     """Return MODERN, LEGACY, or None for a revision we do not serve."""
     return _ERA_BY_VERSION.get(version)
+
+
+_HEADER_SENTINEL_PREFIX = "=?base64?"
+_HEADER_SENTINEL_SUFFIX = "?="
+
+
+def decode_header_value(raw):
+    """Decode the ``=?base64?…?=`` sentinel a mirrored header value may use.
+
+    2026-07-28 defines it for values that cannot travel in a header raw — a
+    tool name with a non-ASCII character, say. Returns None when the payload
+    will not decode, which the caller treats as a mismatch: a value we cannot
+    read is not a value we can confirm agrees with the body.
+    """
+    if raw is None:
+        return None
+    if raw.startswith(_HEADER_SENTINEL_PREFIX) and raw.endswith(_HEADER_SENTINEL_SUFFIX):
+        try:
+            return base64.b64decode(
+                raw[len(_HEADER_SENTINEL_PREFIX):-len(_HEADER_SENTINEL_SUFFIX)],
+                validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+    return raw
+
+
+def encode_header_value(value):
+    """The inverse of decode_header_value: what to put in a mirrored header.
+
+    A value travels raw only when doing so is unambiguous — printable ASCII,
+    no surrounding whitespace, and not itself shaped like the sentinel. That
+    last case is the subtle one: a tool literally named ``=?base64?x?=`` sent
+    raw would be *decoded* by the far side into something it never called.
+    """
+    if value is None:
+        return None
+    safe = (
+        value != ""
+        and value == value.strip()
+        and all(" " <= ch <= "~" for ch in value)
+        and not (value.startswith(_HEADER_SENTINEL_PREFIX)
+                 and value.endswith(_HEADER_SENTINEL_SUFFIX))
+    )
+    if safe:
+        return value
+    payload = base64.b64encode(value.encode("utf-8")).decode("ascii")
+    return _HEADER_SENTINEL_PREFIX + payload + _HEADER_SENTINEL_SUFFIX
 
 
 def _request_meta(msg: dict):

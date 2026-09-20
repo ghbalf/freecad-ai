@@ -5,7 +5,6 @@ StdioServerTransport — reads stdin / writes stdout (server side).
 HTTPServerTransport — serves MCP over HTTP: Streamable HTTP and HTTP+SSE.
 """
 
-import base64
 import hmac
 import json
 import logging
@@ -23,25 +22,6 @@ from typing import Any, Callable
 from . import protocol
 
 logger = logging.getLogger(__name__)
-
-
-def _decode_header_value(raw):
-    """Decode the ``=?base64?…?=`` sentinel a mirrored header value may use.
-
-    2026-07-28 defines it for values that cannot travel in a header raw — a
-    tool name with a non-ASCII character, say. Returns None when the payload
-    will not decode, which the caller treats as a mismatch: a value we cannot
-    read is not a value we can confirm agrees with the body.
-    """
-    if raw is None:
-        return None
-    if raw.startswith("=?base64?") and raw.endswith("?="):
-        try:
-            return base64.b64decode(raw[len("=?base64?"):-len("?=")],
-                                    validate=True).decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
-            return None
-    return raw
 
 
 def validate_modern_headers(headers, msg):
@@ -104,7 +84,7 @@ def validate_modern_headers(headers, msg):
         if raw_name is None:
             return mismatch("Missing required Mcp-Name header on tools/call.")
         wanted = (msg.get("params") or {}).get("name")
-        decoded_name = _decode_header_value(raw_name)
+        decoded_name = protocol.decode_header_value(raw_name)
         if decoded_name is None or decoded_name != wanted:
             return mismatch(
                 "Header mismatch: Mcp-Name %r does not name the tool the body "
