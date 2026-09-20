@@ -109,12 +109,12 @@ class _RecordingTransport:
     def start(self):
         pass
 
-    def send_request(self, method, params=None, timeout=30):
+    def send_request(self, method, params=None, timeout=30, headers=None):
         if method == "initialize":
             return {"result": self._initialize_result}
         return {"result": {"tools": []}}
 
-    def send_notification(self, method, params=None):
+    def send_notification(self, method, params=None, headers=None):
         pass
 
 
@@ -160,14 +160,16 @@ class TestSSEClientSendsHeader:
 
 class TestClientLatchesNegotiatedVersion:
     def test_server_choice_wins_over_what_we_asked_for(self):
-        """We request 2025-03-26; a server answering 2025-06-18 sets the header."""
+        """We ask for the newest legacy revision; a server answering
+        2025-06-18 sets the header to what it chose, not to what we asked."""
         transport = _RecordingTransport(
             {"protocolVersion": "2025-06-18", "capabilities": {}})
         client = MCPClient("test", ["echo"])
         client._transport = transport
         client.connect()
         assert transport.protocol_version == "2025-06-18"
-        assert PROTOCOL_VERSION == "2025-03-26"  # what we asked with, unchanged
+        assert PROTOCOL_VERSION == protocol.LATEST_LEGACY_VERSION
+        assert protocol.era_of(PROTOCOL_VERSION) == protocol.LEGACY
 
     def test_falls_back_to_our_version_when_server_omits_it(self):
         transport = _RecordingTransport({"capabilities": {}})

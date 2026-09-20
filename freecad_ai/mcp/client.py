@@ -13,6 +13,7 @@ import ssl
 import urllib.parse
 from dataclasses import dataclass, field
 
+from . import protocol
 from .transport import (
     StdioClientTransport,
     SSEClientTransport,
@@ -22,7 +23,12 @@ from .transport import (
 
 logger = logging.getLogger(__name__)
 
-PROTOCOL_VERSION = "2025-03-26"
+# What we ASK for in initialize — the newest legacy revision we understand.
+# The server's answer wins (see connect), so asking high costs nothing: a
+# server that does not know it replies with one it does support. Note this is
+# deliberately not protocol.DEFAULT_PROTOCOL_VERSION, which is what our own
+# *server* answers a client that named no version and must stay 2025-03-26.
+PROTOCOL_VERSION = protocol.LATEST_LEGACY_VERSION
 CLIENT_INFO = {"name": "FreeCAD AI", "version": "0.1.0"}
 
 
@@ -67,33 +73,89 @@ class MCPClient:
         self._schema_cache: dict[str, dict] = {}
         # Raw server response stored for deferred schema extraction
         self._raw_tools: list[dict] = []
+        # Until connect() negotiates, behave exactly as every earlier release.
+        self._era = protocol.LegacyEra(protocol.DEFAULT_PROTOCOL_VERSION)
+        # Freshness hints from a modern tools/list, kept for a future re-list
+        # feature. Normally None after a legacy listing, which defines no such
+        # fields — the store is keyed on the fields being there, not on the
+        # era, so a legacy server that volunteers them is taken at its word.
+        self.tools_cache_hints = None
+
+    def _send(self, method, params=None, timeout=None):
+        """Every outgoing request goes through here, so the era is applied once."""
+        params, headers = self._era.decorate(method, params)
+        if timeout is None:
+            resp = self._transport.send_request(method, params, headers=headers)
+        else:
+            resp = self._transport.send_request(
+                method, params, timeout=timeout, headers=headers)
+        # A non-conformant server can send a non-dict error body (a bare
+        # string, a list); coerce it to {} first so .get("code") below
+        # cannot crash (same guard as connect()'s initialize check).
+        error = resp.get("error")
+        if not isinstance(error, dict):
+            error = {}
+        if error.get("code") == protocol.HEADER_MISMATCH:
+            # Our mirrored headers disagreed with our own body. That is a bug
+            # on this side by construction, and a retry would send the same
+            # bad headers — so log what went out and let the error surface.
+            logger.error(
+                "MCP server '%s' rejected %s with -32020 (%s); headers sent: %r",
+                self.name, method, error.get("message", ""), headers)
+        return resp
+
+    def _notify(self, method, params=None):
+        params, headers = self._era.decorate(method, params)
+        self._transport.send_notification(method, params, headers=headers)
 
     def connect(self):
         """Start transport, perform initialize handshake, discover tools."""
         self._transport.start()
 
         # Initialize handshake
-        resp = self._transport.send_request("initialize", {
+        resp = self._send("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
             "clientInfo": CLIENT_INFO,
         })
 
         if "error" in resp:
-            raise RuntimeError(
-                f"MCP server '{self.name}' initialization failed: {resp['error']}"
-            )
+            error = resp["error"]
+            # A non-conformant server can send a non-dict error body (a bare
+            # string, a list). error.get("code") below would crash on that,
+            # so coerce it to {} first: .get("code") then returns None, which
+            # is not METHOD_NOT_FOUND, so we cannot tell whether this was a
+            # -32601 and it is not treated as an era mismatch — it raises
+            # below like any other real failure, quoting the original value.
+            if not isinstance(error, dict):
+                error = {}
+            if error.get("code") != protocol.METHOD_NOT_FOUND:
+                raise RuntimeError(
+                    f"MCP server '{self.name}' initialization failed: {resp['error']}"
+                )
+            # A server that has no initialize is a 2026-07-28 server: the
+            # handshake was removed, not broken. Only -32601 means that; any
+            # other failure is a real one and must not be retried as an era
+            # mismatch.
+            self._era = self._negotiate_modern(error)
+        else:
+            version = resp.get("result", {}).get("protocolVersion") or PROTOCOL_VERSION
+            self._era = protocol.LegacyEra(version)
 
         # Latch the negotiated revision before anything else goes out. The
         # server's choice wins over what we asked for; HTTP transports send it
         # as MCP-Protocol-Version on every later request (a client MUST as of
-        # 2025-06-18). Stdio has no headers and simply ignores it.
-        self._transport.protocol_version = (
-            resp.get("result", {}).get("protocolVersion") or PROTOCOL_VERSION
-        )
+        # 2025-06-18). Stdio has no headers and simply ignores it. The era
+        # object is set from the same negotiated value, so every request from
+        # here on is decorated (or not) according to what the server actually
+        # answered — legacy via initialize, or modern via the discover probe.
+        self._transport.protocol_version = self._era.version
 
-        # Send initialized notification
-        self._transport.send_notification("notifications/initialized")
+        # Send initialized notification — but only in the legacy era: a
+        # modern server has no session to initialize, and the method was
+        # removed along with the handshake that used to precede it.
+        if self._era.era == protocol.LEGACY:
+            self._notify("notifications/initialized")
 
         # Discover tools
         self._refresh_tools()
@@ -104,20 +166,65 @@ class MCPClient:
             " (deferred schemas)" if self._deferred else "",
         )
 
+    def _negotiate_modern(self, initialize_error):
+        """Ask a handshake-less server what it speaks, or raise saying why not."""
+        probe = protocol.ModernEra(protocol.MODERN_VERSIONS[0], CLIENT_INFO)
+        params, headers = probe.decorate("server/discover", {})
+        # Deliberately bypasses _send: at this point self._era is still the
+        # LegacyEra we are trying to replace, and _send would decorate with
+        # that, not with the candidate `probe` era — sending a bare request
+        # with no _meta, which a modern server reads as a legacy call.
+        resp = self._transport.send_request(
+            "server/discover", params, headers=headers)
+        if "error" in resp:
+            raise RuntimeError(
+                f"MCP server '{self.name}' speaks neither era — "
+                f"initialize: {initialize_error}; "
+                f"server/discover: {resp['error']}")
+
+        # A non-conformant server can answer with a non-dict result (a bare
+        # list) or a non-list supportedVersions (a bare string); neither may
+        # crash the negotiation (same guard as connect()'s initialize check
+        # and _send's error check). `offered` is what we quote back, `usable`
+        # is what we may intersect, and they differ exactly when the server
+        # was non-conformant: a non-dict result names no versions at all, and
+        # a bare string is not a list — `v in offered` on a string is a
+        # SUBSTRING test, so prose merely containing a version would
+        # negotiate. Anything else therefore shares nothing and raises below.
+        result = resp.get("result")
+        offered = result.get("supportedVersions") if isinstance(result, dict) else result
+        usable = offered if isinstance(result, dict) and isinstance(offered, list) else []
+        # Intersect against the MODERN revisions only. We are here because the
+        # server removed initialize, so a legacy version in common is not one
+        # we could actually use.
+        shared = [v for v in protocol.MODERN_VERSIONS if v in usable]
+        if not shared:
+            raise RuntimeError(
+                f"MCP server '{self.name}' offers {offered!r}; "
+                f"this client speaks {list(protocol.MODERN_VERSIONS)!r}")
+        return protocol.ModernEra(shared[0], CLIENT_INFO)
+
     def _refresh_tools(self):
         """Fetch the tool list from the server.
 
         When deferred, stores raw tool dicts for later schema extraction
         but only populates MCPToolInfo with name + description (no schema).
         """
-        resp = self._transport.send_request("tools/list")
+        resp = self._send("tools/list")
         if "error" in resp:
             logger.warning("MCP tools/list failed for '%s': %s", self.name, resp["error"])
             self._tools = []
             self._raw_tools = []
             return
 
-        self._raw_tools = resp.get("result", {}).get("tools", [])
+        result = resp.get("result", {})
+        self._raw_tools = result.get("tools", [])
+        if "ttlMs" in result:
+            self.tools_cache_hints = {
+                "ttlMs": result["ttlMs"],
+                "cacheScope": result.get("cacheScope",
+                                         protocol.DEFAULT_CACHE_SCOPE),
+            }
 
         if self._deferred:
             # Store only name + description; schemas loaded on demand
@@ -198,7 +305,7 @@ class MCPClient:
 
     def call_tool(self, name: str, arguments: dict, timeout: float | None = None) -> MCPToolResult:
         """Invoke a tool on the MCP server."""
-        resp = self._transport.send_request("tools/call", {
+        resp = self._send("tools/call", {
             "name": name,
             "arguments": arguments,
         }, timeout=timeout if timeout is not None else self._tool_call_timeout)
@@ -218,6 +325,13 @@ class MCPClient:
     def disconnect(self):
         """Stop the transport."""
         self._connected = False
+        # Back to the __init__ default. A latent invariant, not a fix for an
+        # observed failure: MCPManager always builds a fresh MCPClient, so no
+        # second connect() happens today. If one ever did, a client that had
+        # negotiated modern would open it with a modern-decorated initialize
+        # — _meta and mirrored headers at a server it has not yet negotiated
+        # with.
+        self._era = protocol.LegacyEra(protocol.DEFAULT_PROTOCOL_VERSION)
         self._transport.stop()
         logger.info("MCP client '%s' disconnected", self.name)
 

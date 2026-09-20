@@ -5,7 +5,6 @@ StdioServerTransport — reads stdin / writes stdout (server side).
 HTTPServerTransport — serves MCP over HTTP: Streamable HTTP and HTTP+SSE.
 """
 
-import base64
 import hmac
 import json
 import logging
@@ -13,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -23,25 +23,6 @@ from typing import Any, Callable
 from . import protocol
 
 logger = logging.getLogger(__name__)
-
-
-def _decode_header_value(raw):
-    """Decode the ``=?base64?…?=`` sentinel a mirrored header value may use.
-
-    2026-07-28 defines it for values that cannot travel in a header raw — a
-    tool name with a non-ASCII character, say. Returns None when the payload
-    will not decode, which the caller treats as a mismatch: a value we cannot
-    read is not a value we can confirm agrees with the body.
-    """
-    if raw is None:
-        return None
-    if raw.startswith("=?base64?") and raw.endswith("?="):
-        try:
-            return base64.b64decode(raw[len("=?base64?"):-len("?=")],
-                                    validate=True).decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
-            return None
-    return raw
 
 
 def validate_modern_headers(headers, msg):
@@ -77,12 +58,13 @@ def validate_modern_headers(headers, msg):
 
     get_all = getattr(headers, "get_all", None)
     if get_all is not None:
-        for name in ("MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"):
+        for name in (protocol.HEADER_PROTOCOL_VERSION, protocol.HEADER_METHOD,
+                     protocol.HEADER_NAME):
             if len(get_all(name) or ()) > 1:
                 return mismatch("Header %s appears more than once." % name)
 
     version = protocol.request_protocol_version(msg)
-    header_version = headers.get("MCP-Protocol-Version")
+    header_version = headers.get(protocol.HEADER_PROTOCOL_VERSION)
     if header_version is None:
         return mismatch("Missing required MCP-Protocol-Version header.")
     if header_version != version:
@@ -91,7 +73,7 @@ def validate_modern_headers(headers, msg):
             "in params._meta." % (header_version, version))
 
     method = msg.get("method", "")
-    header_method = headers.get("Mcp-Method")
+    header_method = headers.get(protocol.HEADER_METHOD)
     if header_method is None:
         return mismatch("Missing required Mcp-Method header.")
     if header_method != method:
@@ -100,11 +82,11 @@ def validate_modern_headers(headers, msg):
             "%r." % (header_method, method))
 
     if method == "tools/call":
-        raw_name = headers.get("Mcp-Name")
+        raw_name = headers.get(protocol.HEADER_NAME)
         if raw_name is None:
             return mismatch("Missing required Mcp-Name header on tools/call.")
         wanted = (msg.get("params") or {}).get("name")
-        decoded_name = _decode_header_value(raw_name)
+        decoded_name = protocol.decode_header_value(raw_name)
         if decoded_name is None or decoded_name != wanted:
             return mismatch(
                 "Header mismatch: Mcp-Name %r does not name the tool the body "
@@ -265,8 +247,12 @@ class StdioClientTransport:
         self._reader_thread.start()
 
     def send_request(self, method: str, params: dict | None = None,
-                     timeout: float = 30) -> dict:
-        """Send a JSON-RPC request and wait for the matching response."""
+                     timeout: float = 30, headers: dict | None = None) -> dict:
+        """Send a JSON-RPC request and wait for the matching response.
+
+        ``headers`` is accepted and ignored: stdio has no header channel, and
+        the modern era carries everything it needs in params._meta.
+        """
         with self._lock:
             req_id = self._next_id
             self._next_id += 1
@@ -287,7 +273,8 @@ class StdioClientTransport:
             entry = self._pending.pop(req_id)
         return entry["response"]
 
-    def send_notification(self, method: str, params: dict | None = None):
+    def send_notification(self, method: str, params: dict | None = None,
+                          headers: dict | None = None):
         """Send a JSON-RPC notification (fire-and-forget)."""
         msg = protocol.make_notification(method, params)
         self._write(msg)
@@ -352,6 +339,36 @@ class StdioClientTransport:
     @property
     def is_alive(self) -> bool:
         return self._running and self._process is not None and self._process.poll() is None
+
+
+def _as_json_rpc(body):
+    """Parse these bytes as a JSON-RPC message, or return None."""
+    try:
+        msg = protocol.decode(body.decode("utf-8"))
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+        return None
+    return msg if isinstance(msg, dict) and msg.get("jsonrpc") == "2.0" else None
+
+
+class _ReplayedResponse:
+    """An HTTPError body re-presented with the response API _post's caller uses.
+
+    HTTPError is readable exactly once, and we have to read it to find out
+    whether it is JSON-RPC at all, so the bytes travel alongside it. Only the
+    members StreamableHTTPClientTransport.send_request touches are provided:
+    headers, read and close. An error status always carries application/json,
+    never text/event-stream, so the SSE-iteration branch is never reached.
+    """
+
+    def __init__(self, err, body):
+        self.headers = err.headers
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def close(self):
+        pass
 
 
 class SSEClientTransport:
@@ -438,20 +455,34 @@ class SSEClientTransport:
             self._correlator.fail_all(protocol.make_error(
                 None, protocol.INTERNAL_ERROR, "SSE stream closed"))
 
-    def send_request(self, method, params=None, timeout=30):
+    def send_request(self, method, params=None, timeout=30, headers=None):
         req_id = self._correlator.next_id()
         event = self._correlator.register(req_id)
         try:
-            self._post(protocol.make_request(method, params, id=req_id))
+            immediate = self._post(
+                protocol.make_request(method, params, id=req_id), headers)
         except Exception as exc:  # noqa: BLE001 — surface as JSON-RPC error
             self._correlator.cancel(req_id)
             return protocol.make_error(req_id, protocol.INTERNAL_ERROR, str(exc))
+        if immediate is not None:
+            # The server answered on the POST itself; nothing will arrive on
+            # the stream, so stop waiting for it.
+            self._correlator.cancel(req_id)
+            return immediate
         return self._correlator.wait(req_id, event, timeout)
 
-    def send_notification(self, method, params=None):
-        self._post(protocol.make_notification(method, params))
+    def send_notification(self, method, params=None, headers=None):
+        # recover_error_body=False: a notification has no legitimate reply, so
+        # an error status on one is a failure to surface, not a body to parse.
+        # Letting the HTTPError out is what this did before _post learned to
+        # recover one for requests — an expired session or a rejected token
+        # must still fail connect() loudly.
+        self._post(protocol.make_notification(method, params), headers,
+                   recover_error_body=False)
 
-    def _post(self, msg):
+    def _post(self, msg, headers=None, *, recover_error_body=True):
+        """POST one message. Returns a JSON-RPC reply the server sent back on
+        the POST itself (an error status), or None for the normal 202."""
         if self._endpoint_url is None:
             raise RuntimeError("MCP SSE transport not connected (no endpoint)")
         req = urllib.request.Request(
@@ -461,10 +492,21 @@ class SSEClientTransport:
         req.add_header("Content-Type", "application/json")
         if self.protocol_version:
             req.add_header("MCP-Protocol-Version", self.protocol_version)
-        resp = urllib.request.urlopen(
-            req, timeout=self._connect_timeout, context=self._ssl_context)
+        for key, value in (headers or {}).items():
+            req.add_header(key, value)
+        try:
+            resp = urllib.request.urlopen(
+                req, timeout=self._connect_timeout, context=self._ssl_context)
+        except urllib.error.HTTPError as err:
+            if not recover_error_body:
+                raise
+            reply = _as_json_rpc(err.read())
+            if reply is None:
+                raise
+            return reply
         resp.read()   # drain the 202 body
         resp.close()
+        return None
 
     def stop(self):
         self._running = False
@@ -514,11 +556,11 @@ class StreamableHTTPClientTransport:
             self._next_id += 1
         return rid
 
-    def send_request(self, method, params=None, timeout=30):
+    def send_request(self, method, params=None, timeout=30, headers=None):
         req_id = self._alloc_id()
         msg = protocol.make_request(method, params, id=req_id)
         try:
-            resp = self._post(msg, timeout)
+            resp = self._post(msg, timeout, headers)
         except Exception as exc:  # noqa: BLE001 — surface as JSON-RPC error
             closer = getattr(exc, "close", None)
             if callable(closer):
@@ -556,13 +598,19 @@ class StreamableHTTPClientTransport:
         finally:
             resp.close()
 
-    def send_notification(self, method, params=None):
+    def send_notification(self, method, params=None, headers=None):
+        # recover_error_body=False: a notification has no legitimate reply, so
+        # an error status on one is a failure to surface, not a body to parse.
+        # Letting the HTTPError out is what this did before _post learned to
+        # recover one for requests — an expired session or a rejected token
+        # must still fail connect() loudly.
         resp = self._post(protocol.make_notification(method, params),
-                          self._connect_timeout)
+                          self._connect_timeout, headers,
+                          recover_error_body=False)
         resp.read()
         resp.close()
 
-    def _post(self, msg, timeout):
+    def _post(self, msg, timeout, headers=None, *, recover_error_body=True):
         req = urllib.request.Request(
             self._url, data=protocol.encode(msg), method="POST")
         for key, value in self._headers.items():
@@ -573,8 +621,22 @@ class StreamableHTTPClientTransport:
             req.add_header("Mcp-Session-Id", self._session_id)
         if self.protocol_version:
             req.add_header("MCP-Protocol-Version", self.protocol_version)
-        return urllib.request.urlopen(
-            req, timeout=timeout, context=self._ssl_context)
+        for key, value in (headers or {}).items():
+            req.add_header(key, value)
+        try:
+            return urllib.request.urlopen(
+                req, timeout=timeout, context=self._ssl_context)
+        except urllib.error.HTTPError as err:
+            # A modern server reports -32601 as 404 and the -3202x family as
+            # 400. A status with a JSON-RPC body is an answer, not a failed
+            # POST — so hand it back instead of letting the caller's broad
+            # except turn it into INTERNAL_ERROR.
+            if not recover_error_body:
+                raise
+            body = err.read()
+            if _as_json_rpc(body) is None:
+                raise
+            return _ReplayedResponse(err, body)
 
     def stop(self):
         self._running = False

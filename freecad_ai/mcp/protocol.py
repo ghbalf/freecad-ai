@@ -4,7 +4,9 @@ Provides encode/decode functions and message constructors for the
 Model Context Protocol, which uses JSON-RPC 2.0 over STDIO.
 """
 
+import base64
 import json
+from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 # Standard JSON-RPC 2.0 error codes
@@ -61,6 +63,19 @@ META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
 META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
 META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 
+# The headers 2026-07-28 mirrors those body fields into. Spelled out for the
+# same reason as the _meta keys above: protocol.py builds them and
+# transport.py validates them, and a typo in either would degrade silently —
+# a request whose mirrored header is missing reads as a header mismatch, not
+# as the bug it is. Only Mcp-Method and Mcp-Name are modern-only; every
+# revision from 2025-06-18 on sends MCP-Protocol-Version, so transport.py
+# keeps its own literals for the legacy latch on both client _posts and in
+# _handle_streamable. Those are the same spelling serving a different
+# purpose, and deliberately do not share this constant.
+HEADER_PROTOCOL_VERSION = "MCP-Protocol-Version"
+HEADER_METHOD = "Mcp-Method"
+HEADER_NAME = "Mcp-Name"
+
 # Freshness hints for CacheableResult. Both fields are REQUIRED on tools/list,
 # so "do not cache" is ttlMs=0, never omission.
 DEFAULT_TOOLS_TTL_MS = 300000
@@ -71,6 +86,102 @@ DEFAULT_CACHE_SCOPE = "private"
 def era_of(version):
     """Return MODERN, LEGACY, or None for a revision we do not serve."""
     return _ERA_BY_VERSION.get(version)
+
+
+_HEADER_SENTINEL_PREFIX = "=?base64?"
+_HEADER_SENTINEL_SUFFIX = "?="
+
+
+def decode_header_value(raw):
+    """Decode the ``=?base64?…?=`` sentinel a mirrored header value may use.
+
+    2026-07-28 defines it for values that cannot travel in a header raw — a
+    tool name with a non-ASCII character, say. Returns None when the payload
+    will not decode, which the caller treats as a mismatch: a value we cannot
+    read is not a value we can confirm agrees with the body.
+    """
+    if raw is None:
+        return None
+    if raw.startswith(_HEADER_SENTINEL_PREFIX) and raw.endswith(_HEADER_SENTINEL_SUFFIX):
+        try:
+            return base64.b64decode(
+                raw[len(_HEADER_SENTINEL_PREFIX):-len(_HEADER_SENTINEL_SUFFIX)],
+                validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+    return raw
+
+
+def encode_header_value(value):
+    """The inverse of decode_header_value: what to put in a mirrored header.
+
+    A value travels raw only when doing so is unambiguous — printable ASCII,
+    no surrounding whitespace, and not itself shaped like the sentinel. That
+    last case is the subtle one: a tool literally named ``=?base64?x?=`` sent
+    raw would be *decoded* by the far side into something it never called.
+    """
+    if value is None:
+        return None
+    safe = (
+        value != ""
+        and value == value.strip()
+        and all(" " <= ch <= "~" for ch in value)
+        and not (value.startswith(_HEADER_SENTINEL_PREFIX)
+                 and value.endswith(_HEADER_SENTINEL_SUFFIX))
+    )
+    if safe:
+        return value
+    payload = base64.b64encode(value.encode("utf-8")).decode("ascii")
+    return _HEADER_SENTINEL_PREFIX + payload + _HEADER_SENTINEL_SUFFIX
+
+
+@dataclass(frozen=True)
+class LegacyEra:
+    """Pre-2026-07-28: the negotiated version lives in the session.
+
+    decorate() is deliberately a no-op. Everything this class does not do is
+    the compatibility promise: a server that answered our initialize sees the
+    same bytes it saw before this era object existed.
+    """
+
+    version: str
+    era: str = LEGACY
+
+    def decorate(self, method, params):
+        return params, {}
+
+
+@dataclass(frozen=True)
+class ModernEra:
+    """2026-07-28+: every request re-states the version, in body and headers.
+
+    There is no session, so each request carries its own metadata, and an
+    HTTP intermediary gets the same facts in mirrored headers without having
+    to parse the body.
+    """
+
+    version: str
+    client_info: dict
+    era: str = MODERN
+
+    def decorate(self, method, params):
+        params = dict(params or {})
+        params["_meta"] = {
+            META_PROTOCOL_VERSION: self.version,
+            META_CLIENT_INFO: self.client_info,
+        }
+        headers = {
+            HEADER_PROTOCOL_VERSION: self.version,
+            HEADER_METHOD: method,
+        }
+        # Only when there is a name to mirror. A tools/call without one is
+        # malformed either way, but a None here would reach urllib as a
+        # header value and raise TypeError before the request is sent —
+        # turning the server's clean -32020 into a client-side crash.
+        name = encode_header_value(params.get("name"))
+        if method == "tools/call" and name is not None:
+            headers[HEADER_NAME] = name
+        return params, headers
 
 
 def _request_meta(msg: dict):
