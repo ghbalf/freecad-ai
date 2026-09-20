@@ -6,6 +6,7 @@ Model Context Protocol, which uses JSON-RPC 2.0 over STDIO.
 
 import base64
 import json
+from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 # Standard JSON-RPC 2.0 error codes
@@ -119,6 +120,55 @@ def encode_header_value(value):
         return value
     payload = base64.b64encode(value.encode("utf-8")).decode("ascii")
     return _HEADER_SENTINEL_PREFIX + payload + _HEADER_SENTINEL_SUFFIX
+
+
+@dataclass(frozen=True)
+class LegacyEra:
+    """Pre-2026-07-28: the negotiated version lives in the session.
+
+    decorate() is deliberately a no-op. Everything this class does not do is
+    the compatibility promise: a server that answered our initialize sees the
+    same bytes it saw before this era object existed.
+    """
+
+    version: str
+    era: str = LEGACY
+
+    def decorate(self, method, params):
+        return params, {}
+
+
+@dataclass(frozen=True)
+class ModernEra:
+    """2026-07-28+: every request re-states the version, in body and headers.
+
+    There is no session, so each request carries its own metadata, and an
+    HTTP intermediary gets the same facts in mirrored headers without having
+    to parse the body.
+    """
+
+    version: str
+    client_info: dict
+    era: str = MODERN
+
+    def decorate(self, method, params):
+        params = dict(params or {})
+        params["_meta"] = {
+            META_PROTOCOL_VERSION: self.version,
+            META_CLIENT_INFO: self.client_info,
+        }
+        headers = {
+            "MCP-Protocol-Version": self.version,
+            "Mcp-Method": method,
+        }
+        # Only when there is a name to mirror. A tools/call without one is
+        # malformed either way, but a None here would reach urllib as a
+        # header value and raise TypeError before the request is sent —
+        # turning the server's clean -32020 into a client-side crash.
+        name = encode_header_value(params.get("name"))
+        if method == "tools/call" and name is not None:
+            headers["Mcp-Name"] = name
+        return params, headers
 
 
 def _request_meta(msg: dict):
