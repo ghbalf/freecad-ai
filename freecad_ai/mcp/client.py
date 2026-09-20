@@ -325,6 +325,13 @@ class MCPClient:
     def disconnect(self):
         """Stop the transport."""
         self._connected = False
+        # Back to the __init__ default. A latent invariant, not a fix for an
+        # observed failure: MCPManager always builds a fresh MCPClient, so no
+        # second connect() happens today. If one ever did, a client that had
+        # negotiated modern would open it with a modern-decorated initialize
+        # — _meta and mirrored headers at a server it has not yet negotiated
+        # with.
+        self._era = protocol.LegacyEra(protocol.DEFAULT_PROTOCOL_VERSION)
         self._transport.stop()
         logger.info("MCP client '%s' disconnected", self.name)
 

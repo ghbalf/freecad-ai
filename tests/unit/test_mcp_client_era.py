@@ -669,6 +669,23 @@ class TestAHeaderMismatchIsLogged:
         assert protocol.MODERN_VERSIONS[0] in logged
 
 
+class TestDisconnectClearsTheEra:
+    def test_a_reconnect_would_not_open_modern(self):
+        """Latent invariant: nothing reconnects an MCPClient today.
+
+        MCPManager builds a fresh client every time, so this closes a trap
+        rather than a live bug — a second connect() on a client that had
+        negotiated modern would send a modern-decorated initialize.
+        """
+        transport = _ModernOnly()
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        assert client._era.era == protocol.MODERN
+        client.disconnect()
+        assert client._era.era == protocol.LEGACY
+        assert client._era.version == protocol.DEFAULT_PROTOCOL_VERSION
+
+
 class TestCacheHintsAreStored:
     def test_a_modern_tools_list_keeps_its_freshness_hints(self):
         """Stored, not acted on: nothing re-lists yet (see the spec's

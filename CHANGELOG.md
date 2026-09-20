@@ -38,8 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   not be used. It now opens with the newest legacy revision it understands, and
   treats a `-32601` refusal as the signal to probe `server/discover` and switch
   to the modern era, carrying `_meta` and mirrored headers on every later
-  request. Servers that answer `initialize` see exactly the bytes they saw
-  before, apart from the requested version string. (#86)
+  request. A modern `tools/list`'s `ttlMs`/`cacheScope` freshness hints are
+  captured on the client but not yet acted on — nothing re-lists tools today.
+  Servers that answer `initialize` see exactly the bytes they saw before,
+  apart from the requested version string and, for a non-conformant server
+  whose `initialize` result omits the required `protocolVersion`, the
+  `MCP-Protocol-Version` header that now falls back to it. (#86)
 
 ### Fixed
 
@@ -47,7 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   transports treated any non-2xx response as a failed POST, so a JSON-RPC error
   a server reported with a 400 or 404 reached callers as a generic internal
   error with the text `HTTP Error 404: Not Found`. The body is now read and
-  returned. (#86)
+  returned — on a request. A notification has no legitimate reply, so an
+  error status on one still fails loudly, as it always did. (#86)
 
 ### Changed
 

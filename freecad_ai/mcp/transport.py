@@ -58,12 +58,13 @@ def validate_modern_headers(headers, msg):
 
     get_all = getattr(headers, "get_all", None)
     if get_all is not None:
-        for name in ("MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"):
+        for name in (protocol.HEADER_PROTOCOL_VERSION, protocol.HEADER_METHOD,
+                     protocol.HEADER_NAME):
             if len(get_all(name) or ()) > 1:
                 return mismatch("Header %s appears more than once." % name)
 
     version = protocol.request_protocol_version(msg)
-    header_version = headers.get("MCP-Protocol-Version")
+    header_version = headers.get(protocol.HEADER_PROTOCOL_VERSION)
     if header_version is None:
         return mismatch("Missing required MCP-Protocol-Version header.")
     if header_version != version:
@@ -72,7 +73,7 @@ def validate_modern_headers(headers, msg):
             "in params._meta." % (header_version, version))
 
     method = msg.get("method", "")
-    header_method = headers.get("Mcp-Method")
+    header_method = headers.get(protocol.HEADER_METHOD)
     if header_method is None:
         return mismatch("Missing required Mcp-Method header.")
     if header_method != method:
@@ -81,7 +82,7 @@ def validate_modern_headers(headers, msg):
             "%r." % (header_method, method))
 
     if method == "tools/call":
-        raw_name = headers.get("Mcp-Name")
+        raw_name = headers.get(protocol.HEADER_NAME)
         if raw_name is None:
             return mismatch("Missing required Mcp-Name header on tools/call.")
         wanted = (msg.get("params") or {}).get("name")

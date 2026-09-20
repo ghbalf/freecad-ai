@@ -63,6 +63,15 @@ META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
 META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
 META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 
+# The headers 2026-07-28 mirrors those body fields into. Spelled out for the
+# same reason as the _meta keys above: protocol.py builds them and
+# transport.py validates them, and a typo in either would degrade silently —
+# a request whose mirrored header is missing reads as a header mismatch, not
+# as the bug it is.
+HEADER_PROTOCOL_VERSION = "MCP-Protocol-Version"
+HEADER_METHOD = "Mcp-Method"
+HEADER_NAME = "Mcp-Name"
+
 # Freshness hints for CacheableResult. Both fields are REQUIRED on tools/list,
 # so "do not cache" is ttlMs=0, never omission.
 DEFAULT_TOOLS_TTL_MS = 300000
@@ -158,8 +167,8 @@ class ModernEra:
             META_CLIENT_INFO: self.client_info,
         }
         headers = {
-            "MCP-Protocol-Version": self.version,
-            "Mcp-Method": method,
+            HEADER_PROTOCOL_VERSION: self.version,
+            HEADER_METHOD: method,
         }
         # Only when there is a name to mirror. A tools/call without one is
         # malformed either way, but a None here would reach urllib as a
@@ -167,7 +176,7 @@ class ModernEra:
         # turning the server's clean -32020 into a client-side crash.
         name = encode_header_value(params.get("name"))
         if method == "tools/call" and name is not None:
-            headers["Mcp-Name"] = name
+            headers[HEADER_NAME] = name
         return params, headers
 
 

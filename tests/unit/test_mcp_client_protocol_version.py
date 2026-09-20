@@ -160,7 +160,8 @@ class TestSSEClientSendsHeader:
 
 class TestClientLatchesNegotiatedVersion:
     def test_server_choice_wins_over_what_we_asked_for(self):
-        """We request 2025-03-26; a server answering 2025-06-18 sets the header."""
+        """We ask for the newest legacy revision; a server answering
+        2025-06-18 sets the header to what it chose, not to what we asked."""
         transport = _RecordingTransport(
             {"protocolVersion": "2025-06-18", "capabilities": {}})
         client = MCPClient("test", ["echo"])
