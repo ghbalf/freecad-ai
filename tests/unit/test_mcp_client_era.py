@@ -192,6 +192,44 @@ class _SSERunning:
         self._thread.join(timeout=5)
 
 
+class _FakeStdin:
+    """Collects what a transport writes, in place of a subprocess pipe."""
+
+    def __init__(self):
+        self.writes = []
+
+    def write(self, data):
+        self.writes.append(data)
+
+    def flush(self):
+        pass
+
+
+class _FakeProcess:
+    def __init__(self):
+        self.stdin = _FakeStdin()
+
+
+def _stdio_writes(headers):
+    """Every byte a fresh stdio transport writes for one request and one
+    notification carrying ``headers``.
+
+    A fresh transport per call keeps the request ids aligned, so the two
+    traces differ only if the headers themselves changed the bytes. The
+    request times out by design — nothing answers a fake pipe — and the
+    write under test has already happened by then.
+    """
+    t = StdioClientTransport(["echo"], None)
+    t._process = _FakeProcess()
+    try:
+        t.send_request("tools/list", {"cursor": "a"}, timeout=0.01,
+                       headers=headers)
+    except TimeoutError:
+        pass
+    t.send_notification("notifications/initialized", {"n": 1}, headers=headers)
+    return t._process.stdin.writes
+
+
 class TestTransportsSendPerRequestHeaders:
     def test_streamable_sends_what_it_is_given(self):
         with _Serving() as srv:
@@ -236,14 +274,25 @@ class TestTransportsSendPerRequestHeaders:
             t.stop()
         assert _HeaderRecorder.versions[0] == ["2026-07-28"]
 
-    def test_stdio_ignores_headers(self):
-        """No header channel exists; being handed some must not raise."""
+    def test_stdio_accepts_headers_in_its_signature(self):
+        """The interface the client relies on when a stdio server is modern."""
         t = StdioClientTransport(["echo"], None)
-        # Not started: we assert the signature accepts the argument, which is
-        # what the client relies on when a stdio server speaks the modern era.
         import inspect
         for method in (t.send_request, t.send_notification):
             assert "headers" in inspect.signature(method).parameters
+
+    def test_stdio_emits_the_same_bytes_with_and_without_headers(self):
+        """Stdio has no header channel, so headers must reach the wire nowhere.
+
+        Asserting only that the signature accepts them proves nothing: a
+        transport that folded them into the JSON body would pass that. So
+        compare the bytes actually written to the subprocess stdin.
+        """
+        headers = {"Mcp-Method": "tools/list",
+                   "MCP-Protocol-Version": "2026-07-28"}
+        assert _stdio_writes(headers) == _stdio_writes(None)
+        # And the era's value never appears in them at all.
+        assert all(b"2026-07-28" not in w for w in _stdio_writes(headers))
 
 
 class _ErrorStatusServer(http.server.BaseHTTPRequestHandler):
