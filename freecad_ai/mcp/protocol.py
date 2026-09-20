@@ -67,7 +67,11 @@ META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 # same reason as the _meta keys above: protocol.py builds them and
 # transport.py validates them, and a typo in either would degrade silently —
 # a request whose mirrored header is missing reads as a header mismatch, not
-# as the bug it is.
+# as the bug it is. Only Mcp-Method and Mcp-Name are modern-only; every
+# revision from 2025-06-18 on sends MCP-Protocol-Version, so transport.py
+# keeps its own literals for the legacy latch on both client _posts and in
+# _handle_streamable. Those are the same spelling serving a different
+# purpose, and deliberately do not share this constant.
 HEADER_PROTOCOL_VERSION = "MCP-Protocol-Version"
 HEADER_METHOD = "Mcp-Method"
 HEADER_NAME = "Mcp-Name"
