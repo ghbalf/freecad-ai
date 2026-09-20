@@ -270,6 +270,44 @@ class _ServingErrors(_Serving):
         return self
 
 
+def _respond_with(status, body=b"", content_type="application/json"):
+    """Build a handler whose POST always answers a fixed status/body, for
+    exercising HTTPError bodies that _as_json_rpc must reject."""
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(status)
+            if content_type:
+                self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+    return _Handler
+
+
+def _error_from(handler_cls):
+    """Run handler_cls for one request and return the JSON-RPC error
+    StreamableHTTPClientTransport.send_request produced for it."""
+    srv = http.server.HTTPServer(("127.0.0.1", 0), handler_cls)
+    base = "http://127.0.0.1:%d/mcp" % srv.server_address[1]
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        t = StreamableHTTPClientTransport(base, connect_timeout=5)
+        t.start()
+        resp = t.send_request("initialize", {}, timeout=5)
+        t.stop()
+        return resp
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=5)
+
+
 class TestAnErrorStatusIsStillAResponse:
     def test_a_404_with_a_json_rpc_body_keeps_its_code(self):
         """Without this, every modern error reads as INTERNAL_ERROR."""
@@ -317,3 +355,15 @@ class TestAnErrorStatusIsStillAResponse:
             t.stop()
         assert resp["error"]["code"] == protocol.METHOD_NOT_FOUND
         assert time.monotonic() - started < 10, "it waited out the correlator"
+
+    def test_a_non_json_body_is_still_a_transport_error(self):
+        """An HTML error page from a proxy or gateway is not JSON-RPC."""
+        resp = _error_from(_respond_with(
+            500, b"<html>Internal Server Error</html>", "text/html"))
+        assert resp["error"]["code"] == protocol.INTERNAL_ERROR
+
+    def test_json_that_is_not_json_rpc_is_still_a_transport_error(self):
+        """Valid JSON, but missing the jsonrpc envelope, is not an answer."""
+        resp = _error_from(_respond_with(
+            400, json.dumps({"message": "bad request"}).encode()))
+        assert resp["error"]["code"] == protocol.INTERNAL_ERROR
