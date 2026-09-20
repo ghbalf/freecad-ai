@@ -552,8 +552,12 @@ class TestAHeaderMismatchIsLogged:
                 if method == "server/discover":
                     return protocol.make_response(1, {
                         "supportedVersions": ["2026-07-28"]})
+                # Deliberately says nothing a header is named after: the
+                # server's message is interpolated into the same log line, so
+                # a message mentioning "Mcp-Method" would satisfy the
+                # assertions below even with the headers dropped from the call.
                 return protocol.make_error(
-                    1, protocol.HEADER_MISMATCH, "Mcp-Method disagrees.")
+                    1, protocol.HEADER_MISMATCH, "Rejected.")
 
         with caplog.at_level(logging.ERROR, logger="freecad_ai.mcp.client"):
             MCPClient("test", ["echo"], transport=_Picky()).connect()
@@ -561,7 +565,10 @@ class TestAHeaderMismatchIsLogged:
         mismatch = [r for r in caplog.records if "-32020" in r.getMessage()
                     or "mismatch" in r.getMessage().lower()]
         assert mismatch, "a header mismatch must not pass silently"
-        assert "Mcp-Method" in mismatch[0].getMessage()
+        # Both of these reach the record only through the headers we sent.
+        logged = mismatch[0].getMessage()
+        assert "Mcp-Method" in logged
+        assert protocol.MODERN_VERSIONS[0] in logged
 
 
 class TestCacheHintsAreStored:
@@ -582,6 +589,23 @@ class TestCacheHintsAreStored:
         client = MCPClient("test", ["echo"], transport=_WithHints())
         client.connect()
         assert client.tools_cache_hints == {"ttlMs": 60000, "cacheScope": "public"}
+
+    def test_a_zero_ttl_is_kept_because_it_means_do_not_cache(self):
+        """ttlMs: 0 is an instruction, not an absent hint — so the check is
+        presence-by-key, and a truthiness test would silently discard it."""
+
+        class _NoCache(_ModernOnly):
+            def send_request(self, method, params=None, timeout=30, headers=None):
+                if method == "tools/list":
+                    self.calls.append(("request", method, params, headers))
+                    return protocol.make_response(1, {
+                        "tools": [], "resultType": "complete", "ttlMs": 0})
+                return super().send_request(method, params, timeout, headers)
+
+        client = MCPClient("test", ["echo"], transport=_NoCache())
+        client.connect()
+        assert client.tools_cache_hints == {
+            "ttlMs": 0, "cacheScope": protocol.DEFAULT_CACHE_SCOPE}
 
     def test_a_legacy_listing_leaves_them_unset(self):
         client = MCPClient("test", ["echo"], transport=_Recorder())

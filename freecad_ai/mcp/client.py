@@ -76,7 +76,9 @@ class MCPClient:
         # Until connect() negotiates, behave exactly as every earlier release.
         self._era = protocol.LegacyEra(protocol.DEFAULT_PROTOCOL_VERSION)
         # Freshness hints from a modern tools/list, kept for a future re-list
-        # feature. None after a legacy listing, which carries no such fields.
+        # feature. Normally None after a legacy listing, which defines no such
+        # fields — the store is keyed on the fields being there, not on the
+        # era, so a legacy server that volunteers them is taken at its word.
         self.tools_cache_hints = None
 
     def _send(self, method, params=None, timeout=None):
