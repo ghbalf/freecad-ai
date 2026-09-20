@@ -100,7 +100,15 @@ class MCPClient:
         })
 
         if "error" in resp:
-            error = resp["error"] or {}
+            error = resp["error"]
+            # A non-conformant server can send a non-dict error body (a bare
+            # string, a list). error.get("code") below would crash on that,
+            # so coerce it to {} first: .get("code") then returns None, which
+            # is not METHOD_NOT_FOUND, so we cannot tell whether this was a
+            # -32601 and it is not treated as an era mismatch — it raises
+            # below like any other real failure, quoting the original value.
+            if not isinstance(error, dict):
+                error = {}
             if error.get("code") != protocol.METHOD_NOT_FOUND:
                 raise RuntimeError(
                     f"MCP server '{self.name}' initialization failed: {resp['error']}"

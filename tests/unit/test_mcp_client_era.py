@@ -508,3 +508,28 @@ class TestNegotiationFailures:
             MCPClient("test", ["echo"], transport=transport).connect()
         assert "2031-01-01" in str(exc.value)
         assert "2026-07-28" in str(exc.value)
+
+    def test_a_non_dict_error_body_raises_instead_of_crashing(self):
+        """A non-conformant server's error body must not crash the era check.
+
+        Covers both a truthy non-dict (a bare string) and a falsy one (an
+        empty list) — the empty list is the interesting case because
+        ``error or {}`` already tolerates it by accident; the guard must not
+        regress that case while fixing the truthy one.
+        """
+
+        class _MalformedError(_Recorder):
+            def __init__(self, error_body):
+                super().__init__()
+                self._error_body = error_body
+
+            def send_request(self, method, params=None, timeout=30, headers=None):
+                self.calls.append(("request", method, params, headers))
+                return {"jsonrpc": "2.0", "id": 1, "error": self._error_body}
+
+        for error_body in ("boom", []):
+            transport = _MalformedError(error_body)
+            with pytest.raises(RuntimeError) as exc:
+                MCPClient("test", ["echo"], transport=transport).connect()
+            assert str(error_body) in str(exc.value)
+            assert [m for _k, m, _p, _h in transport.calls] == ["initialize"]
