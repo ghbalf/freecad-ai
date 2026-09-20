@@ -2,8 +2,8 @@
 <package format="1">
     <name>FreeCAD AI</name>
     <description>AI-powered assistant for 3D modeling in FreeCAD. Supports multiple LLM providers with Plan/Act modes, structured tool calling, skills, and MCP integration.</description>
-    <version>0.28.0-alpha</version>
-    <date>2026-09-18</date>
+    <version>0.29.0-alpha</version>
+    <date>2026-09-20</date>
     <maintainer email="alfred@mickautsch.de">Alfred Mickautsch</maintainer>
     <license file="LICENSE-CODE">LGPL-2.1-or-later</license>
     <license file="LICENSE-ICON">CC0-1.0</license>
