@@ -361,7 +361,6 @@ class _ReplayedResponse:
 
     def __init__(self, err, body):
         self.headers = err.headers
-        self.status = err.code
         self._body = body
 
     def read(self):
