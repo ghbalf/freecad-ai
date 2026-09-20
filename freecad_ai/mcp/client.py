@@ -13,6 +13,7 @@ import ssl
 import urllib.parse
 from dataclasses import dataclass, field
 
+from . import protocol
 from .transport import (
     StdioClientTransport,
     SSEClientTransport,
@@ -22,7 +23,12 @@ from .transport import (
 
 logger = logging.getLogger(__name__)
 
-PROTOCOL_VERSION = "2025-03-26"
+# What we ASK for in initialize — the newest legacy revision we understand.
+# The server's answer wins (see connect), so asking high costs nothing: a
+# server that does not know it replies with one it does support. Note this is
+# deliberately not protocol.DEFAULT_PROTOCOL_VERSION, which is what our own
+# *server* answers a client that named no version and must stay 2025-03-26.
+PROTOCOL_VERSION = protocol.LATEST_LEGACY_VERSION
 CLIENT_INFO = {"name": "FreeCAD AI", "version": "0.1.0"}
 
 
@@ -67,13 +73,27 @@ class MCPClient:
         self._schema_cache: dict[str, dict] = {}
         # Raw server response stored for deferred schema extraction
         self._raw_tools: list[dict] = []
+        # Until connect() negotiates, behave exactly as every earlier release.
+        self._era = protocol.LegacyEra(protocol.DEFAULT_PROTOCOL_VERSION)
+
+    def _send(self, method, params=None, timeout=None):
+        """Every outgoing request goes through here, so the era is applied once."""
+        params, headers = self._era.decorate(method, params)
+        if timeout is None:
+            return self._transport.send_request(method, params, headers=headers)
+        return self._transport.send_request(
+            method, params, timeout=timeout, headers=headers)
+
+    def _notify(self, method, params=None):
+        params, headers = self._era.decorate(method, params)
+        self._transport.send_notification(method, params, headers=headers)
 
     def connect(self):
         """Start transport, perform initialize handshake, discover tools."""
         self._transport.start()
 
         # Initialize handshake
-        resp = self._transport.send_request("initialize", {
+        resp = self._send("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
             "clientInfo": CLIENT_INFO,
@@ -87,13 +107,16 @@ class MCPClient:
         # Latch the negotiated revision before anything else goes out. The
         # server's choice wins over what we asked for; HTTP transports send it
         # as MCP-Protocol-Version on every later request (a client MUST as of
-        # 2025-06-18). Stdio has no headers and simply ignores it.
-        self._transport.protocol_version = (
-            resp.get("result", {}).get("protocolVersion") or PROTOCOL_VERSION
-        )
+        # 2025-06-18). Stdio has no headers and simply ignores it. The era
+        # object is set from the same negotiated value, so every request from
+        # here on is decorated (or not) according to what the server actually
+        # answered.
+        version = resp.get("result", {}).get("protocolVersion") or PROTOCOL_VERSION
+        self._era = protocol.LegacyEra(version)
+        self._transport.protocol_version = version
 
         # Send initialized notification
-        self._transport.send_notification("notifications/initialized")
+        self._notify("notifications/initialized")
 
         # Discover tools
         self._refresh_tools()
@@ -110,7 +133,7 @@ class MCPClient:
         When deferred, stores raw tool dicts for later schema extraction
         but only populates MCPToolInfo with name + description (no schema).
         """
-        resp = self._transport.send_request("tools/list")
+        resp = self._send("tools/list")
         if "error" in resp:
             logger.warning("MCP tools/list failed for '%s': %s", self.name, resp["error"])
             self._tools = []
@@ -198,7 +221,7 @@ class MCPClient:
 
     def call_tool(self, name: str, arguments: dict, timeout: float | None = None) -> MCPToolResult:
         """Invoke a tool on the MCP server."""
-        resp = self._transport.send_request("tools/call", {
+        resp = self._send("tools/call", {
             "name": name,
             "arguments": arguments,
         }, timeout=timeout if timeout is not None else self._tool_call_timeout)

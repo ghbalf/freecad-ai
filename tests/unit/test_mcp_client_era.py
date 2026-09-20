@@ -6,13 +6,12 @@ import threading
 import time
 
 from freecad_ai.mcp import protocol
+from freecad_ai.mcp.client import CLIENT_INFO, MCPClient
 from freecad_ai.mcp.transport import (
     SSEClientTransport,
     StdioClientTransport,
     StreamableHTTPClientTransport,
 )
-
-CLIENT_INFO = {"name": "FreeCAD AI", "version": "0.1.0"}
 
 
 class TestLegacyEra:
@@ -367,3 +366,55 @@ class TestAnErrorStatusIsStillAResponse:
         resp = _error_from(_respond_with(
             400, json.dumps({"message": "bad request"}).encode()))
         assert resp["error"]["code"] == protocol.INTERNAL_ERROR
+
+
+class _Recorder:
+    """A transport that records every outgoing call and answers plausibly."""
+
+    def __init__(self, init_result=None):
+        self.calls = []            # (kind, method, params, headers)
+        self.protocol_version = None
+        self.is_alive = True
+        self._init_result = init_result if init_result is not None else {
+            "protocolVersion": "2025-03-26", "capabilities": {}}
+
+    def start(self):
+        pass
+
+    def stop(self):
+        self.is_alive = False
+
+    def send_request(self, method, params=None, timeout=30, headers=None):
+        self.calls.append(("request", method, params, headers))
+        if method == "initialize":
+            return protocol.make_response(1, self._init_result)
+        if method == "tools/list":
+            return protocol.make_response(1, {"tools": []})
+        return protocol.make_response(1, {"content": [], "isError": False})
+
+    def send_notification(self, method, params=None, headers=None):
+        self.calls.append(("notification", method, params, headers))
+
+
+class TestLegacyWireIsUnchanged:
+    def test_no_meta_and_no_headers_reach_a_legacy_server(self):
+        """The compatibility promise, asserted on the whole trace."""
+        transport = _Recorder()
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        client.call_tool("create_box", {})
+        for _kind, _method, params, headers in transport.calls:
+            assert not headers
+            assert params is None or "_meta" not in params
+
+    def test_we_ask_for_the_newest_legacy_revision(self):
+        transport = _Recorder()
+        MCPClient("test", ["echo"], transport=transport).connect()
+        _, _, params, _ = transport.calls[0]
+        assert params["protocolVersion"] == protocol.LATEST_LEGACY_VERSION
+
+    def test_initialized_is_still_sent(self):
+        transport = _Recorder()
+        MCPClient("test", ["echo"], transport=transport).connect()
+        assert ("notification", "notifications/initialized", None, {}) in [
+            (k, m, p, h or {}) for k, m, p, h in transport.calls]
