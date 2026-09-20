@@ -9,12 +9,15 @@ import time
 import pytest
 
 from freecad_ai.mcp import protocol
+from freecad_ai.mcp import server as server_mod
+from freecad_ai.mcp import transport as transport_mod
 from freecad_ai.mcp.client import CLIENT_INFO, MCPClient
 from freecad_ai.mcp.transport import (
     SSEClientTransport,
     StdioClientTransport,
     StreamableHTTPClientTransport,
 )
+from freecad_ai.tools.registry import ToolDefinition, ToolRegistry, ToolResult
 
 
 class TestLegacyEra:
@@ -611,3 +614,62 @@ class TestCacheHintsAreStored:
         client = MCPClient("test", ["echo"], transport=_Recorder())
         client.connect()
         assert client.tools_cache_hints is None
+
+
+class _OurServer:
+    """Our own MCPServer on an ephemeral loopback port, in a thread."""
+
+    def __init__(self, registry):
+        self._registry = registry
+
+    def __enter__(self):
+        self.transport = transport_mod.HTTPServerTransport(
+            host="127.0.0.1", port=0)
+        self.transport._handler = server_mod.MCPServer(
+            self._registry, transport=self.transport)._handle
+        self.httpd = self.transport._make_server()
+        self.url = "http://127.0.0.1:%d/mcp" % self.httpd.server_address[1]
+        self.thread = threading.Thread(
+            target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            self.httpd.shutdown()
+        finally:
+            self.httpd.server_close()
+
+
+class TestOurClientAgainstOurServer:
+    def test_a_modern_tools_call_survives_our_own_header_validation(self):
+        """The contract's two halves, on a real socket, in the modern era."""
+        ran = []
+
+        def _echo(text=""):
+            ran.append(text)
+            return ToolResult(True, "echoed %s" % text)
+
+        registry = ToolRegistry()
+        registry.register(ToolDefinition(
+            "echo_text", "Echo the text back.", [], handler=_echo))
+
+        with _OurServer(registry) as srv:
+            client = MCPClient(
+                "self",
+                transport=transport_mod.StreamableHTTPClientTransport(
+                    srv.url, connect_timeout=5))
+            client.connect()
+            # Our server serves both eras, so connect() negotiates LEGACY here
+            # and asserting MODERN would be asserting the wrong thing. Switch
+            # by hand: the negotiation branches are covered against fakes
+            # above, and what this test uniquely proves is that a modern
+            # request our client BUILDS is one our server ACCEPTS.
+            client._era = protocol.ModernEra("2026-07-28", CLIENT_INFO)
+            client._transport.protocol_version = "2026-07-28"
+            result = client.call_tool("echo_text", {"text": "hello"})
+            client.disconnect()
+
+        assert ran == ["hello"]
+        assert result.is_error is False
+        assert result.content[0]["text"] == "echoed hello"

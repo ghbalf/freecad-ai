@@ -32,6 +32,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   overridable with `MCP_TOOLS_TTL_MS` and `MCP_TOOLS_CACHE_SCOPE`. Set the
   TTL to `0` to tell clients not to cache the tool list at all.
 
+- **MCP client: protocol era negotiation.** The client announced `2025-03-26`
+  on every connection and never asked whether the server spoke anything newer,
+  so a stateless `2026-07-28` server — which has no `initialize` at all — could
+  not be used. It now opens with the newest legacy revision it understands, and
+  treats a `-32601` refusal as the signal to probe `server/discover` and switch
+  to the modern era, carrying `_meta` and mirrored headers on every later
+  request. Servers that answer `initialize` see exactly the bytes they saw
+  before, apart from the requested version string. (#86)
+
+### Fixed
+
+- **An HTTP error status no longer hides the error.** Both HTTP client
+  transports treated any non-2xx response as a failed POST, so a JSON-RPC error
+  a server reported with a 400 or 404 reached callers as a generic internal
+  error with the text `HTTP Error 404: Not Found`. The body is now read and
+  returned. (#86)
+
 ### Changed
 
 - **`initialize` echoes the client's protocol revision** when it is one we
