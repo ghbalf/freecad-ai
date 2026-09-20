@@ -498,7 +498,9 @@ and inside `_post`, immediately after the existing `if self.protocol_version:` b
             req.add_header(key, value)
 ```
 
-`StreamableHTTPClientTransport`, the same shape:
+`StreamableHTTPClientTransport`, the same shape. Change **only** the `def` line
+and the `self._post(...)` call — the `except Exception` block below it closes a
+response the exception may carry, and deleting that is a resource leak:
 
 ```python
     def send_request(self, method, params=None, timeout=30, headers=None):
@@ -506,6 +508,8 @@ and inside `_post`, immediately after the existing `if self.protocol_version:` b
         msg = protocol.make_request(method, params, id=req_id)
         try:
             resp = self._post(msg, timeout, headers)
+        except Exception as exc:  # noqa: BLE001 — unchanged, keep as it is
+            ...                   # the existing closer/INTERNAL_ERROR block
 ```
 
 ```python
@@ -543,7 +547,7 @@ git commit -m "feat(mcp): client transports carry per-request headers (#86)"
 
 **Interfaces:**
 - Consumes: the `_post(…, headers=None)` signatures from Task 3.
-- Produces: `send_request` returns the server's JSON-RPC error object when the status is non-2xx but the body parses. Task 6's negotiation depends on being able to read a `-32601` that arrived as a 404.
+- Produces: `send_request` returns the server's JSON-RPC error object when the status is non-2xx but the body parses, on **both** HTTP transports; `protocol`-level helper `_as_json_rpc(body) -> dict | None` in `transport.py`. Task 6's negotiation depends on being able to read a `-32601` that arrived as a 404.
 
 **Why this task exists:** a modern server reports `-32601` as **404** and the `-3202x` family as **400** (`transport.py:MODERN_ERROR_STATUS`). `urlopen` raises `HTTPError` on both, the broad `except Exception` turns it into `INTERNAL_ERROR` carrying the string `HTTP Error 404: Not Found`, and the real error code is lost. Negotiation keys on that code.
 
@@ -616,51 +620,59 @@ class TestAnErrorStatusIsStillAResponse:
             srv.server_close()
             thread.join(timeout=5)
         assert resp["error"]["code"] == protocol.INTERNAL_ERROR
+
+    def test_sse_does_not_wait_for_a_reply_that_will_not_come(self):
+        """SSE's reply normally arrives on the stream, so send_request blocks
+        on the correlator. When the server answers on the POST instead, the
+        body must short-circuit that wait rather than be drained."""
+        with _ServingErrors() as srv:
+            t = SSEClientTransport("http://127.0.0.1:1/sse", connect_timeout=5)
+            t._endpoint_url = srv.base     # skip the GET /sse handshake
+            started = time.monotonic()
+            resp = t.send_request("initialize", {}, timeout=30)
+            t.stop()
+        assert resp["error"]["code"] == protocol.METHOD_NOT_FOUND
+        assert time.monotonic() - started < 10, "it waited out the correlator"
 ```
+
+Add `time` to the test file's imports, and `SSEClientTransport` to the
+`freecad_ai.mcp.transport` import list.
 
 - [ ] **Step 2: Run it and watch it fail**
 
 Run: `env PYTHONPATH= .venv/bin/pytest tests/unit/test_mcp_client_era.py -k ErrorStatus -q`
-Expected: FAIL — the first test reports `INTERNAL_ERROR` (`-32603`) instead of `-32601`.
+Expected: FAIL — the first test reports `INTERNAL_ERROR` (`-32603`) instead of
+`-32601`, and the SSE test blocks for its full 30-second timeout before
+failing the same way.
 
 - [ ] **Step 3: Return the body when there is one**
 
-Add `import urllib.error` to `transport.py`'s imports if it is not already there, then wrap the `urlopen` in `StreamableHTTPClientTransport._post`:
+Add `import urllib.error` to `transport.py`'s imports, then add one helper at
+module level, above the transports:
 
 ```python
-        try:
-            return urllib.request.urlopen(
-                req, timeout=timeout, context=self._ssl_context)
-        except urllib.error.HTTPError as err:
-            # A modern server reports -32601 as 404 and the -3202x family as
-            # 400. HTTPError is itself a readable response, so a status with a
-            # JSON-RPC body is an answer, not a failed POST. Peeking costs a
-            # read, so hand back a rewound object the caller can treat
-            # uniformly.
-            body = err.read()
-            if _looks_like_json_rpc(body):
-                return _ReplayedResponse(err, body)
-            raise
-```
-
-Add the two helpers at module level, above the transports:
-
-```python
-def _looks_like_json_rpc(body):
-    """True when these bytes decode to a JSON-RPC message we can hand back."""
+def _as_json_rpc(body):
+    """Parse these bytes as a JSON-RPC message, or return None."""
     try:
         msg = protocol.decode(body.decode("utf-8"))
     except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
-        return False
-    return isinstance(msg, dict) and msg.get("jsonrpc") == "2.0"
+        return None
+    return msg if isinstance(msg, dict) and msg.get("jsonrpc") == "2.0" else None
+```
 
+**Streamable HTTP.** Its `send_request` reads `resp.headers`, may iterate the
+response as SSE, then `read()`s and `close()`s it — so the recovered body has to
+arrive wearing that same shape. Add beside the helper:
 
+```python
 class _ReplayedResponse:
-    """An HTTPError body re-presented with the response API _post's callers use.
+    """An HTTPError body re-presented with the response API _post's caller uses.
 
-    urlopen's caller reads headers, then either iterates SSE events or reads
-    the body once. An HTTPError has already been consumed by the time we know
-    it is JSON-RPC, so the bytes travel alongside it.
+    HTTPError is readable exactly once, and we have to read it to find out
+    whether it is JSON-RPC at all, so the bytes travel alongside it. Only the
+    members StreamableHTTPClientTransport.send_request touches are provided:
+    headers, read and close. An error status always carries application/json,
+    never text/event-stream, so the SSE-iteration branch is never reached.
     """
 
     def __init__(self, err, body):
@@ -675,25 +687,85 @@ class _ReplayedResponse:
         pass
 ```
 
-Apply the same `try/except` to `SSEClientTransport._post`. Its caller only drains the body, so returning `_ReplayedResponse` there is enough:
+and wrap the `urlopen` in `StreamableHTTPClientTransport._post`:
 
 ```python
+        try:
+            return urllib.request.urlopen(
+                req, timeout=timeout, context=self._ssl_context)
+        except urllib.error.HTTPError as err:
+            # A modern server reports -32601 as 404 and the -3202x family as
+            # 400. A status with a JSON-RPC body is an answer, not a failed
+            # POST — so hand it back instead of letting the caller's broad
+            # except turn it into INTERNAL_ERROR.
+            body = err.read()
+            if _as_json_rpc(body) is None:
+                raise
+            return _ReplayedResponse(err, body)
+```
+
+**SSE is not the same shape and must not be treated as one.** Its `_post`
+returns nothing: the reply arrives later over the event stream, and
+`send_request` blocks on the correlator until it does. Draining a recovered
+error body there would discard the server's answer and leave the caller waiting
+out the full timeout for a reply the server has already decided not to send — a
+worse outcome than today's `INTERNAL_ERROR`. So `_post` returns the message and
+`send_request` short-circuits on it:
+
+```python
+    def send_request(self, method, params=None, timeout=30, headers=None):
+        req_id = self._correlator.next_id()
+        event = self._correlator.register(req_id)
+        try:
+            immediate = self._post(
+                protocol.make_request(method, params, id=req_id), headers)
+        except Exception as exc:  # noqa: BLE001 — surface as JSON-RPC error
+            self._correlator.cancel(req_id)
+            return protocol.make_error(req_id, protocol.INTERNAL_ERROR, str(exc))
+        if immediate is not None:
+            # The server answered on the POST itself; nothing will arrive on
+            # the stream, so stop waiting for it.
+            self._correlator.cancel(req_id)
+            return immediate
+        return self._correlator.wait(req_id, event, timeout)
+
+    def send_notification(self, method, params=None, headers=None):
+        self._post(protocol.make_notification(method, params), headers)
+
+    def _post(self, msg, headers=None):
+        """POST one message. Returns a JSON-RPC reply the server sent back on
+        the POST itself (an error status), or None for the normal 202."""
+        if self._endpoint_url is None:
+            raise RuntimeError("MCP SSE transport not connected (no endpoint)")
+        req = urllib.request.Request(
+            self._endpoint_url, data=protocol.encode(msg), method="POST")
+        for key, value in self._headers.items():
+            req.add_header(key, value)
+        req.add_header("Content-Type", "application/json")
+        if self.protocol_version:
+            req.add_header("MCP-Protocol-Version", self.protocol_version)
+        for key, value in (headers or {}).items():
+            req.add_header(key, value)
         try:
             resp = urllib.request.urlopen(
                 req, timeout=self._connect_timeout, context=self._ssl_context)
         except urllib.error.HTTPError as err:
-            body = err.read()
-            if not _looks_like_json_rpc(body):
+            reply = _as_json_rpc(err.read())
+            if reply is None:
                 raise
-            resp = _ReplayedResponse(err, body)
+            return reply
         resp.read()   # drain the 202 body
         resp.close()
+        return None
 ```
+
+This supersedes the `_post` edit Task 3 made to `SSEClientTransport`: that task
+added the header loop, and this one replaces the whole method around it.
 
 - [ ] **Step 4: Run the test — it must pass**
 
 Run: `env PYTHONPATH= .venv/bin/pytest tests/unit/test_mcp_client_era.py -q`
-Expected: PASS, 14 tests.
+Expected: PASS, 15 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1034,7 +1106,7 @@ and add the probe:
 - [ ] **Step 4: Run the test — it must pass**
 
 Run: `env PYTHONPATH= .venv/bin/pytest tests/unit/test_mcp_client_era.py -q`
-Expected: PASS, 24 tests.
+Expected: PASS, 25 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1181,7 +1253,7 @@ modern `tools/list`, and `ttlMs: 0` means "do not cache" rather than absence
 - [ ] **Step 4: Run the test — it must pass**
 
 Run: `env PYTHONPATH= .venv/bin/pytest tests/unit/test_mcp_client_era.py -q`
-Expected: PASS, 27 tests.
+Expected: PASS, 28 tests.
 
 - [ ] **Step 5: Commit**
 
