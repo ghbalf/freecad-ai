@@ -667,9 +667,16 @@ class TestOurClientAgainstOurServer:
             # request our client BUILDS is one our server ACCEPTS.
             client._era = protocol.ModernEra("2026-07-28", CLIENT_INFO)
             client._transport.protocol_version = "2026-07-28"
-            result = client.call_tool("echo_text", {"text": "hello"})
+            # Bounded well under the 600s default: a handler that deadlocks
+            # should fail this test in seconds, not hang CI for ten minutes.
+            result = client.call_tool("echo_text", {"text": "hello"}, timeout=5)
             client.disconnect()
 
-        assert ran == ["hello"]
-        assert result.is_error is False
+        # is_error first, and carrying the content: a rejected request comes
+        # back with str(resp["error"]) as its text, so a header-contract break
+        # names itself ("-32020, Mcp-Name ... does not name the tool"). Leading
+        # with `ran == []` instead would report a header mismatch, a handler
+        # crash and a dropped connection with the same bare message.
+        assert result.is_error is False, result.content
         assert result.content[0]["text"] == "echoed hello"
+        assert ran == ["hello"]
