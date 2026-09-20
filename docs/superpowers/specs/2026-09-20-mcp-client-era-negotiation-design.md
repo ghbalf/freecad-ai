@@ -150,6 +150,25 @@ both of which move code toward the module that should already own it:
   legacy path; in the modern era the era object supplies the same header and
   the values agree by construction.
 
+### An HTTP status is not a transport failure
+
+A modern server reports errors *in the status line*: our own maps `-32601` to
+404 and the `-3202x` family to 400 (`transport.py:MODERN_ERROR_STATUS`). Both
+HTTP client transports currently treat any non-2xx as a failed POST —
+`urlopen` raises `HTTPError`, the broad `except Exception` catches it, and the
+caller receives `INTERNAL_ERROR` carrying the text `HTTP Error 404: Not
+Found`.
+
+That makes every modern error unreadable, including the `-32601` this design
+negotiates on. Both transports must therefore treat an `HTTPError` whose body
+parses as a JSON-RPC message as **the response**, and keep the
+`INTERNAL_ERROR` path only for a status with no usable body. `HTTPError` is
+itself a readable response object, so this is a `try/except` around the
+`urlopen`, not a new code path.
+
+This is a pre-existing bug rather than one this work introduces; it is in
+scope because modern-era negotiation cannot function without it.
+
 ## Error handling
 
 | Case | Behaviour |
