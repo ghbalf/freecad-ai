@@ -3,6 +3,7 @@
 import http.server
 import json
 import threading
+import time
 
 from freecad_ai.mcp import protocol
 from freecad_ai.mcp.transport import (
@@ -237,3 +238,82 @@ class TestTransportsSendPerRequestHeaders:
         import inspect
         for method in (t.send_request, t.send_notification):
             assert "headers" in inspect.signature(method).parameters
+
+
+class _ErrorStatusServer(http.server.BaseHTTPRequestHandler):
+    """Answers every POST with a JSON-RPC -32601 carried by a 404, the way a
+    modern server reports an unknown method."""
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length).decode("utf-8"))
+        payload = json.dumps(
+            protocol.make_error(body.get("id"), protocol.METHOD_NOT_FOUND,
+                                "Unknown method."),
+            separators=(",", ":")).encode()
+        self.send_response(404)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+class _ServingErrors(_Serving):
+    def __enter__(self):
+        self._srv = http.server.HTTPServer(("127.0.0.1", 0), _ErrorStatusServer)
+        self.base = "http://127.0.0.1:%d/mcp" % self._srv.server_address[1]
+        self._thread = threading.Thread(target=self._srv.serve_forever, daemon=True)
+        self._thread.start()
+        return self
+
+
+class TestAnErrorStatusIsStillAResponse:
+    def test_a_404_with_a_json_rpc_body_keeps_its_code(self):
+        """Without this, every modern error reads as INTERNAL_ERROR."""
+        with _ServingErrors() as srv:
+            t = StreamableHTTPClientTransport(srv.base, connect_timeout=5)
+            t.start()
+            resp = t.send_request("initialize", {}, timeout=5)
+            t.stop()
+        assert resp["error"]["code"] == protocol.METHOD_NOT_FOUND
+
+    def test_a_status_with_no_usable_body_is_still_a_transport_error(self):
+        class _Empty(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                self.send_response(502)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), _Empty)
+        base = "http://127.0.0.1:%d/mcp" % srv.server_address[1]
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        try:
+            t = StreamableHTTPClientTransport(base, connect_timeout=5)
+            t.start()
+            resp = t.send_request("initialize", {}, timeout=5)
+            t.stop()
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            thread.join(timeout=5)
+        assert resp["error"]["code"] == protocol.INTERNAL_ERROR
+
+    def test_sse_does_not_wait_for_a_reply_that_will_not_come(self):
+        """SSE's reply normally arrives on the stream, so send_request blocks
+        on the correlator. When the server answers on the POST instead, the
+        body must short-circuit that wait rather than be drained."""
+        with _ServingErrors() as srv:
+            t = SSEClientTransport("http://127.0.0.1:1/sse", connect_timeout=5)
+            t._endpoint_url = srv.base     # skip the GET /sse handshake
+            started = time.monotonic()
+            resp = t.send_request("initialize", {}, timeout=30)
+            t.stop()
+        assert resp["error"]["code"] == protocol.METHOD_NOT_FOUND
+        assert time.monotonic() - started < 10, "it waited out the correlator"

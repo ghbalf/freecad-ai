@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -339,6 +340,37 @@ class StdioClientTransport:
         return self._running and self._process is not None and self._process.poll() is None
 
 
+def _as_json_rpc(body):
+    """Parse these bytes as a JSON-RPC message, or return None."""
+    try:
+        msg = protocol.decode(body.decode("utf-8"))
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+        return None
+    return msg if isinstance(msg, dict) and msg.get("jsonrpc") == "2.0" else None
+
+
+class _ReplayedResponse:
+    """An HTTPError body re-presented with the response API _post's caller uses.
+
+    HTTPError is readable exactly once, and we have to read it to find out
+    whether it is JSON-RPC at all, so the bytes travel alongside it. Only the
+    members StreamableHTTPClientTransport.send_request touches are provided:
+    headers, read and close. An error status always carries application/json,
+    never text/event-stream, so the SSE-iteration branch is never reached.
+    """
+
+    def __init__(self, err, body):
+        self.headers = err.headers
+        self.status = err.code
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def close(self):
+        pass
+
+
 class SSEClientTransport:
     """Client transport speaking the legacy MCP HTTP+SSE protocol.
 
@@ -427,16 +459,24 @@ class SSEClientTransport:
         req_id = self._correlator.next_id()
         event = self._correlator.register(req_id)
         try:
-            self._post(protocol.make_request(method, params, id=req_id), headers)
+            immediate = self._post(
+                protocol.make_request(method, params, id=req_id), headers)
         except Exception as exc:  # noqa: BLE001 — surface as JSON-RPC error
             self._correlator.cancel(req_id)
             return protocol.make_error(req_id, protocol.INTERNAL_ERROR, str(exc))
+        if immediate is not None:
+            # The server answered on the POST itself; nothing will arrive on
+            # the stream, so stop waiting for it.
+            self._correlator.cancel(req_id)
+            return immediate
         return self._correlator.wait(req_id, event, timeout)
 
     def send_notification(self, method, params=None, headers=None):
         self._post(protocol.make_notification(method, params), headers)
 
     def _post(self, msg, headers=None):
+        """POST one message. Returns a JSON-RPC reply the server sent back on
+        the POST itself (an error status), or None for the normal 202."""
         if self._endpoint_url is None:
             raise RuntimeError("MCP SSE transport not connected (no endpoint)")
         req = urllib.request.Request(
@@ -448,10 +488,17 @@ class SSEClientTransport:
             req.add_header("MCP-Protocol-Version", self.protocol_version)
         for key, value in (headers or {}).items():
             req.add_header(key, value)
-        resp = urllib.request.urlopen(
-            req, timeout=self._connect_timeout, context=self._ssl_context)
+        try:
+            resp = urllib.request.urlopen(
+                req, timeout=self._connect_timeout, context=self._ssl_context)
+        except urllib.error.HTTPError as err:
+            reply = _as_json_rpc(err.read())
+            if reply is None:
+                raise
+            return reply
         resp.read()   # drain the 202 body
         resp.close()
+        return None
 
     def stop(self):
         self._running = False
@@ -562,8 +609,18 @@ class StreamableHTTPClientTransport:
             req.add_header("MCP-Protocol-Version", self.protocol_version)
         for key, value in (headers or {}).items():
             req.add_header(key, value)
-        return urllib.request.urlopen(
-            req, timeout=timeout, context=self._ssl_context)
+        try:
+            return urllib.request.urlopen(
+                req, timeout=timeout, context=self._ssl_context)
+        except urllib.error.HTTPError as err:
+            # A modern server reports -32601 as 404 and the -3202x family as
+            # 400. A status with a JSON-RPC body is an answer, not a failed
+            # POST — so hand it back instead of letting the caller's broad
+            # except turn it into INTERNAL_ERROR.
+            body = err.read()
+            if _as_json_rpc(body) is None:
+                raise
+            return _ReplayedResponse(err, body)
 
     def stop(self):
         self._running = False
