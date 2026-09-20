@@ -1,6 +1,15 @@
 """Client-side era objects and negotiation (#86)."""
 
+import http.server
+import json
+import threading
+
 from freecad_ai.mcp import protocol
+from freecad_ai.mcp.transport import (
+    SSEClientTransport,
+    StdioClientTransport,
+    StreamableHTTPClientTransport,
+)
 
 CLIENT_INFO = {"name": "FreeCAD AI", "version": "0.1.0"}
 
@@ -72,16 +81,6 @@ class TestEraTagging:
         assert protocol.ModernEra("2026-07-28", CLIENT_INFO).era == protocol.MODERN
 
 
-import http.server
-import json
-import threading
-
-from freecad_ai.mcp.transport import (
-    StdioClientTransport,
-    StreamableHTTPClientTransport,
-)
-
-
 class _HeaderRecorder(http.server.BaseHTTPRequestHandler):
     """Answers any POST with {"ok": true} and records the headers it saw."""
 
@@ -127,6 +126,65 @@ class _Serving:
         self._thread.join(timeout=5)
 
 
+class _SSEHeaderRecorder(http.server.BaseHTTPRequestHandler):
+    """Minimal HTTP+SSE stub: advertises /messages, pushes each POST's reply
+    back over the event stream, and records the full header set it saw.
+
+    Same shape as ``_SSEStub`` in test_mcp_client_protocol_version.py, but
+    recording the whole header dict rather than one named header — this test
+    needs to see several headers land, not just MCP-Protocol-Version.
+    """
+
+    seen = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(b"event: endpoint\ndata: /messages\n\n")
+        self.wfile.flush()
+        type(self).stream = self.wfile
+        type(self).ready.set()
+        type(self).done.wait(10)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length).decode("utf-8"))
+        type(self).seen.append(dict(self.headers.items()))
+        self.send_response(202)
+        self.end_headers()
+        if body.get("id") is not None:
+            reply = json.dumps(
+                protocol.make_response(body["id"], {"ok": True}),
+                separators=(",", ":"))
+            type(self).stream.write(f"event: message\ndata: {reply}\n\n".encode())
+            type(self).stream.flush()
+
+
+class _SSERunning:
+    """Run _SSEHeaderRecorder on a free port for the duration of a with-block."""
+
+    def __enter__(self):
+        _SSEHeaderRecorder.seen = []
+        _SSEHeaderRecorder.ready = threading.Event()
+        _SSEHeaderRecorder.done = threading.Event()
+        self._srv = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), _SSEHeaderRecorder)
+        self.base = "http://127.0.0.1:%d" % self._srv.server_address[1]
+        self._thread = threading.Thread(target=self._srv.serve_forever, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        _SSEHeaderRecorder.done.set()
+        self._srv.shutdown()
+        self._srv.server_close()
+        self._thread.join(timeout=5)
+
+
 class TestTransportsSendPerRequestHeaders:
     def test_streamable_sends_what_it_is_given(self):
         with _Serving() as srv:
@@ -143,6 +201,21 @@ class TestTransportsSendPerRequestHeaders:
         # regardless of the case passed to add_header() — so "MCP-..." always
         # arrives as "Mcp-...". Verified against the stdlib directly; not
         # something our _post() can or should fight.
+        assert sent["Mcp-Protocol-Version"] == "2026-07-28"
+
+    def test_sse_sends_what_it_is_given(self):
+        with _SSERunning() as srv:
+            t = SSEClientTransport(f"{srv.base}/sse", connect_timeout=5)
+            t.start()
+            resp = t.send_request(
+                "tools/list", {}, timeout=5,
+                headers={"Mcp-Method": "tools/list",
+                         "MCP-Protocol-Version": "2026-07-28"})
+            t.stop()
+        assert resp["result"] == {"ok": True}
+        sent = _SSEHeaderRecorder.seen[0]
+        assert sent["Mcp-Method"] == "tools/list"
+        # Same title-casing behaviour as the Streamable transport's test.
         assert sent["Mcp-Protocol-Version"] == "2026-07-28"
 
     def test_an_era_header_overrides_the_latched_one_without_duplicating(self):
