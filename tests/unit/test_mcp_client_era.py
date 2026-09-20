@@ -5,6 +5,8 @@ import json
 import threading
 import time
 
+import pytest
+
 from freecad_ai.mcp import protocol
 from freecad_ai.mcp.client import CLIENT_INFO, MCPClient
 from freecad_ai.mcp.transport import (
@@ -418,3 +420,91 @@ class TestLegacyWireIsUnchanged:
         MCPClient("test", ["echo"], transport=transport).connect()
         assert ("notification", "notifications/initialized", None, {}) in [
             (k, m, p, h or {}) for k, m, p, h in transport.calls]
+
+
+class _ModernOnly(_Recorder):
+    """Refuses initialize the way a stateless server must, answers discover."""
+
+    def __init__(self, supported=("2026-07-28",)):
+        super().__init__()
+        self._supported = list(supported)
+
+    def send_request(self, method, params=None, timeout=30, headers=None):
+        self.calls.append(("request", method, params, headers))
+        if method == "initialize":
+            return protocol.make_error(1, protocol.METHOD_NOT_FOUND,
+                                       "This server has no handshake.")
+        if method == "server/discover":
+            return protocol.make_response(1, {
+                "supportedVersions": self._supported,
+                "capabilities": {"tools": {}},
+            })
+        if method == "tools/list":
+            return protocol.make_response(1, {"tools": []})
+        return protocol.make_response(1, {"content": [], "isError": False})
+
+
+class TestModernNegotiation:
+    def test_a_refused_handshake_is_followed_by_a_probe(self):
+        transport = _ModernOnly()
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        assert [m for _k, m, _p, _h in transport.calls][:2] == [
+            "initialize", "server/discover"]
+        assert client._era.era == protocol.MODERN
+        assert client._era.version == "2026-07-28"
+
+    def test_the_probe_itself_is_modern(self):
+        """It must carry _meta, or a modern server reads it as a legacy call."""
+        transport = _ModernOnly()
+        MCPClient("test", ["echo"], transport=transport).connect()
+        _kind, _method, params, headers = transport.calls[1]
+        assert params["_meta"][protocol.META_PROTOCOL_VERSION] in protocol.MODERN_VERSIONS
+        assert headers["Mcp-Method"] == "server/discover"
+
+    def test_initialized_is_not_sent_in_the_modern_era(self):
+        """There is no session to initialize; the method was removed."""
+        transport = _ModernOnly()
+        MCPClient("test", ["echo"], transport=transport).connect()
+        assert "notifications/initialized" not in [
+            m for k, m, _p, _h in transport.calls if k == "notification"]
+
+    def test_later_requests_carry_the_negotiated_version(self):
+        transport = _ModernOnly()
+        MCPClient("test", ["echo"], transport=transport).connect()
+        listing = [c for c in transport.calls if c[1] == "tools/list"][0]
+        assert listing[3]["MCP-Protocol-Version"] == "2026-07-28"
+
+
+class TestNegotiationFailures:
+    def test_a_non_32601_error_raises_without_probing(self):
+        """An auth failure must not be retried as if it were an era mismatch."""
+
+        class _Unauthorized(_Recorder):
+            def send_request(self, method, params=None, timeout=30, headers=None):
+                self.calls.append(("request", method, params, headers))
+                return protocol.make_error(1, protocol.INTERNAL_ERROR, "401")
+
+        transport = _Unauthorized()
+        with pytest.raises(RuntimeError, match="401"):
+            MCPClient("test", ["echo"], transport=transport).connect()
+        assert [m for _k, m, _p, _h in transport.calls] == ["initialize"]
+
+    def test_both_eras_refused_names_both_failures(self):
+        class _Hostile(_Recorder):
+            def send_request(self, method, params=None, timeout=30, headers=None):
+                self.calls.append(("request", method, params, headers))
+                return protocol.make_error(1, protocol.METHOD_NOT_FOUND, "no")
+
+        with pytest.raises(RuntimeError) as exc:
+            MCPClient("test", ["echo"], transport=_Hostile()).connect()
+        assert "initialize" in str(exc.value)
+        assert "server/discover" in str(exc.value)
+
+    def test_no_shared_version_raises_with_both_lists(self):
+        """Falling back to initialize would re-send what it just removed."""
+        transport = _ModernOnly(supported=["2031-01-01"])
+        with pytest.raises(RuntimeError) as exc:
+            MCPClient("test", ["echo"], transport=transport).connect()
+        assert "2031-01-01" in str(exc.value)
+        assert "2026-07-28" in str(exc.value)

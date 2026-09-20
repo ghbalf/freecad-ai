@@ -100,9 +100,19 @@ class MCPClient:
         })
 
         if "error" in resp:
-            raise RuntimeError(
-                f"MCP server '{self.name}' initialization failed: {resp['error']}"
-            )
+            error = resp["error"] or {}
+            if error.get("code") != protocol.METHOD_NOT_FOUND:
+                raise RuntimeError(
+                    f"MCP server '{self.name}' initialization failed: {resp['error']}"
+                )
+            # A server that has no initialize is a 2026-07-28 server: the
+            # handshake was removed, not broken. Only -32601 means that; any
+            # other failure is a real one and must not be retried as an era
+            # mismatch.
+            self._era = self._negotiate_modern(error)
+        else:
+            version = resp.get("result", {}).get("protocolVersion") or PROTOCOL_VERSION
+            self._era = protocol.LegacyEra(version)
 
         # Latch the negotiated revision before anything else goes out. The
         # server's choice wins over what we asked for; HTTP transports send it
@@ -110,13 +120,14 @@ class MCPClient:
         # 2025-06-18). Stdio has no headers and simply ignores it. The era
         # object is set from the same negotiated value, so every request from
         # here on is decorated (or not) according to what the server actually
-        # answered.
-        version = resp.get("result", {}).get("protocolVersion") or PROTOCOL_VERSION
-        self._era = protocol.LegacyEra(version)
-        self._transport.protocol_version = version
+        # answered — legacy via initialize, or modern via the discover probe.
+        self._transport.protocol_version = self._era.version
 
-        # Send initialized notification
-        self._notify("notifications/initialized")
+        # Send initialized notification — but only in the legacy era: a
+        # modern server has no session to initialize, and the method was
+        # removed along with the handshake that used to precede it.
+        if self._era.era == protocol.LEGACY:
+            self._notify("notifications/initialized")
 
         # Discover tools
         self._refresh_tools()
@@ -126,6 +137,33 @@ class MCPClient:
             self.name, len(self._tools),
             " (deferred schemas)" if self._deferred else "",
         )
+
+    def _negotiate_modern(self, initialize_error):
+        """Ask a handshake-less server what it speaks, or raise saying why not."""
+        probe = protocol.ModernEra(protocol.MODERN_VERSIONS[0], CLIENT_INFO)
+        params, headers = probe.decorate("server/discover", {})
+        # Deliberately bypasses _send: at this point self._era is still the
+        # LegacyEra we are trying to replace, and _send would decorate with
+        # that, not with the candidate `probe` era — sending a bare request
+        # with no _meta, which a modern server reads as a legacy call.
+        resp = self._transport.send_request(
+            "server/discover", params, headers=headers)
+        if "error" in resp:
+            raise RuntimeError(
+                f"MCP server '{self.name}' speaks neither era — "
+                f"initialize: {initialize_error}; "
+                f"server/discover: {resp['error']}")
+
+        offered = resp.get("result", {}).get("supportedVersions") or []
+        # Intersect against the MODERN revisions only. We are here because the
+        # server removed initialize, so a legacy version in common is not one
+        # we could actually use.
+        shared = [v for v in protocol.MODERN_VERSIONS if v in offered]
+        if not shared:
+            raise RuntimeError(
+                f"MCP server '{self.name}' offers {offered!r}; "
+                f"this client speaks {list(protocol.MODERN_VERSIONS)!r}")
+        return protocol.ModernEra(shared[0], CLIENT_INFO)
 
     def _refresh_tools(self):
         """Fetch the tool list from the server.
