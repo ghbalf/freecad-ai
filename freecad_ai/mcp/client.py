@@ -182,11 +182,22 @@ class MCPClient:
                 f"initialize: {initialize_error}; "
                 f"server/discover: {resp['error']}")
 
-        offered = resp.get("result", {}).get("supportedVersions") or []
+        # A non-conformant server can answer with a non-dict result (a bare
+        # list) or a non-list supportedVersions (a bare string); neither may
+        # crash the negotiation (same guard as connect()'s initialize check
+        # and _send's error check). `offered` is what we quote back, `usable`
+        # is what we may intersect, and they differ exactly when the server
+        # was non-conformant: a non-dict result names no versions at all, and
+        # a bare string is not a list — `v in offered` on a string is a
+        # SUBSTRING test, so prose merely containing a version would
+        # negotiate. Anything else therefore shares nothing and raises below.
+        result = resp.get("result")
+        offered = result.get("supportedVersions") if isinstance(result, dict) else result
+        usable = offered if isinstance(result, dict) and isinstance(offered, list) else []
         # Intersect against the MODERN revisions only. We are here because the
         # server removed initialize, so a legacy version in common is not one
         # we could actually use.
-        shared = [v for v in protocol.MODERN_VERSIONS if v in offered]
+        shared = [v for v in protocol.MODERN_VERSIONS if v in usable]
         if not shared:
             raise RuntimeError(
                 f"MCP server '{self.name}' offers {offered!r}; "

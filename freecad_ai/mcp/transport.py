@@ -471,9 +471,15 @@ class SSEClientTransport:
         return self._correlator.wait(req_id, event, timeout)
 
     def send_notification(self, method, params=None, headers=None):
-        self._post(protocol.make_notification(method, params), headers)
+        # recover_error_body=False: a notification has no legitimate reply, so
+        # an error status on one is a failure to surface, not a body to parse.
+        # Letting the HTTPError out is what this did before _post learned to
+        # recover one for requests — an expired session or a rejected token
+        # must still fail connect() loudly.
+        self._post(protocol.make_notification(method, params), headers,
+                   recover_error_body=False)
 
-    def _post(self, msg, headers=None):
+    def _post(self, msg, headers=None, *, recover_error_body=True):
         """POST one message. Returns a JSON-RPC reply the server sent back on
         the POST itself (an error status), or None for the normal 202."""
         if self._endpoint_url is None:
@@ -491,6 +497,8 @@ class SSEClientTransport:
             resp = urllib.request.urlopen(
                 req, timeout=self._connect_timeout, context=self._ssl_context)
         except urllib.error.HTTPError as err:
+            if not recover_error_body:
+                raise
             reply = _as_json_rpc(err.read())
             if reply is None:
                 raise
@@ -590,12 +598,18 @@ class StreamableHTTPClientTransport:
             resp.close()
 
     def send_notification(self, method, params=None, headers=None):
+        # recover_error_body=False: a notification has no legitimate reply, so
+        # an error status on one is a failure to surface, not a body to parse.
+        # Letting the HTTPError out is what this did before _post learned to
+        # recover one for requests — an expired session or a rejected token
+        # must still fail connect() loudly.
         resp = self._post(protocol.make_notification(method, params),
-                          self._connect_timeout, headers)
+                          self._connect_timeout, headers,
+                          recover_error_body=False)
         resp.read()
         resp.close()
 
-    def _post(self, msg, timeout, headers=None):
+    def _post(self, msg, timeout, headers=None, *, recover_error_body=True):
         req = urllib.request.Request(
             self._url, data=protocol.encode(msg), method="POST")
         for key, value in self._headers.items():
@@ -616,6 +630,8 @@ class StreamableHTTPClientTransport:
             # 400. A status with a JSON-RPC body is an answer, not a failed
             # POST — so hand it back instead of letting the caller's broad
             # except turn it into INTERNAL_ERROR.
+            if not recover_error_body:
+                raise
             body = err.read()
             if _as_json_rpc(body) is None:
                 raise

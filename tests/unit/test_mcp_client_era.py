@@ -5,6 +5,7 @@ import json
 import logging
 import threading
 import time
+import urllib.error
 
 import pytest
 
@@ -505,6 +506,51 @@ class TestNegotiationFailures:
         assert "initialize" in str(exc.value)
         assert "server/discover" in str(exc.value)
 
+    def test_a_non_dict_discover_result_raises_instead_of_crashing(self):
+        """``result`` is REQUIRED to be an object; a bare list must not crash.
+
+        The AttributeError this used to raise reached the user through
+        MCPManager.connect_all's broad except as "'list' object has no
+        attribute 'get'", which names neither the server's fault nor ours.
+        """
+
+        class _ListResult(_ModernOnly):
+            def send_request(self, method, params=None, timeout=30, headers=None):
+                if method == "server/discover":
+                    self.calls.append(("request", method, params, headers))
+                    return {"jsonrpc": "2.0", "id": 1, "result": ["2026-07-28"]}
+                return super().send_request(method, params, timeout, headers)
+
+        with pytest.raises(RuntimeError) as exc:
+            MCPClient("test", ["echo"], transport=_ListResult()).connect()
+        assert "2026-07-28" in str(exc.value)
+        assert "this client speaks" in str(exc.value)
+
+    def test_a_string_supported_versions_does_not_negotiate(self):
+        """``v in offered`` on a string is a SUBSTRING test, not membership.
+
+        A server answering the bare string — or prose that merely contains a
+        version — would otherwise negotiate the modern era successfully.
+        """
+
+        class _StringVersions(_ModernOnly):
+            def __init__(self, offered):
+                super().__init__()
+                self._offered = offered
+
+            def send_request(self, method, params=None, timeout=30, headers=None):
+                if method == "server/discover":
+                    self.calls.append(("request", method, params, headers))
+                    return protocol.make_response(
+                        1, {"supportedVersions": self._offered})
+                return super().send_request(method, params, timeout, headers)
+
+        for offered in ("2026-07-28", "we speak 2026-07-28 here"):
+            with pytest.raises(RuntimeError) as exc:
+                MCPClient("test", ["echo"],
+                          transport=_StringVersions(offered)).connect()
+            assert repr(offered) in str(exc.value)
+
     def test_no_shared_version_raises_with_both_lists(self):
         """Falling back to initialize would re-send what it just removed."""
         transport = _ModernOnly(supported=["2031-01-01"])
@@ -680,3 +726,92 @@ class TestOurClientAgainstOurServer:
         assert result.is_error is False, result.content
         assert result.content[0]["text"] == "echoed hello"
         assert ran == ["hello"]
+
+
+class _ExpiredSessionServer(http.server.BaseHTTPRequestHandler):
+    """Answers ``initialize`` 200, then 404s everything after it with a
+    JSON-RPC body — the shape a restarted Streamable HTTP server uses once the
+    ``Mcp-Session-Id`` it issued no longer exists."""
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length).decode("utf-8"))
+        if body.get("method") == "initialize":
+            payload = json.dumps(
+                protocol.make_response(body.get("id"), {
+                    "protocolVersion": "2025-03-26", "capabilities": {}}),
+                separators=(",", ":")).encode()
+            status = 200
+        else:
+            payload = json.dumps(
+                protocol.make_error(body.get("id"), -32001, "Session expired"),
+                separators=(",", ":")).encode()
+            status = 404
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+class _ServingExpiredSession(_Serving):
+    def __enter__(self):
+        self._srv = http.server.HTTPServer(("127.0.0.1", 0), _ExpiredSessionServer)
+        self.base = "http://127.0.0.1:%d/mcp" % self._srv.server_address[1]
+        self._thread = threading.Thread(target=self._srv.serve_forever, daemon=True)
+        self._thread.start()
+        return self
+
+
+class TestAnErrorStatusOnANotificationIsLoud:
+    """Recovering a JSON-RPC body from an HTTPError is for REQUESTS only.
+
+    A notification has no legitimate reply, so a body arriving on one is never
+    good news. Before this branch the HTTPError came straight out of
+    send_notification — and therefore out of connect() — and an expired
+    session or a rejected token left the server out of the manager's clients.
+    Swallowing it registers a connected server with no tools instead.
+    """
+
+    def test_streamable_notification_raises_on_an_error_status(self):
+        with _ServingErrors() as srv:
+            t = StreamableHTTPClientTransport(srv.base, connect_timeout=5)
+            t.start()
+            with pytest.raises(urllib.error.HTTPError):
+                t.send_notification("notifications/initialized")
+            t.stop()
+
+    def test_sse_notification_raises_on_an_error_status(self):
+        with _ServingErrors() as srv:
+            t = SSEClientTransport("http://127.0.0.1:1/sse", connect_timeout=5)
+            t._endpoint_url = srv.base     # skip the GET /sse handshake
+            with pytest.raises(urllib.error.HTTPError):
+                t.send_notification("notifications/initialized")
+            t.stop()
+
+    def test_a_normal_notification_still_goes_through_quietly(self):
+        """The 200/202 path must be untouched by the guard above."""
+        with _Serving() as srv:
+            t = StreamableHTTPClientTransport(srv.base, connect_timeout=5)
+            t.start()
+            t.send_notification("notifications/initialized")
+            t.stop()
+        with _SSERunning() as srv:
+            t = SSEClientTransport(f"{srv.base}/sse", connect_timeout=5)
+            t.start()
+            t.send_notification("notifications/initialized")
+            t.stop()
+
+    def test_connect_fails_loudly_when_the_session_has_expired(self):
+        """End to end: the failure must not read as 'connected, 0 tools'."""
+        with _ServingExpiredSession() as srv:
+            client = MCPClient(
+                "expired",
+                transport=StreamableHTTPClientTransport(
+                    srv.base, connect_timeout=5))
+            with pytest.raises(urllib.error.HTTPError):
+                client.connect()
+            assert client.is_connected is False
