@@ -245,8 +245,12 @@ class StdioClientTransport:
         self._reader_thread.start()
 
     def send_request(self, method: str, params: dict | None = None,
-                     timeout: float = 30) -> dict:
-        """Send a JSON-RPC request and wait for the matching response."""
+                     timeout: float = 30, headers: dict | None = None) -> dict:
+        """Send a JSON-RPC request and wait for the matching response.
+
+        ``headers`` is accepted and ignored: stdio has no header channel, and
+        the modern era carries everything it needs in params._meta.
+        """
         with self._lock:
             req_id = self._next_id
             self._next_id += 1
@@ -267,7 +271,8 @@ class StdioClientTransport:
             entry = self._pending.pop(req_id)
         return entry["response"]
 
-    def send_notification(self, method: str, params: dict | None = None):
+    def send_notification(self, method: str, params: dict | None = None,
+                          headers: dict | None = None):
         """Send a JSON-RPC notification (fire-and-forget)."""
         msg = protocol.make_notification(method, params)
         self._write(msg)
@@ -418,20 +423,20 @@ class SSEClientTransport:
             self._correlator.fail_all(protocol.make_error(
                 None, protocol.INTERNAL_ERROR, "SSE stream closed"))
 
-    def send_request(self, method, params=None, timeout=30):
+    def send_request(self, method, params=None, timeout=30, headers=None):
         req_id = self._correlator.next_id()
         event = self._correlator.register(req_id)
         try:
-            self._post(protocol.make_request(method, params, id=req_id))
+            self._post(protocol.make_request(method, params, id=req_id), headers)
         except Exception as exc:  # noqa: BLE001 — surface as JSON-RPC error
             self._correlator.cancel(req_id)
             return protocol.make_error(req_id, protocol.INTERNAL_ERROR, str(exc))
         return self._correlator.wait(req_id, event, timeout)
 
-    def send_notification(self, method, params=None):
-        self._post(protocol.make_notification(method, params))
+    def send_notification(self, method, params=None, headers=None):
+        self._post(protocol.make_notification(method, params), headers)
 
-    def _post(self, msg):
+    def _post(self, msg, headers=None):
         if self._endpoint_url is None:
             raise RuntimeError("MCP SSE transport not connected (no endpoint)")
         req = urllib.request.Request(
@@ -441,6 +446,8 @@ class SSEClientTransport:
         req.add_header("Content-Type", "application/json")
         if self.protocol_version:
             req.add_header("MCP-Protocol-Version", self.protocol_version)
+        for key, value in (headers or {}).items():
+            req.add_header(key, value)
         resp = urllib.request.urlopen(
             req, timeout=self._connect_timeout, context=self._ssl_context)
         resp.read()   # drain the 202 body
@@ -494,11 +501,11 @@ class StreamableHTTPClientTransport:
             self._next_id += 1
         return rid
 
-    def send_request(self, method, params=None, timeout=30):
+    def send_request(self, method, params=None, timeout=30, headers=None):
         req_id = self._alloc_id()
         msg = protocol.make_request(method, params, id=req_id)
         try:
-            resp = self._post(msg, timeout)
+            resp = self._post(msg, timeout, headers)
         except Exception as exc:  # noqa: BLE001 — surface as JSON-RPC error
             closer = getattr(exc, "close", None)
             if callable(closer):
@@ -536,13 +543,13 @@ class StreamableHTTPClientTransport:
         finally:
             resp.close()
 
-    def send_notification(self, method, params=None):
+    def send_notification(self, method, params=None, headers=None):
         resp = self._post(protocol.make_notification(method, params),
-                          self._connect_timeout)
+                          self._connect_timeout, headers)
         resp.read()
         resp.close()
 
-    def _post(self, msg, timeout):
+    def _post(self, msg, timeout, headers=None):
         req = urllib.request.Request(
             self._url, data=protocol.encode(msg), method="POST")
         for key, value in self._headers.items():
@@ -553,6 +560,8 @@ class StreamableHTTPClientTransport:
             req.add_header("Mcp-Session-Id", self._session_id)
         if self.protocol_version:
             req.add_header("MCP-Protocol-Version", self.protocol_version)
+        for key, value in (headers or {}).items():
+            req.add_header(key, value)
         return urllib.request.urlopen(
             req, timeout=timeout, context=self._ssl_context)
 
