@@ -2,6 +2,7 @@
 
 import http.server
 import json
+import logging
 import threading
 import time
 
@@ -533,3 +534,56 @@ class TestNegotiationFailures:
                 MCPClient("test", ["echo"], transport=transport).connect()
             assert str(error_body) in str(exc.value)
             assert [m for _k, m, _p, _h in transport.calls] == ["initialize"]
+
+
+class TestAHeaderMismatchIsLogged:
+    def test_a_32020_is_logged_with_the_headers_we_sent(self, caplog):
+        """-32020 means OUR headers disagreed with OUR body: a client bug.
+
+        Retrying would send the identical bad headers, so the only useful
+        response is a log line carrying enough to debug it.
+        """
+
+        class _Picky(_Recorder):
+            def send_request(self, method, params=None, timeout=30, headers=None):
+                self.calls.append(("request", method, params, headers))
+                if method == "initialize":
+                    return protocol.make_error(1, protocol.METHOD_NOT_FOUND, "no")
+                if method == "server/discover":
+                    return protocol.make_response(1, {
+                        "supportedVersions": ["2026-07-28"]})
+                return protocol.make_error(
+                    1, protocol.HEADER_MISMATCH, "Mcp-Method disagrees.")
+
+        with caplog.at_level(logging.ERROR, logger="freecad_ai.mcp.client"):
+            MCPClient("test", ["echo"], transport=_Picky()).connect()
+
+        mismatch = [r for r in caplog.records if "-32020" in r.getMessage()
+                    or "mismatch" in r.getMessage().lower()]
+        assert mismatch, "a header mismatch must not pass silently"
+        assert "Mcp-Method" in mismatch[0].getMessage()
+
+
+class TestCacheHintsAreStored:
+    def test_a_modern_tools_list_keeps_its_freshness_hints(self):
+        """Stored, not acted on: nothing re-lists yet (see the spec's
+        Out of scope). Keeping them costs two lines and saves the re-list
+        feature a round trip."""
+
+        class _WithHints(_ModernOnly):
+            def send_request(self, method, params=None, timeout=30, headers=None):
+                if method == "tools/list":
+                    self.calls.append(("request", method, params, headers))
+                    return protocol.make_response(1, {
+                        "tools": [], "resultType": "complete",
+                        "ttlMs": 60000, "cacheScope": "public"})
+                return super().send_request(method, params, timeout, headers)
+
+        client = MCPClient("test", ["echo"], transport=_WithHints())
+        client.connect()
+        assert client.tools_cache_hints == {"ttlMs": 60000, "cacheScope": "public"}
+
+    def test_a_legacy_listing_leaves_them_unset(self):
+        client = MCPClient("test", ["echo"], transport=_Recorder())
+        client.connect()
+        assert client.tools_cache_hints is None

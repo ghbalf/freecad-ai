@@ -75,14 +75,32 @@ class MCPClient:
         self._raw_tools: list[dict] = []
         # Until connect() negotiates, behave exactly as every earlier release.
         self._era = protocol.LegacyEra(protocol.DEFAULT_PROTOCOL_VERSION)
+        # Freshness hints from a modern tools/list, kept for a future re-list
+        # feature. None after a legacy listing, which carries no such fields.
+        self.tools_cache_hints = None
 
     def _send(self, method, params=None, timeout=None):
         """Every outgoing request goes through here, so the era is applied once."""
         params, headers = self._era.decorate(method, params)
         if timeout is None:
-            return self._transport.send_request(method, params, headers=headers)
-        return self._transport.send_request(
-            method, params, timeout=timeout, headers=headers)
+            resp = self._transport.send_request(method, params, headers=headers)
+        else:
+            resp = self._transport.send_request(
+                method, params, timeout=timeout, headers=headers)
+        # A non-conformant server can send a non-dict error body (a bare
+        # string, a list); coerce it to {} first so .get("code") below
+        # cannot crash (same guard as connect()'s initialize check).
+        error = resp.get("error")
+        if not isinstance(error, dict):
+            error = {}
+        if error.get("code") == protocol.HEADER_MISMATCH:
+            # Our mirrored headers disagreed with our own body. That is a bug
+            # on this side by construction, and a retry would send the same
+            # bad headers — so log what went out and let the error surface.
+            logger.error(
+                "MCP server '%s' rejected %s with -32020 (%s); headers sent: %r",
+                self.name, method, error.get("message", ""), headers)
+        return resp
 
     def _notify(self, method, params=None):
         params, headers = self._era.decorate(method, params)
@@ -186,7 +204,14 @@ class MCPClient:
             self._raw_tools = []
             return
 
-        self._raw_tools = resp.get("result", {}).get("tools", [])
+        result = resp.get("result", {})
+        self._raw_tools = result.get("tools", [])
+        if "ttlMs" in result:
+            self.tools_cache_hints = {
+                "ttlMs": result["ttlMs"],
+                "cacheScope": result.get("cacheScope",
+                                         protocol.DEFAULT_CACHE_SCOPE),
+            }
 
         if self._deferred:
             # Store only name + description; schemas loaded on demand
