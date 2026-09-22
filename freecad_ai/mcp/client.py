@@ -10,6 +10,7 @@ get_tool_schema(). A search_tools() method allows keyword-based filtering.
 
 import logging
 import ssl
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 
@@ -30,6 +31,11 @@ logger = logging.getLogger(__name__)
 # *server* answers a client that named no version and must stay 2025-03-26.
 PROTOCOL_VERSION = protocol.LATEST_LEGACY_VERSION
 CLIENT_INFO = {"name": "FreeCAD AI", "version": "0.1.0"}
+
+# How long to leave a server alone after a re-listing fails. It overrides the
+# server's own ttlMs, which is a freshness promise about a list it managed to
+# send — it says nothing about how often to retry one it did not.
+RELIST_RETRY_FLOOR_MS = 30_000
 
 
 @dataclass
@@ -80,6 +86,10 @@ class MCPClient:
         # fields — the store is keyed on the fields being there, not on the
         # era, so a legacy server that volunteers them is taken at its word.
         self.tools_cache_hints = None
+        # When the current listing was fetched, on the monotonic clock.
+        self._tools_listed_at = 0.0
+        # Monotonic deadline before which no re-listing is attempted.
+        self._relist_not_before = 0.0
 
     def _send(self, method, params=None, timeout=None):
         """Every outgoing request goes through here, so the era is applied once."""
@@ -204,18 +214,19 @@ class MCPClient:
                 f"this client speaks {list(protocol.MODERN_VERSIONS)!r}")
         return protocol.ModernEra(shared[0], CLIENT_INFO)
 
-    def _refresh_tools(self):
-        """Fetch the tool list from the server.
+    def _refresh_tools(self) -> bool:
+        """Fetch the tool list from the server. True when the server answered.
 
         When deferred, stores raw tool dicts for later schema extraction
         but only populates MCPToolInfo with name + description (no schema).
         """
         resp = self._send("tools/list")
+        self._tools_listed_at = time.monotonic()
         if "error" in resp:
             logger.warning("MCP tools/list failed for '%s': %s", self.name, resp["error"])
             self._tools = []
             self._raw_tools = []
-            return
+            return False
 
         result = resp.get("result", {})
         self._raw_tools = result.get("tools", [])
@@ -246,10 +257,44 @@ class MCPClient:
                 )
                 for t in self._raw_tools
             ]
+        return True
 
     @property
     def tools(self) -> list[MCPToolInfo]:
+        if self._tools_are_stale():
+            self._re_list_tools()
         return list(self._tools)
+
+    def _tools_are_stale(self) -> bool:
+        """Has the server's own ttlMs elapsed since we listed?"""
+        if not self._connected or not self.tools_cache_hints:
+            return False
+        now = time.monotonic()
+        if now < self._relist_not_before:
+            return False
+        return (now - self._tools_listed_at) * 1000 >= self.tools_cache_hints["ttlMs"]
+
+    def _re_list_tools(self):
+        """Refresh an expired listing without ever losing the current one.
+
+        connect() can afford to end with an empty list; a session already
+        under way cannot — every tool this server contributes would vanish
+        from the next turn over what may be a momentary blip.
+        """
+        previous, previous_raw = self._tools, self._raw_tools
+        try:
+            answered = self._refresh_tools()
+        except Exception as exc:          # transport-level: reset, timeout, ...
+            logger.warning("MCP re-list failed for '%s': %s", self.name, exc)
+            answered = False
+        if not answered:
+            self._tools, self._raw_tools = previous, previous_raw
+            # Back off. Stamping alone would not do it: under ttlMs 0 every
+            # read is stale by definition, so a server that is down would be
+            # re-probed on each one — a full request timeout at a time.
+            self._tools_listed_at = time.monotonic()
+            self._relist_not_before = (
+                self._tools_listed_at + RELIST_RETRY_FLOOR_MS / 1000)
 
     def get_tool_schema(self, name: str) -> dict:
         """Get the full input schema for a tool, loading it lazily if needed.
@@ -294,7 +339,9 @@ class MCPClient:
         """
         query_lower = query.lower()
         results = []
-        for tool in self._tools:
+        # self.tools, not self._tools: the other public reader of the list,
+        # and so bound by the same freshness hint.
+        for tool in self.tools:
             if (query_lower in tool.name.lower()
                     or query_lower in tool.description.lower()):
                 # Ensure schema is loaded for matched tools
