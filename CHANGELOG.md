@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **The MCP client now acts on the `tools/list` freshness hints it collects.**
+  A modern server's `ttlMs` says how long its tool list may be reused. Until
+  now the client stored that number and then cached the list for the whole
+  session regardless, so a server that added or removed a tool mid-session
+  stayed invisible, and `ttlMs: 0` — "do not cache" — was ignored outright.
+  Reading the tool list, which happens once per chat turn and on every tool
+  search, now re-lists from the server once the TTL has elapsed.
+
+  A server that sends no hints is never re-listed, so nothing changes for a
+  legacy server. A re-listing that fails keeps the tools already in hand
+  instead of emptying the list, and a server that is down is left alone for
+  30 seconds rather than re-probed on every read.
+
 ## [0.29.0-alpha] - 2026-09-20
 
 ### Added

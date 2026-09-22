@@ -728,6 +728,181 @@ class TestCacheHintsAreStored:
         assert client.tools_cache_hints is None
 
 
+class _WithTTL(_ModernOnly):
+    """A modern server that stamps its listing with ttlMs.
+
+    ``tools_payload`` is mutable so a test can change the server's mind
+    between listings, which is the only reason re-listing exists at all.
+    """
+
+    def __init__(self, ttl_ms, tools=()):
+        super().__init__()
+        self._ttl_ms = ttl_ms
+        self.tools_payload = [{"name": n, "description": ""} for n in tools]
+
+    def send_request(self, method, params=None, timeout=30, headers=None):
+        if method == "tools/list":
+            self.calls.append(("request", method, params, headers))
+            return protocol.make_response(1, {
+                "tools": list(self.tools_payload),
+                "resultType": "complete",
+                "ttlMs": self._ttl_ms,
+            })
+        return super().send_request(method, params, timeout, headers)
+
+
+def _listings(transport):
+    """How many tools/list requests the client has sent."""
+    return len([m for _k, m, _p, _h in transport.calls if m == "tools/list"])
+
+
+class TestCacheHintsDriveReListing:
+    def test_an_expired_ttl_re_lists_on_the_next_read(self):
+        transport = _WithTTL(60_000)
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        assert _listings(transport) == 1
+
+        # Age the listing past the server's own ttlMs.
+        client._tools_listed_at -= 61
+        _ = client.tools
+        assert _listings(transport) == 2
+
+
+    def test_a_listing_inside_its_ttl_is_reused(self):
+        """The hint is a licence to cache, not an instruction to poll."""
+        transport = _WithTTL(60_000)
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        for _ in range(5):
+            _ = client.tools
+        assert _listings(transport) == 1
+
+    def test_a_zero_ttl_re_lists_every_time(self):
+        """ttlMs: 0 means do not cache — the one hint with teeth today."""
+        transport = _WithTTL(0)
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        _ = client.tools
+        _ = client.tools
+        assert _listings(transport) == 3
+
+    def test_a_server_that_sends_no_hints_is_never_re_listed(self):
+        """The compatibility promise: a legacy server sees one tools/list,
+        however long the session runs."""
+        transport = _Recorder()
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        client._tools_listed_at -= 86_400
+        for _ in range(5):
+            _ = client.tools
+        assert _listings(transport) == 1
+
+    def test_the_re_listing_surfaces_the_servers_new_tools(self):
+        """The point of the whole feature, asserted on the tool names."""
+        transport = _WithTTL(60_000, tools=["old_tool"])
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        assert [t.name for t in client.tools] == ["old_tool"]
+
+        transport.tools_payload = [{"name": "new_tool", "description": ""}]
+        client._tools_listed_at -= 61
+        assert [t.name for t in client.tools] == ["new_tool"]
+
+
+    def test_a_refused_re_listing_keeps_the_tools_we_already_had(self):
+        """A transient error must not empty a working tool list: the LLM
+        would silently lose every tool this server contributes."""
+
+        class _FailsSecondTime(_WithTTL):
+            def send_request(self, method, params=None, timeout=30, headers=None):
+                if method == "tools/list" and _listings(self):
+                    self.calls.append(("request", method, params, headers))
+                    return protocol.make_error(1, protocol.INTERNAL_ERROR, "boom")
+                return super().send_request(method, params, timeout, headers)
+
+        transport = _FailsSecondTime(60_000, tools=["old_tool"])
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        client._tools_listed_at -= 61
+        assert [t.name for t in client.tools] == ["old_tool"]
+
+    def test_a_raising_transport_does_not_escape_the_tools_property(self):
+        """register_tools_into() iterates .tools inside a bare except, so an
+        exception here drops every MCP tool without a word to the user."""
+
+        class _Explodes(_WithTTL):
+            def send_request(self, method, params=None, timeout=30, headers=None):
+                if method == "tools/list" and _listings(self):
+                    self.calls.append(("request", method, params, headers))
+                    raise ConnectionResetError("server went away")
+                return super().send_request(method, params, timeout, headers)
+
+        transport = _Explodes(60_000, tools=["old_tool"])
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        client._tools_listed_at -= 61
+        assert [t.name for t in client.tools] == ["old_tool"]
+
+    def test_a_failed_re_listing_is_not_retried_on_every_read(self):
+        """Without a fresh stamp, a dead server gets one tools/list per read
+        — and .tools is read once per chat turn plus once per tool search."""
+
+        class _Explodes(_WithTTL):
+            def send_request(self, method, params=None, timeout=30, headers=None):
+                if method == "tools/list" and _listings(self):
+                    self.calls.append(("request", method, params, headers))
+                    raise ConnectionResetError("server went away")
+                return super().send_request(method, params, timeout, headers)
+
+        transport = _Explodes(60_000, tools=["old_tool"])
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        client._tools_listed_at -= 61
+        for _ in range(5):
+            _ = client.tools
+        assert _listings(transport) == 2
+
+    def test_a_dead_server_is_not_re_probed_even_at_ttl_zero(self):
+        """ttlMs: 0 plus a server that is down is the hammering case the
+        stamp alone cannot fix: every read is stale by definition, and each
+        attempt can block for the full request timeout on the UI thread."""
+
+        class _Explodes(_WithTTL):
+            def send_request(self, method, params=None, timeout=30, headers=None):
+                if method == "tools/list" and _listings(self):
+                    self.calls.append(("request", method, params, headers))
+                    raise ConnectionResetError("server went away")
+                return super().send_request(method, params, timeout, headers)
+
+        transport = _Explodes(0, tools=["old_tool"])
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        for _ in range(5):
+            _ = client.tools
+        assert _listings(transport) == 2
+        assert [t.name for t in client.tools] == ["old_tool"]
+
+    def test_a_tool_search_honours_the_ttl_too(self):
+        """.tools and search_tools() are both public readers of the same
+        list; one of them silently serving a stale answer is a trap."""
+        transport = _WithTTL(60_000, tools=["old_tool"])
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        transport.tools_payload = [{"name": "new_tool", "description": ""}]
+        client._tools_listed_at -= 61
+        assert [t.name for t in client.search_tools("new")] == ["new_tool"]
+
+    def test_a_disconnected_client_does_not_re_list(self):
+        transport = _WithTTL(0)
+        client = MCPClient("test", ["echo"], transport=transport)
+        client.connect()
+        before = _listings(transport)
+        client.disconnect()
+        _ = client.tools
+        assert _listings(transport) == before
+
+
 class _OurServer:
     """Our own MCPServer on an ephemeral loopback port, in a thread."""
 
@@ -792,6 +967,41 @@ class TestOurClientAgainstOurServer:
         assert result.is_error is False, result.content
         assert result.content[0]["text"] == "echoed hello"
         assert ran == ["hello"]
+
+
+    def test_our_servers_ttl_is_the_one_our_client_acts_on(self, monkeypatch):
+        """Both halves live in this repo, so nothing but a test keeps the
+        field name and the unit agreed across them."""
+        monkeypatch.setenv("MCP_TOOLS_TTL_MS", "60000")
+
+        registry = ToolRegistry()
+        registry.register(ToolDefinition(
+            "echo_text", "Echo the text back.", [],
+            handler=lambda text="": ToolResult(True, text)))
+
+        with _OurServer(registry) as srv:
+            client = MCPClient(
+                "self",
+                transport=transport_mod.StreamableHTTPClientTransport(
+                    srv.url, connect_timeout=5))
+            client.connect()
+            # As above: our server answers initialize, so connect() lands in
+            # the legacy era, which defines no hints. Switch by hand to see
+            # the modern envelope this test is about.
+            client._era = protocol.ModernEra("2026-07-28", CLIENT_INFO)
+            client._transport.protocol_version = "2026-07-28"
+            client._refresh_tools()
+            try:
+                # Asserted as a number, not just a key: a server sending
+                # seconds would still populate the dict, and the client would
+                # then re-list a thousand times too often.
+                assert client.tools_cache_hints == {
+                    "ttlMs": 60000, "cacheScope": protocol.DEFAULT_CACHE_SCOPE}
+                assert client._tools_are_stale() is False
+                client._tools_listed_at -= 61
+                assert client._tools_are_stale() is True
+            finally:
+                client.disconnect()
 
 
 class _ExpiredSessionServer(http.server.BaseHTTPRequestHandler):
