@@ -584,6 +584,13 @@ class AppConfig:
     # an MDI sub-window of the main window.
     use_external_editor: bool = False
     system_prompt_override: str = ""  # empty = use default; non-empty = use as-is
+    # AGENTS.md scoping (#94). False (default, and the behaviour since the
+    # loader was written) = the first instruction file found wins, so a
+    # project AGENTS.md next to the .FCStd silently replaces the global one
+    # in the config dir. True = every file in the chain is concatenated,
+    # least specific first, so a project file adds to your defaults instead
+    # of taking their place.
+    merge_agents_md: bool = False
 
     # ── Prompt caching (#47) ────────────────────────────────────
     # Every provider that discounts repeated prompts matches on a *prefix*

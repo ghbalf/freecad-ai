@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **A project `AGENTS.md` can now add to your global one instead of replacing
+  it (#94).** The loader searches the active document's directory, up to three
+  parents, and then the user config directory — and has always returned the
+  *first* file it found. So the moment a project grew an `AGENTS.md` next to
+  its `.FCStd`, the global `<FreeCADAI dir>/AGENTS.md` silently stopped being
+  sent: no warning, nothing in the Report view, the prompt just got smaller.
+  The two files are different scopes, not alternatives — the global one holds
+  facts about you, the project one holds facts about the project.
+
+  Set `"merge_agents_md": true` in `config.json` and every instruction file in
+  the chain is concatenated, **least specific first**: user config, then the
+  root-most parent, down to the document's own directory. Later text in a
+  prompt carries more weight, so a project file still overrides a global
+  default — the ordering preserves the precedence that first-wins gave, rather
+  than inverting it.
+
+  Defaults to `false`, so an existing install behaves exactly as it did before.
+  Include directives are now resolved per file, against the directory that
+  file was found in; previously a single base directory was computed for the
+  whole load, which in merge mode would hand every file the same neighbour.
+
 ## [0.30.0-alpha] - 2026-09-23
 
 ### Fixed
