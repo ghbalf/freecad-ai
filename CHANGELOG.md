@@ -31,9 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   normally, and the next occurrence names its own culprit instead of
   arriving as a bare traceback.
 
-  What puts such a value into the live config is still unknown — the
-  on-disk configs inspected were structurally sound, so it is introduced in
-  the running session. The warning above is what will identify it.
+  And the `RecursionError` itself turned out not to be about the
+  configuration at all. Python's recursion limit is per *thread* and counts
+  every frame on it, not just ours; FreeCAD calls a command's `Activated()`
+  from whatever stack it happens to be on. A live reproduction overflowed
+  while encoding a **four-level** config — the traceback ends at
+  `yield _floatstr(value)` on `profiles.<name>.params.temperature`, three
+  dicts down, with 990-odd frames already below it. Refusing to save would
+  be the wrong answer to that, so the save now borrows the handful of frames
+  it needs, restores the limit, and logs how deep the stack already was.
 
 - **A response with an explicit `null` where a list or object was promised no
   longer kills the turn (#89).** Reported against Xiaomi MiMo, where every
