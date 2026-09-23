@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   cannot be parsed now reports `Unexpected response format` with the offending
   JSON attached, instead of a bare `TypeError` with nothing to go on.
 
+- **The same null-handling applied to the Anthropic-style parser.** Nothing
+  was reported against it, but `api_style` is selectable for any custom base
+  URL, so that parser faces third-party gateways too. Two of its traps were
+  quieter than #89's: a `tool_use` block with `"input": null` put
+  `arguments=None` on the tool call and let the executor discover it, and a
+  null `name` announced a call to `None` in the chat. Its streaming generator
+  has no exception handler at all, so a null `delta` there ended the turn
+  outright rather than costing a single chunk.
+
 ### Changed
 
 - **The MCP client now acts on the `tools/list` freshness hints it collects.**
