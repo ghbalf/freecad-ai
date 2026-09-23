@@ -44,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   normally, and any future occurrence names its own culprit instead of
   arriving as a bare traceback.
 
+- **Unticking "Keep Chat Panel Open" no longer closes the chat panel on the
+  spot.** The menu entry hid the panel the moment it was unticked — while
+  still inside the FreeCAD AI workbench, the one workbench the panel belongs
+  to. The setting governs what happens when you *leave* the workbench and
+  nothing else, so it no longer moves the panel in either direction; the
+  Settings dialog, which changes the same flag, never did. Opening and
+  closing the panel remains **Open AI Chat**'s job.
+
 - **A response with an explicit `null` where a list or object was promised no
   longer kills the turn (#89).** Reported against Xiaomi MiMo, where every
   chat ended in `Error: 'NoneType' object is not iterable` before a single

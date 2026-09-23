@@ -134,8 +134,6 @@ def test_toggling_keep_dock_pushes_the_new_state(initgui, ticks, tmp_config_dir)
     cfg = get_config()
     cfg.keep_dock_on_workbench_switch = True
 
-    # True -> False, which takes the create=False branch and so needs no
-    # QApplication to hide a dock that was never built.
     initgui["ToggleKeepDockCommand"]().Activated()
 
     assert cfg.keep_dock_on_workbench_switch is False
@@ -219,3 +217,71 @@ def test_restore_backup_is_always_available(initgui):
     """It must work with no document open — recovering from a crash is
     precisely the case where nothing is loaded."""
     assert initgui["RestoreBackupCommand"]().IsActive() is True
+
+
+# ---------------------------------------------------------------------------
+# The setting governs leaving the workbench, and nothing else
+# ---------------------------------------------------------------------------
+
+class _FakeDock:
+    def __init__(self):
+        self.calls = []
+
+    def show(self):
+        self.calls.append("show")
+
+    def hide(self):
+        self.calls.append("hide")
+
+    def raise_(self):
+        self.calls.append("raise_")
+
+
+@pytest.fixture
+def dock(monkeypatch):
+    """Stand in for the chat dock and record what is done to it."""
+    import freecad_ai.ui.chat_widget as chat_widget
+    fake = _FakeDock()
+    monkeypatch.setattr(chat_widget, "get_chat_dock", lambda create=True: fake)
+    return fake
+
+
+@pytest.mark.parametrize("before", [True, False])
+def test_toggling_keep_dock_leaves_the_panel_where_it_is(
+        initgui, ticks, tmp_config_dir, dock, before):
+    """Unticking it used to hide the panel on the spot.
+
+    That happens inside the FreeCAD AI workbench -- the one workbench the
+    panel belongs to -- so the panel vanished the moment the setting was
+    turned off, which is not what "keep open when switching workbenches"
+    means. The Settings dialog changes the same flag and never touched
+    visibility; the menu entry now agrees with it. Showing and hiding the
+    panel is the Open AI Chat command's job.
+    """
+    from freecad_ai.config import get_config
+    get_config().keep_dock_on_workbench_switch = before
+
+    initgui["ToggleKeepDockCommand"]().Activated()
+
+    assert dock.calls == []
+
+
+def test_leaving_the_workbench_hides_the_panel_when_the_flag_is_off(
+        initgui, tmp_config_dir, dock):
+    from freecad_ai.config import get_config
+    get_config().keep_dock_on_workbench_switch = False
+
+    initgui["FreeCADAIWorkbench"].Deactivated(None)
+
+    assert dock.calls == ["hide"]
+
+
+def test_leaving_the_workbench_keeps_the_panel_when_the_flag_is_on(
+        initgui, tmp_config_dir, dock):
+    """This is the whole point of the setting."""
+    from freecad_ai.config import get_config
+    get_config().keep_dock_on_workbench_switch = True
+
+    initgui["FreeCADAIWorkbench"].Deactivated(None)
+
+    assert dock.calls == []
