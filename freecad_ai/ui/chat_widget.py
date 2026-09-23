@@ -10,6 +10,7 @@ tool calls on the main thread, feed results back to the LLM.
 """
 
 import json
+import logging
 import time
 
 from .compat import QtWidgets, QtCore, QtGui
@@ -51,6 +52,9 @@ from .message_view import (
     render_truncation_warning,
 )
 from .code_review_dialog import CodeReviewDialog
+
+
+logger = logging.getLogger(__name__)
 
 
 # Known binary file magic bytes — prevents misdetecting binary files as text
@@ -249,6 +253,13 @@ class _LLMWorker(QThread):
             self._tool_loop(client)
 
         except Exception as e:
+            # The bubble gets the short form; the Report view gets the
+            # stack. #89 arrived as the bare line "'NoneType' object is
+            # not iterable" -- true, and useless: three lines in this
+            # codebase could have produced it, and the reporter had no
+            # way to tell us which. A turn that dies is a bug report
+            # waiting to be written, so leave it something to quote.
+            logger.exception("Chat turn failed: %s", e)
             self.error_occurred.emit(str(e))
 
     def _wrap_describe_fn(self, describe_fn):

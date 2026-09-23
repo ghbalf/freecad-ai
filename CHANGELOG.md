@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   has no exception handler at all, so a null `delta` there ended the turn
   outright rather than costing a single chunk.
 
+- **A chat turn that dies now leaves a traceback in the Report view.** The
+  worker caught everything and emitted `str(e)`, so the chat showed one line
+  with no file, no line number and no stack — which is how #89 arrived, as a
+  bare `'NoneType' object is not iterable` from a codebase with three lines
+  that could have produced it. The bubble keeps the short form; the log
+  channel now carries the stack the next report can quote.
+
 ### Changed
 
 - **The MCP client now acts on the `tools/list` freshness hints it collects.**
