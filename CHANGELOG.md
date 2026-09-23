@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Saving the configuration can no longer destroy it (#88).** Toggling the
+  keep-dock command raised `RecursionError` out of `save_config`, and left
+  `config.json` **zero bytes** — every setting, every connection profile and
+  every stored API key gone. Two separate defects had to line up, and both
+  are fixed:
+
+  `json.dump(config.to_dict(), f)` inside `with open(CONFIG_FILE, "w")`
+  evaluates the argument *after* the open has already truncated the file, so
+  any failure to serialise took the existing config with it. The config is
+  now built first, written to a temp file, and moved into place with
+  `os.replace`: either a complete file appears, or the previous one is
+  untouched.
+
+  And `to_dict` used `dataclasses.asdict`, which has no cycle detection and
+  falls back to `copy.deepcopy` for anything it does not recognise — so one
+  unexpected object anywhere in the config, or one reference back up the
+  tree, blew the stack. Serialisation is now JSON-oriented: a value that
+  cannot be written is dropped and its **path is logged**
+  (`profiles.<name>.params.<key>`), the rest of the configuration saves
+  normally, and the next occurrence names its own culprit instead of
+  arriving as a bare traceback.
+
+  What puts such a value into the live config is still unknown — the
+  on-disk configs inspected were structurally sound, so it is introduced in
+  the running session. The warning above is what will identify it.
+
 - **A response with an explicit `null` where a list or object was promised no
   longer kills the turn (#89).** Reported against Xiaomi MiMo, where every
   chat ended in `Error: 'NoneType' object is not iterable` before a single
