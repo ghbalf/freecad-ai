@@ -22,7 +22,6 @@ Two separate defects, fixed separately:
 
 import json
 import logging
-import sys
 from dataclasses import asdict
 from unittest.mock import patch
 
@@ -62,7 +61,7 @@ class TestAFailedSaveKeepsTheOldFile:
         staged.write_text('{"mode": "act"}')
         before = staged.read_text()
 
-        with patch.object(config_mod.json, "dumps", side_effect=OSError("disk full")):
+        with patch.object(config_mod.json, "dump", side_effect=OSError("disk full")):
             with pytest.raises(OSError):
                 config_mod.save_config(AppConfig())
 
@@ -147,79 +146,3 @@ class TestSerialisingForJson:
         assert back.profiles["a"].model == "m"
         assert back.profiles["a"].params == {"top_p": 0.9}
         assert back.mcp_server_allowed_hosts == ["localhost"]
-
-
-# Frames left when the encode is attempted. Probed: at 8 or more the
-# encode succeeds and the test proves nothing, so the precondition
-# assertion below guards this number rather than trusting it.
-_TIGHT_MARGIN = 6
-
-
-def _with_margin(margin, fn):
-    """Run ``fn`` with only ``margin`` frames left before the limit.
-
-    Deterministic whatever the ambient depth of the test runner is: it
-    recurses until the headroom is gone rather than to a fixed count.
-    """
-    def rec():
-        if config_mod.sys.getrecursionlimit() - config_mod._stack_depth() > margin:
-            return rec()
-        return fn()
-    return rec()
-
-
-class TestSavingFromANearlyFullStack:
-    """#88, take two: the configuration was never the problem.
-
-    FreeCAD invokes a command's Activated() from whatever stack it is on,
-    and Python's recursion limit counts every frame on the thread. The
-    live reproduction overflowed while json was encoding a *four-level*
-    config -- the traceback ends at ``yield _floatstr(value)`` on
-    ``profiles.anthropic.params.temperature``, three dicts down. No cycle,
-    no exotic object, just no room left to work in.
-    """
-
-    def test_a_save_that_runs_out_of_stack_still_happens(self, staged):
-        cfg = AppConfig()
-        cfg.profiles = {"anthropic": ProviderConfig(params={"temperature": 0.7})}
-
-        def attempt():
-            # Precondition: at this margin the encode really does fail, so
-            # a green test below means the retry worked and not that the
-            # margin was generous.
-            try:
-                json.dumps(cfg.to_dict(), indent=2)
-            except RecursionError:
-                pass
-            else:
-                raise AssertionError("margin too wide -- test proves nothing")
-            config_mod.save_config(cfg)
-
-        before = sys.getrecursionlimit()
-        _with_margin(_TIGHT_MARGIN, attempt)
-
-        assert sys.getrecursionlimit() == before
-        saved = json.loads(staged.read_text())
-        assert saved["profiles"]["anthropic"]["params"]["temperature"] == 0.7
-
-    def test_the_borrowed_stack_is_named_in_the_log(self, staged, caplog):
-        with caplog.at_level(logging.WARNING, logger="freecad_ai.config"):
-            with patch.object(config_mod, "_write_config_file",
-                              side_effect=[RecursionError("boom"), None]):
-                config_mod.save_config(AppConfig())
-
-        assert "ran out of Python stack" in caplog.text
-        assert "recursion limit of" in caplog.text
-
-    def test_the_limit_is_restored_even_when_the_retry_fails(self, staged):
-        staged.write_text('{"mode": "act"}')
-        before_text = staged.read_text()
-        before_limit = sys.getrecursionlimit()
-
-        with patch.object(config_mod, "_write_config_file",
-                          side_effect=RecursionError("boom")):
-            with pytest.raises(RecursionError):
-                config_mod.save_config(AppConfig())
-
-        assert sys.getrecursionlimit() == before_limit
-        assert staged.read_text() == before_text

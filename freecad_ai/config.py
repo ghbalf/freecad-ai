@@ -887,21 +887,6 @@ def load_config() -> AppConfig:
     return cfg
 
 
-# How much room to make when the ambient stack is what ran us out, not
-# the configuration. Encoding a healthy config costs under a dozen
-# frames; 200 is far more than enough and costs nothing to reserve.
-_RECURSION_HEADROOM = 200
-
-
-def _stack_depth() -> int:
-    """Python frames currently on this thread, counted without recursing."""
-    depth, frame = 0, sys._getframe()
-    while frame is not None:
-        depth += 1
-        frame = frame.f_back
-    return depth
-
-
 def save_config(config: AppConfig):
     """Save configuration to disk and mirror to FreeCAD's parameter store.
 
@@ -912,45 +897,13 @@ def save_config(config: AppConfig):
     took every setting with it (#88). Nothing here can now damage what is
     already on disk: either os.replace swaps in a complete file, or the
     previous one stays exactly as it was.
-
-    The retry exists because Python's recursion limit is per *thread* and
-    counts every frame below us, not just our own. FreeCAD calls a
-    command's Activated() from whatever stack it happens to be on, so a
-    configuration four levels deep can still overflow the limit while
-    json is encoding it -- which is what #88 turned out to be. The data
-    was never the problem, so refusing to save is the wrong answer:
-    borrow the handful of frames it needs, put the limit back, and say
-    loudly what happened. A config that is genuinely too deep fails the
-    retry too, and still leaves the old file alone.
     """
-    try:
-        _write_config_file(config)
-    except RecursionError:
-        limit = sys.getrecursionlimit()
-        sys.setrecursionlimit(limit + _RECURSION_HEADROOM)
-        try:
-            _write_config_file(config)
-            # Logged only once the headroom exists: emitting a warning
-            # while still out of stack would raise on its way out.
-            logger.warning(
-                "Saving the configuration ran out of Python stack and had "
-                "to borrow more. FreeCAD was already %d frames deep against "
-                "a recursion limit of %d when the save started, so this is "
-                "not about the size of your configuration -- it saved "
-                "normally. Please report this on issue #88 along with what "
-                "you were doing at the time.",
-                _stack_depth(), limit)
-        finally:
-            sys.setrecursionlimit(limit)
-
-
-def _write_config_file(config: AppConfig):
     _ensure_dirs()
-    text = json.dumps(config.to_dict(), indent=2)
+    data = config.to_dict()
     tmp = CONFIG_FILE + ".tmp"
     try:
         with open(tmp, "w") as f:
-            f.write(text)
+            json.dump(data, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, CONFIG_FILE)
