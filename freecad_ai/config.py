@@ -32,7 +32,7 @@ import shutil
 import sys
 import time
 import time
-from dataclasses import dataclass, field, asdict, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 
 
 logger = logging.getLogger(__name__)
@@ -429,6 +429,77 @@ def _profile_from_dict(raw) -> "ProviderConfig":
     return ProviderConfig(**{k: v for k, v in raw.items() if k in known})
 
 
+_OMIT = object()          # "this value cannot go in the file"
+_JSON_SCALARS = (str, int, float, bool, type(None))
+
+
+def _to_jsonable(value, path, active, dropped):
+    """Convert a config value into something ``json.dump`` can write.
+
+    This replaces ``dataclasses.asdict``, which is the wrong tool for a
+    tree headed to a JSON file: it has no cycle detection, and for any
+    value it does not recognise it falls back to ``copy.deepcopy``. #88
+    showed what that costs. One unexpected object in the config -- or one
+    reference back up the tree -- raised RecursionError from inside
+    asdict(), and since the caller had already opened config.json for
+    writing, the user was left with a zero-byte file: every setting, every
+    profile and every API key gone.
+
+    A value deepcopy cannot handle was never going to reach the file
+    anyway, so it is dropped and recorded rather than raised on. The rest
+    of the configuration still saves.
+
+    ``active`` holds the ids on the *current branch*, not every id seen:
+    the same profile object reached twice by two different paths is
+    ordinary sharing, while the same object reached from inside itself is
+    the cycle that has to stop.
+    """
+    if isinstance(value, _JSON_SCALARS):
+        return value
+
+    vid = id(value)
+    if vid in active:
+        dropped.append((path, "a reference back into itself"))
+        return _OMIT
+    active.add(vid)
+    try:
+        if is_dataclass(value) and not isinstance(value, type):
+            out = {}
+            for f in fields(value):
+                item = _to_jsonable(
+                    getattr(value, f.name), _join(path, f.name), active, dropped)
+                if item is not _OMIT:
+                    out[f.name] = item
+            return out
+        if isinstance(value, dict):
+            out = {}
+            for k, v in value.items():
+                if not isinstance(k, _JSON_SCALARS):
+                    dropped.append((_join(path, "<key>"),
+                                    f"a {type(k).__name__} key"))
+                    continue
+                item = _to_jsonable(v, _join(path, k), active, dropped)
+                if item is not _OMIT:
+                    out[k] = item
+            return out
+        if isinstance(value, (list, tuple)):
+            out = []
+            for i, v in enumerate(value):
+                item = _to_jsonable(v, _join(path, i), active, dropped)
+                if item is not _OMIT:
+                    out.append(item)
+            return out
+    finally:
+        active.discard(vid)
+
+    dropped.append((path, f"a {type(value).__name__}"))
+    return _OMIT
+
+
+def _join(path: str, part) -> str:
+    return f"{path}.{part}" if path else str(part)
+
+
 @dataclass
 class AppConfig:
     profiles: dict = field(default_factory=dict)      # label -> ProviderConfig
@@ -652,13 +723,20 @@ class AppConfig:
     def to_dict(self) -> dict:
         """Serialise, including a legacy ``provider`` mirror.
 
-        ``provider`` is a property now, so asdict() skips it. We write it
+        ``provider`` is a property now, so the field walk skips it. We write it
         anyway for one release: a user who installs this version and then
         downgrades gets their connection back instead of a blank dialog.
         Drop this mirror — and the rerank_llm_*/rerank_params fields —
         one release after profiles ship.
         """
-        data = asdict(self)
+        dropped: list[tuple[str, str]] = []
+        data = _to_jsonable(self, "", set(), dropped)
+        for where, why in dropped:
+            logger.warning(
+                "Dropping %s from config.json: it holds %s, which cannot be "
+                "stored as JSON. The rest of the configuration is saved "
+                "normally. Please report this with the field name above.",
+                where, why)
         data["provider"] = {
             "name": self.provider.name,
             "api_key": self.provider.api_key,
@@ -810,10 +888,28 @@ def load_config() -> AppConfig:
 
 
 def save_config(config: AppConfig):
-    """Save configuration to disk and mirror to FreeCAD's parameter store."""
+    """Save configuration to disk and mirror to FreeCAD's parameter store.
+
+    Serialise first, write second, and write through a temp file. This
+    used to be ``json.dump(config.to_dict(), open(CONFIG_FILE, "w"))``,
+    and Python evaluates that argument *after* the open has truncated the
+    file -- so any failure to serialise left a zero-byte config.json and
+    took every setting with it (#88). Nothing here can now damage what is
+    already on disk: either os.replace swaps in a complete file, or the
+    previous one stays exactly as it was.
+    """
     _ensure_dirs()
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config.to_dict(), f, indent=2)
+    data = config.to_dict()
+    tmp = CONFIG_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CONFIG_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     _write_to_param_store(config)
 
 

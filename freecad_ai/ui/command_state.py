@@ -16,6 +16,15 @@ else, and the Settings dialog needs this too.
 def set_command_checked(command_name, checked):
     """Tick or untick every action registered for ``command_name``.
 
+    The tick goes on with the action's signals blocked. Qt hands a state
+    change to everything connected *before* ``setChecked`` returns, and
+    FreeCAD has the command's own ``Activated()`` on the other end -- so a
+    tick pushed from inside ``Activated`` re-entered it, and that recursed
+    until the interpreter ran out of stack, flipping the setting and
+    rewriting config.json once per level on the way (#88). FreeCAD's own
+    ``Gui::Action::setChecked`` blocks for the same reason. A tick is a
+    picture of the state; it is never a request to change it.
+
     Returns True when the tick was applied. A missing FreeCAD GUI (headless,
     tests) or an unregistered command is a quiet no-op returning False, so
     callers need no guards of their own.
@@ -26,7 +35,11 @@ def set_command_checked(command_name, checked):
         if command is None:
             return False
         for action in command.getAction():
-            action.setChecked(bool(checked))
+            blocked = action.blockSignals(True)
+            try:
+                action.setChecked(bool(checked))
+            finally:
+                action.blockSignals(blocked)
         return True
     except Exception:
         return False
