@@ -5,6 +5,9 @@ Looks for project-level instruction files (AGENTS.md or FREECAD_AI.md) in:
   2. Parent directories (up to 3 levels)
   3. User config: ~/.config/FreeCAD/FreeCADAI/AGENTS.md
 
+By default the first file found wins. Set ``merge_agents_md`` to have every
+file in the chain concatenated instead, least specific first (#94).
+
 Supports:
   - Include directives: <!-- include: other_file.md -->
   - Variable substitution: {{document_name}}, {{object_count}}, etc.
@@ -31,52 +34,86 @@ MAX_PARENT_LEVELS = 3
 MAX_INCLUDE_DEPTH = 5
 
 
-def load_agents_md() -> str:
-    """Load AGENTS.md from the best available location.
+def load_agents_md(merge: bool | None = None) -> str:
+    """Load the project instruction file(s) from the best available location.
 
-    Search order:
+    Search chain, most specific first:
       1. Active document's directory
       2. Parent directories (up to 3 levels up)
       3. User config directory (~/.config/FreeCAD/FreeCADAI/)
 
-    Returns the processed file contents (with includes resolved and
-    variables substituted), or an empty string if not found.
+    Args:
+        merge: False takes the first file found and ignores the rest.
+            True concatenates every file in the chain, *least* specific
+            first, so a project file still overrides a global default --
+            later text in a prompt carries more weight, and that ordering
+            preserves the precedence the first-wins search had.
+            None (the default) reads the user's ``merge_agents_md`` setting.
+
+    Returns the processed contents (with includes resolved and variables
+    substituted), or an empty string if nothing was found.
     """
-    content = ""
+    if merge is None:
+        from ..config import get_config
+        merge = bool(get_config().merge_agents_md)
 
-    # Try document directory and parents
-    doc_dir = _get_document_directory()
-    if doc_dir:
-        content = _search_directory_chain(doc_dir)
+    # Most specific first: the document's own directory, its parents, then
+    # the user config as the last resort.
+    chain = _candidate_directories(_get_document_directory()) + [CONFIG_DIR]
 
-    # Fallback to user config directory
-    if not content:
-        content = _load_from_directory(CONFIG_DIR)
+    # Includes are resolved per file against the directory it was found in.
+    # One shared base directory would give a global file's relative include
+    # to the project folder -- or, in merge mode, hand every file the same
+    # neighbour regardless of where it actually lives.
+    parts = []
+    for directory in chain:
+        content = _load_from_directory(directory)
+        if not content:
+            continue
+        parts.append(_resolve_includes(content, directory, depth=0))
+        if not merge:
+            break
 
-    if not content:
+    if not parts:
         return ""
 
-    # Process includes relative to where the file was found
-    base_dir = _find_base_dir(doc_dir)
-    content = _resolve_includes(content, base_dir, depth=0)
+    if merge:
+        # Reversed: the chain is most-specific-first, the prompt wants the
+        # most specific last. A blank line between parts so a trailing
+        # bullet never runs into the next file's heading.
+        merged = "\n\n".join(part.strip() for part in reversed(parts))
+    else:
+        merged = parts[0]
 
-    # Substitute variables
-    content = _substitute_variables(content)
-
-    return content
+    return _substitute_variables(merged)
 
 
-def _search_directory_chain(start_dir: str) -> str:
-    """Search start_dir and its parents for instruction files."""
+def _candidate_directories(start_dir: str) -> list:
+    """The document directory and its parents, most specific first.
+
+    Empty when the document has never been saved -- there is no directory
+    to start from, so only the user config fallback remains.
+    """
+    if not start_dir:
+        return []
+
+    directories = []
     current = start_dir
     for _ in range(MAX_PARENT_LEVELS + 1):
-        content = _load_from_directory(current)
-        if content:
-            return content
+        directories.append(current)
         parent = os.path.dirname(current)
         if parent == current:
             break  # Reached filesystem root
         current = parent
+    return directories
+
+
+def _search_directory_chain(start_dir: str) -> str:
+    """Search start_dir and its parents for instruction files."""
+    for directory in _candidate_directories(start_dir):
+        content = _load_from_directory(directory)
+        if content:
+            return content
     return ""
 
 
@@ -93,27 +130,6 @@ def _load_from_directory(directory: str) -> str:
                     return f.read()
             except (OSError, UnicodeDecodeError):
                 continue
-    return ""
-
-
-def _find_base_dir(doc_dir: str) -> str:
-    """Find the directory containing the loaded AGENTS.md for resolving includes."""
-    if doc_dir:
-        current = doc_dir
-        for _ in range(MAX_PARENT_LEVELS + 1):
-            for filename in INSTRUCTION_FILENAMES:
-                if os.path.isfile(os.path.join(current, filename)):
-                    return current
-            parent = os.path.dirname(current)
-            if parent == current:
-                break
-            current = parent
-
-    # Check config dir
-    for filename in INSTRUCTION_FILENAMES:
-        if os.path.isfile(os.path.join(CONFIG_DIR, filename)):
-            return CONFIG_DIR
-
     return ""
 
 
