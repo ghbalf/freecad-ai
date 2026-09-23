@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A response with an explicit `null` where a list or object was promised no
+  longer kills the turn (#89).** Reported against Xiaomi MiMo, where every
+  chat ended in `Error: 'NoneType' object is not iterable` before a single
+  token was shown, with the tokens billed at the provider. The parser asked
+  for `tool_calls` with a `[]` fallback, but a fallback is only reached when
+  the key is *absent* — a gateway that spells "no tool calls" as
+  `"tool_calls": null` handed back `None`, and iterating it raised. The same
+  trap sat on the streaming `delta` and on each tool call's `function`.
+
+  Not MiMo-specific: any OpenAI-compatible endpoint that sends explicit nulls
+  hit this, in both the streaming and non-streaming paths. A body that still
+  cannot be parsed now reports `Unexpected response format` with the offending
+  JSON attached, instead of a bare `TypeError` with nothing to go on.
+
 ### Changed
 
 - **The MCP client now acts on the `tools/list` freshness hints it collects.**

@@ -491,8 +491,12 @@ class LLMClient:
             text = msg.get("content") or ""
             finish = choice.get("finish_reason", "stop")
 
+            # `or []`, not a get() default: a default is only reached when
+            # the key is *absent*, and plenty of OpenAI-compatible gateways
+            # spell "nothing here" as an explicit null instead (issue #89).
+            # `content` above has always been read this way.
             tool_calls = []
-            for tc in msg.get("tool_calls", []):
+            for tc in msg.get("tool_calls") or []:
                 args = tc["function"].get("arguments", "{}")
                 if isinstance(args, str):
                     args = json.loads(args)
@@ -507,7 +511,13 @@ class LLMClient:
 
             stop_reason = "tool_use" if (finish == "tool_calls" or tool_calls) else "end_turn"
             return LLMResponse(text=text, tool_calls=tool_calls, stop_reason=stop_reason)
-        except (KeyError, IndexError, json.JSONDecodeError) as e:
+        # TypeError/AttributeError: a null where the schema promises an object
+        # or a list. Without them a body we cannot parse surfaces as a bare
+        # "'NoneType' object is not iterable" -- no body, no field name, no
+        # way for a reporter to tell us which one it was. That is what #89
+        # cost us; the dump below is the whole point of this handler.
+        except (KeyError, IndexError, json.JSONDecodeError,
+                TypeError, AttributeError) as e:
             raise LLMError(f"Unexpected response format: {e}\n{json.dumps(data, indent=2)}")
 
     def _stream_openai_tools(self, messages: list[dict], system: str,
@@ -524,7 +534,7 @@ class LLMClient:
                 if not choices:
                     continue
                 choice = choices[0]
-                delta = choice.get("delta", {})
+                delta = choice.get("delta") or {}
                 finish = choice.get("finish_reason")
 
                 # Thinking/reasoning content (Ollama qwen3, OpenAI o1/o3)
@@ -538,7 +548,7 @@ class LLMClient:
                     yield LLMStreamEvent(type="text_delta", text=content)
 
                 # Tool calls
-                for tc_delta in delta.get("tool_calls", []):
+                for tc_delta in delta.get("tool_calls") or []:
                     idx = tc_delta.get("index", 0)
                     if idx not in pending_tools:
                         pending_tools[idx] = {
@@ -551,7 +561,7 @@ class LLMClient:
                     if tc_delta.get("id"):
                         pt["id"] = tc_delta["id"]
 
-                    func = tc_delta.get("function", {})
+                    func = tc_delta.get("function") or {}
                     if func.get("name"):
                         pt["name"] = func["name"]
                         yield LLMStreamEvent(
