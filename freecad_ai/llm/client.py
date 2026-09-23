@@ -710,7 +710,7 @@ class LLMClient:
         data = self._http_post(self._anthropic_url(), self._anthropic_headers(), body)
         try:
             return data["content"][0]["text"]
-        except (KeyError, IndexError) as e:
+        except (KeyError, IndexError, TypeError) as e:
             raise LLMError(f"Unexpected response format: {e}\n{json.dumps(data, indent=2)}")
 
     def _send_anthropic_tools(self, messages: list[dict], system: str,
@@ -720,20 +720,24 @@ class LLMClient:
         try:
             text = ""
             tool_calls = []
-            for block in data.get("content", []):
+            # `or`, not a get() default, on every one of these: a default
+            # only fires when the key is *absent*, and a gateway is free to
+            # send an explicit null instead. Same class as #89, which reached
+            # a user through the OpenAI parser.
+            for block in data.get("content") or []:
                 if block["type"] == "text":
                     text += block["text"]
                 elif block["type"] == "tool_use":
                     tool_calls.append(ToolCall(
                         id=block["id"],
                         name=block["name"],
-                        arguments=block.get("input", {}),
+                        arguments=block.get("input") or {},
                     ))
-            stop_reason = data.get("stop_reason", "end_turn")
+            stop_reason = data.get("stop_reason") or "end_turn"
             if stop_reason == "max_tokens":
                 self.response_truncated = True
             return LLMResponse(text=text, tool_calls=tool_calls, stop_reason=stop_reason)
-        except (KeyError, IndexError) as e:
+        except (KeyError, IndexError, TypeError, AttributeError) as e:
             raise LLMError(f"Unexpected response format: {e}\n{json.dumps(data, indent=2)}")
 
     def _stream_anthropic_tools(self, messages: list[dict], system: str,
@@ -745,13 +749,13 @@ class LLMClient:
         current_tool_json = ""
 
         for chunk in self._http_stream(self._anthropic_url(), self._anthropic_headers(), body):
-            event_type = chunk.get("type", "")
+            event_type = chunk.get("type") or ""
 
             if event_type == "content_block_start":
-                block = chunk.get("content_block", {})
+                block = chunk.get("content_block") or {}
                 if block.get("type") == "tool_use":
-                    current_tool_id = block.get("id", "")
-                    current_tool_name = block.get("name", "")
+                    current_tool_id = block.get("id") or ""
+                    current_tool_name = block.get("name") or ""
                     current_tool_json = ""
                     yield LLMStreamEvent(
                         type="tool_call_start",
@@ -759,7 +763,7 @@ class LLMClient:
                     )
 
             elif event_type == "content_block_delta":
-                delta = chunk.get("delta", {})
+                delta = chunk.get("delta") or {}
                 if delta.get("type") == "text_delta":
                     text = delta.get("text", "")
                     if text:
@@ -794,7 +798,7 @@ class LLMClient:
 
             elif event_type == "message_delta":
                 # Check stop_reason
-                delta = chunk.get("delta", {})
+                delta = chunk.get("delta") or {}
                 if delta.get("stop_reason") == "max_tokens":
                     self.response_truncated = True  # issue #52
                 elif delta.get("stop_reason") == "tool_use":

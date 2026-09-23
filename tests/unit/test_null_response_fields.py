@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from freecad_ai.llm.client import LLMClient, LLMError
+from freecad_ai.llm.client import LLMClient, LLMError, LLMStreamEvent
 
 
 def _make_client():
@@ -120,3 +120,116 @@ class TestNonStreamingNulls:
         assert "Unexpected response format" in str(excinfo.value)
         # The offending body is what makes a report like #89 diagnosable.
         assert "\"id\": \"c1\"" in str(excinfo.value)
+
+
+def _anthropic_client():
+    """``api_style`` is selectable for any Custom base URL, so this parser
+    faces third-party gateways too -- not only api.anthropic.com."""
+    client = LLMClient(
+        provider_name="anthropic",
+        base_url="https://gateway.example/v1",
+        api_key="test-key",
+        model="claude-sonnet-4",
+    )
+    client.api_style = "anthropic"
+    return client
+
+
+class TestAnthropicNonStreamingNulls:
+    def test_null_content_on_a_text_reply(self):
+        client = _anthropic_client()
+
+        with patch.object(client, "_http_post", return_value={"content": None}):
+            with pytest.raises(LLMError) as excinfo:
+                client._send_anthropic([], "")
+
+        assert "Unexpected response format" in str(excinfo.value)
+
+    def test_null_content_with_tools(self):
+        client = _anthropic_client()
+        data = {"content": None, "stop_reason": "end_turn"}
+
+        with patch.object(client, "_http_post", return_value=data):
+            resp = client._send_anthropic_tools([], "", tools=[])
+
+        assert resp.text == ""
+        assert resp.tool_calls == []
+
+    def test_null_input_on_a_tool_use_block(self):
+        """A tool call with no arguments. The null must not reach the caller.
+
+        This one never raised here -- it put ``arguments=None`` on the
+        ToolCall and let the executor find out, which is worse than a
+        parse error because the stack trace names nothing useful.
+        """
+        client = _anthropic_client()
+        data = {"content": [{"type": "tool_use", "id": "t1",
+                             "name": "list_documents", "input": None}],
+                "stop_reason": "tool_use"}
+
+        with patch.object(client, "_http_post", return_value=data):
+            resp = client._send_anthropic_tools([], "", tools=[])
+
+        assert len(resp.tool_calls) == 1
+        assert resp.tool_calls[0].arguments == {}
+
+    def test_null_stop_reason(self):
+        client = _anthropic_client()
+        data = {"content": [{"type": "text", "text": "hi"}], "stop_reason": None}
+
+        with patch.object(client, "_http_post", return_value=data):
+            resp = client._send_anthropic_tools([], "", tools=None)
+
+        assert resp.stop_reason == "end_turn"
+
+
+class TestAnthropicStreamingNulls:
+    """This generator has no exception handler at all, so a null here ends
+    the turn outright rather than skipping one malformed chunk."""
+
+    def test_null_content_block(self):
+        client = _anthropic_client()
+        chunks = [
+            {"type": "content_block_start", "content_block": None},
+            {"type": "content_block_delta",
+             "delta": {"type": "text_delta", "text": "hi"}},
+            {"type": "message_stop"},
+        ]
+
+        with patch.object(client, "_http_stream", return_value=iter(chunks)):
+            events = list(client._stream_anthropic_tools([], "", tools=[]))
+
+        assert "".join(e.text for e in events if e.type == "text_delta") == "hi"
+        assert events[-1].type == "done"
+
+    def test_null_delta(self):
+        client = _anthropic_client()
+        chunks = [
+            {"type": "content_block_delta", "delta": None},
+            {"type": "message_delta", "delta": None},
+            {"type": "message_stop"},
+        ]
+
+        with patch.object(client, "_http_stream", return_value=iter(chunks)):
+            events = list(client._stream_anthropic_tools([], "", tools=[]))
+
+        assert events == [LLMStreamEvent(type="done")] or events[-1].type == "done"
+
+    def test_null_name_on_a_tool_use_block(self):
+        """A nameless tool call is unusable, but it must not be announced
+        to the UI as a call to ``None``."""
+        client = _anthropic_client()
+        chunks = [
+            {"type": "content_block_start",
+             "content_block": {"type": "tool_use", "id": None, "name": None}},
+            {"type": "content_block_stop"},
+            {"type": "message_stop"},
+        ]
+
+        with patch.object(client, "_http_stream", return_value=iter(chunks)):
+            events = list(client._stream_anthropic_tools([], "", tools=[]))
+
+        starts = [e for e in events if e.type == "tool_call_start"]
+        assert len(starts) == 1
+        assert starts[0].tool_call.name == ""
+        assert starts[0].tool_call.id == ""
