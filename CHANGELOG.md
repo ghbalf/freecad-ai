@@ -9,31 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **Saving the configuration can no longer destroy it (#88).** Toggling the
-  keep-dock command raised `RecursionError` out of `save_config`, and left
-  `config.json` **zero bytes** — every setting, every connection profile and
-  every stored API key gone. Two separate defects had to line up, and both
-  are fixed:
+- **Switching to the FreeCAD AI workbench no longer recurses until the
+  interpreter runs out of stack, and a failed save can no longer destroy the
+  configuration (#88).** Reported as `RecursionError` out of `save_config`
+  leaving `config.json` **zero bytes** — every setting, every connection
+  profile and every stored API key gone. Three defects had to line up:
 
-  `json.dump(config.to_dict(), f)` inside `with open(CONFIG_FILE, "w")`
-  evaluates the argument *after* the open has already truncated the file, so
-  any failure to serialise took the existing config with it. The config is
-  now built first, written to a temp file, and moved into place with
-  `os.replace`: either a complete file appears, or the previous one is
-  untouched.
+  The root cause was in the toolbar ticks, not in the config. FreeCAD 1.1.x
+  never calls a Python command's `IsChecked()`, so each checkable command
+  pushes its own tick with `QAction.setChecked()` at the end of `Activated()`
+  — and Qt hands that state change to everything connected *before*
+  `setChecked` returns, which FreeCAD routes straight back into `Activated()`.
+  Every push therefore synthesised another activation. Selecting the
+  workbench, or toggling **Keep Chat Panel Open**, ran that loop hundreds of
+  levels deep, inverting `keep_dock_on_workbench_switch` and rewriting
+  `config.json` at every level until the stack ran out. The tick is now set
+  with the action's signals blocked, the way FreeCAD's own
+  `Gui::Action::setChecked` does it.
+
+  The resulting `RecursionError` surfaced at whatever unrelated code happened
+  to be running when the limit tripped, which is why it looked like a
+  serialisation bug. It landed in `json.dump(config.to_dict(), f)` inside
+  `with open(CONFIG_FILE, "w")`, and Python evaluates that argument *after*
+  the open has already truncated the file — so the failure took the existing
+  config with it. The config is now built first, written to a temp file, and
+  moved into place with `os.replace`: either a complete file appears, or the
+  previous one is untouched.
 
   And `to_dict` used `dataclasses.asdict`, which has no cycle detection and
-  falls back to `copy.deepcopy` for anything it does not recognise — so one
-  unexpected object anywhere in the config, or one reference back up the
-  tree, blew the stack. Serialisation is now JSON-oriented: a value that
-  cannot be written is dropped and its **path is logged**
+  falls back to `copy.deepcopy` for anything it does not recognise, so it
+  could exhaust the stack on its own. Serialisation is now JSON-oriented: a
+  value that cannot be written is dropped and its **path is logged**
   (`profiles.<name>.params.<key>`), the rest of the configuration saves
-  normally, and the next occurrence names its own culprit instead of
+  normally, and any future occurrence names its own culprit instead of
   arriving as a bare traceback.
-
-  What puts such a value into the live config is still unknown — the
-  on-disk configs inspected were structurally sound, so it is introduced in
-  the running session. The warning above is what will identify it.
 
 - **A response with an explicit `null` where a list or object was promised no
   longer kills the turn (#89).** Reported against Xiaomi MiMo, where every
