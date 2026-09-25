@@ -200,6 +200,17 @@ class TestProviderPresets:
         # is a four-field projection for the dialog's auto-fill.
         assert PROVIDERS["cloudflare-workers-ai"]["supports_tools"] is True
 
+    def test_requesty_preset(self):
+        """OpenAI-compatible gateway, appended to the prefs combo so the
+        stored ProviderIndex of every existing provider stays put."""
+        from freecad_ai.config import _PARAM_PROVIDERS
+        from freecad_ai.llm.providers import PROVIDERS
+        assert (PROVIDER_PRESETS["requesty"]["base_url"]
+                == "https://router.requesty.ai/v1")
+        assert PROVIDERS["requesty"]["api_style"] == "openai"
+        assert PROVIDERS["requesty"]["supports_tools"] is True
+        assert _PARAM_PROVIDERS[-1] == "requesty"
+
     def test_github_preset_recommends_reranker(self):
         """Issue #10: GitHub Models has a small per-request input cap.
 

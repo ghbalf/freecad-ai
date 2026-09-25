@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Requesty provider preset.** An OpenAI-compatible gateway, listed next to
+  OpenRouter in the Settings dialog and the preferences page. Base URL
+  `https://router.requesty.ai/v1` (EU: `https://router.eu.requesty.ai/v1`),
+  default model `anthropic/claude-sonnet-4-6`. Keys come from
+  https://app.requesty.ai/api-keys.
+
 - **A project `AGENTS.md` can now add to your global one instead of replacing
   it (#94).** The loader searches the active document's directory, up to three
   parents, and then the user config directory — and has always returned the
