@@ -933,7 +933,7 @@ def save_config(config: AppConfig):
 _PARAM_PROVIDERS = [
     "anthropic", "openai", "ollama", "gemini", "openrouter",
     "moonshot", "deepseek", "qwen", "groq", "mistral", "together",
-    "cloudflare-workers-ai",
+    "cloudflare-workers-ai", "requesty",
 ]
 _PARAM_MODES = ["plan", "act"]
 _PARAM_THINKING = ["off", "on", "extended"]

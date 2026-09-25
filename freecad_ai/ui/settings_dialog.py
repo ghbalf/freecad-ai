@@ -1,8 +1,8 @@
 """Settings dialog for FreeCAD AI.
 
 Provides a GUI for configuring:
-  - LLM provider (Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Moonshot,
-    DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere,
+  - LLM provider (Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Requesty,
+    Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere,
     SambaNova, MiniMax, Custom)
   - API key, base URL, model name
   - Max tokens, temperature
