@@ -40,6 +40,13 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "requesty": {
+        # EU routing: https://router.eu.requesty.ai/v1
+        "base_url": "https://router.requesty.ai/v1",
+        "default_model": "anthropic/claude-sonnet-4-6",
+        "api_style": "openai",
+        "supports_tools": True,
+    },
     "moonshot": {
         "base_url": "https://api.moonshot.ai/v1",
         "default_model": "kimi-k2.5",

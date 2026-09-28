@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Requesty provider preset.** An OpenAI-compatible gateway, listed next to
+  OpenRouter in the Settings dialog and the preferences page. Base URL
+  `https://router.requesty.ai/v1` (EU: `https://router.eu.requesty.ai/v1`),
+  default model `anthropic/claude-sonnet-4-6`. Keys come from
+  https://app.requesty.ai/api-keys.
+
 ## [0.31.0-alpha] - 2026-09-28
 
 ### Added
