@@ -5377,8 +5377,9 @@ USE_SKILL = ToolDefinition(
         "Skills provide step-by-step construction guides (e.g. enclosure, gear). "
         "Call this when the user's request matches a skill, then follow the "
         "returned instructions using your tools. If the skill lists 'Available "
-        "references', pull one into context on demand by calling use_skill again "
-        "with the same name and the reference's `resource` key."
+        "references', read one on demand by calling use_skill again with the "
+        "same name and that file's path (or alias) as `resource`; run a listed "
+        "Python script with run_skill_script."
     ),
     parameters=[
         ToolParam("name", "string",
@@ -5387,8 +5388,9 @@ USE_SKILL = ToolDefinition(
                   "User's parameters for the skill (e.g. '120x80x60mm, screw lid')",
                   required=False, default=""),
         ToolParam("resource", "string",
-                  "Optional reference key from the skill's 'Available references' "
-                  "list, to load that reference file instead of the skill itself",
+                  "Optional file from the skill's 'Available references' list: "
+                  "a relative path like 'references/tables.md', or a listed alias. "
+                  "Loads that file instead of the skill itself",
                   required=False, default=""),
     ],
     handler=_handle_use_skill,

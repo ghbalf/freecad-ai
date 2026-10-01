@@ -10,6 +10,7 @@ Skills can be invoked via /command in the chat input.
 
 import hashlib
 import importlib.util
+import logging
 import os
 import re
 import shutil
@@ -21,6 +22,14 @@ from .skill_frontmatter import parse_frontmatter
 DESCRIPTION_MAX = 1024        # Agent Skills limit
 PROMPT_DESCRIPTION_MAX = 300  # what the system-prompt skill list shows
 _FALLBACK_DESCRIPTION_MAX = 100
+
+MAX_SKILL_FILES = 500
+MAX_RESOURCE_BYTES = 100_000
+MANIFEST_MAX = 40
+_SKIP_ROOT_FILES = {"SKILL.md", "handler.py", "VALIDATION.md"}
+_SKIP_DIRS = {"__pycache__", "node_modules", ".venv", ".git"}
+
+_log = logging.getLogger(__name__)
 
 # Built-in skills directory (in the repo, alongside freecad_ai/)
 BUILTIN_SKILLS_DIR = os.path.join(
@@ -42,6 +51,7 @@ class Skill:
     has_handler: bool = False
     validation_path: str = ""
     references: dict = field(default_factory=dict)  # key (lowercased stem) -> abspath
+    files: dict = field(default_factory=dict)  # "dir/file.ext" -> abspath (allowlist)
 
 
 class SkillsRegistry:
@@ -89,18 +99,15 @@ class SkillsRegistry:
             if os.path.isfile(val_file):
                 validation_path = val_file
 
-            # Tier-3 progressive disclosure: scan a sibling references/ dir
-            # (top level only) into a {key -> abspath} allowlist. The model
-            # later names a key, never a path, so traversal is impossible.
+            # Tier-3 progressive disclosure: every file in the folder, keyed by
+            # its relative path (Agent Skills links), plus today's bare-stem
+            # aliases for files directly in references/ (last sorted wins).
+            files = _scan_skill_files(skill_dir)
             references = {}
-            refs_dir = os.path.join(skill_dir, "references")
-            if os.path.isdir(refs_dir):
-                for ref_entry in sorted(os.listdir(refs_dir)):
-                    ref_path = os.path.join(refs_dir, ref_entry)
-                    if not os.path.isfile(ref_path):
-                        continue
-                    key = os.path.splitext(ref_entry)[0].lower()
-                    references[key] = ref_path
+            for key in sorted(files):
+                parts = key.split("/")
+                if len(parts) == 2 and parts[0] == "references":
+                    references[os.path.splitext(parts[1])[0].lower()] = files[key]
 
             self._skills[entry] = Skill(
                 name=entry,
@@ -113,6 +120,7 @@ class SkillsRegistry:
                 has_handler=os.path.isfile(handler_path),
                 validation_path=validation_path,
                 references=references,
+                files=files,
             )
 
     def register(self, name: str, content: str, trigger: str = ""):
@@ -193,53 +201,107 @@ class SkillsRegistry:
         return {"inject_prompt": content}
 
     def render_references_manifest(self, skill: Skill) -> str:
-        """Markdown block advertising a skill's on-demand reference files."""
-        if not skill.references:
+        """Markdown block advertising a skill's files (tier-3 disclosure)."""
+        if not skill.files:
             return ""
+        alias_of = {path: alias for alias, path in skill.references.items()}
+        groups = {"Documents": [], "Scripts": [], "Assets": []}
+        for key in sorted(skill.files):
+            if key.startswith("scripts/"):
+                groups["Scripts"].append(f"- `{key}`")
+            elif key.startswith("assets/"):
+                groups["Assets"].append(f"- `{key}`")
+            else:
+                path = skill.files[key]
+                bullet = f"- `{key}`"
+                if path in alias_of:
+                    bullet += f" (resource='{alias_of[path]}')"
+                summary = _reference_summary(path)
+                if summary:
+                    bullet += f" — {summary}"
+                groups["Documents"].append(bullet)
         lines = [
             "\n\n## Available references",
-            f"Load one when needed with "
-            f"use_skill(name='{skill.name}', resource='<key>'):",
+            f"Read a file with use_skill(name='{skill.name}', resource='<path>').",
         ]
-        for key in sorted(skill.references):
-            summary = _reference_summary(skill.references[key])
-            bullet = f"- `{key}` (resource='{key}')"
-            if summary:
-                bullet += f" — {summary}"
-            lines.append(bullet)
+        if groups["Scripts"]:
+            lines.append(f"Run a Python script with run_skill_script(skill='{skill.name}', "
+                         f"script='<path>', args='<command-line args>').")
+        shown = 0
+        for title, bullets in groups.items():
+            if not bullets or shown >= MANIFEST_MAX:
+                continue
+            take = bullets[:MANIFEST_MAX - shown]
+            lines.append(f"### {title}")
+            lines.extend(take)
+            shown += len(take)
+        if len(skill.files) > shown:
+            lines.append(f"…and {len(skill.files) - shown} more")
         return "\n".join(lines)
 
-    def get_skill_resource(self, name: str, resource: str) -> dict:
-        """Return the contents of a skill's reference file.
+    @staticmethod
+    def _resolve_key(skill: Skill, requested: str) -> "str | None":
+        """Map a requested path or legacy alias onto an allowlist key."""
+        r = requested.strip().replace("\\", "/")
+        while r.startswith("./"):
+            r = r[2:]
+        if r in skill.files:
+            return r
+        lowered = r.lower()
+        for key in skill.files:
+            if key.lower() == lowered:
+                return key
+        alias_path = skill.references.get(os.path.splitext(r)[0].lower())
+        if alias_path:
+            for key, path in skill.files.items():
+                if path == alias_path:
+                    return key
+        return None
 
-        `resource` is a KEY into the pre-scanned Skill.references allowlist —
-        it is never treated as a filesystem path, so directory traversal is
-        impossible. The key may be given with or without an extension and is
-        matched case-insensitively.
+    def get_skill_resource(self, name: str, resource: str) -> dict:
+        """Return the contents of one file from a skill's allowlist.
+
+        `resource` is a relative path or a legacy references/ alias; it is
+        only ever looked up in the pre-scanned Skill.files, never opened as
+        a path, so directory traversal is impossible.
 
         Returns {"output": contents} or {"error": message}.
         """
         skill = self._skills.get(name)
         if not skill:
             return {"error": f"Unknown skill: {name}"}
-        if not skill.references:
+        if not skill.files:
             return {"error": f"Skill '{name}' has no references."}
-
-        key = os.path.splitext(resource.strip())[0].lower()
-        path = skill.references.get(key)
-        if not path:
-            available = ", ".join(sorted(skill.references))
-            return {
-                "error": (
-                    f"Reference '{resource}' not found in skill '{name}'. "
-                    f"Available: {available}"
-                )
-            }
+        key = self._resolve_key(skill, resource)
+        if key is None:
+            keys = sorted(skill.files)
+            listed = ", ".join(keys[:20])
+            if len(keys) > 20:
+                listed += f", …and {len(keys) - 20} more"
+            return {"error": (f"Reference '{resource}' not found in skill "
+                              f"'{name}'. Available: {listed}")}
+        path = skill.files[key]
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                return {"output": f.read()}
-        except (OSError, UnicodeDecodeError) as e:
+            size = os.path.getsize(path)
+            with open(path, "rb") as f:
+                data = f.read(MAX_RESOURCE_BYTES + 1)
+        except OSError as e:
             return {"error": f"Could not read reference '{resource}': {e}"}
+        truncated = len(data) > MAX_RESOURCE_BYTES
+        data = data[:MAX_RESOURCE_BYTES]
+        binary = b"\0" in data[:8192]
+        if not binary:
+            try:
+                text = data.decode("utf-8", "ignore" if truncated else "strict")
+            except UnicodeDecodeError:
+                binary = True
+        if binary:
+            return {"error": (f"'{key}' is a binary file ({size} bytes). It is "
+                              f"meant for the skill's scripts, not for reading.")}
+        if truncated:
+            text += (f"\n\n[truncated: showing the first {MAX_RESOURCE_BYTES} "
+                     f"of {size} bytes]")
+        return {"output": text}
 
     def _run_handler(self, skill: Skill, args: str) -> dict | None:
         """Try to load and run a skill's handler.py.
@@ -371,6 +433,35 @@ def _describe(frontmatter: dict, body: str) -> str:
 
 def _shorten(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _scan_skill_files(skill_dir: str) -> dict:
+    """Allowlist of every file in a skill folder, keyed by POSIX relative path.
+
+    Built once at load time; reads only ever pick from it, so the model can
+    name a path but never reach outside the folder. Symlinks are kept only
+    when their target is inside the skill's own realpath.
+    """
+    root = os.path.realpath(skill_dir)
+    files = {}
+    for dirpath, dirnames, filenames in os.walk(skill_dir):
+        dirnames[:] = sorted(d for d in dirnames
+                             if not d.startswith(".") and d not in _SKIP_DIRS)
+        rel_dir = os.path.relpath(dirpath, skill_dir)
+        for fn in sorted(filenames):
+            if fn.startswith(".") or (rel_dir == "." and fn in _SKIP_ROOT_FILES):
+                continue
+            path = os.path.join(dirpath, fn)
+            real = os.path.realpath(path)
+            if os.path.commonpath([root, real]) != root or not os.path.isfile(real):
+                continue
+            key = fn if rel_dir == "." else f"{rel_dir.replace(os.sep, '/')}/{fn}"
+            if len(files) >= MAX_SKILL_FILES:
+                _log.warning("Skill %s has more than %d files; the rest are ignored",
+                             skill_dir, MAX_SKILL_FILES)
+                return files
+            files[key] = path
+    return files
 
 
 def _reference_summary(path: str) -> str:

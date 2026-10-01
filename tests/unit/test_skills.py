@@ -429,3 +429,102 @@ class TestAgentSkillsFrontmatter:
         (info,) = SkillsRegistry.get_skill_status()
         assert info["description"] == "From frontmatter"
         assert info["compatibility"] == "FreeCAD 1.1"
+
+
+class TestSkillFiles:
+    def _skill(self, tmp_path, monkeypatch):
+        import freecad_ai.extensions.skills as skills_mod
+        sd = tmp_path / "skills" / "pdfish"
+        (sd / "references" / "tables").mkdir(parents=True)
+        (sd / "scripts" / "__pycache__").mkdir(parents=True)
+        (sd / "assets").mkdir()
+        (sd / ".git").mkdir()
+        (sd / "SKILL.md").write_text("---\nname: pdfish\ndescription: D\n---\nSee [forms](forms.md).\n")
+        (sd / "handler.py").write_text("x = 1\n")
+        (sd / "VALIDATION.md").write_text("# V\n")
+        (sd / "forms.md").write_text("# Forms\nHow to fill forms.\n")
+        (sd / "references" / "m3.md").write_text("# M3\nM3 table.\n")
+        (sd / "references" / "tables" / "m4.md").write_text("# M4\nM4 table.\n")
+        (sd / "scripts" / "fill.py").write_text("print('fill')\n")
+        (sd / "scripts" / "__pycache__" / "fill.pyc").write_bytes(b"\0")
+        (sd / "assets" / "logo.png").write_bytes(b"\x89PNG\0\0data")
+        (sd / ".hidden").write_text("no")
+        (sd / ".git" / "HEAD").write_text("no")
+        monkeypatch.setattr(skills_mod, "SKILLS_DIR", str(tmp_path / "skills"))
+        monkeypatch.setattr(skills_mod, "BUILTIN_SKILLS_DIR", str(tmp_path / "none"))
+        return sd
+
+    def test_recursive_keys_and_skip_list(self, tmp_path, monkeypatch):
+        self._skill(tmp_path, monkeypatch)
+        skill = SkillsRegistry().get_skill("pdfish")
+        assert set(skill.files) == {"forms.md", "references/m3.md",
+                                    "references/tables/m4.md", "scripts/fill.py",
+                                    "assets/logo.png"}
+        assert set(skill.references) == {"m3"}   # legacy: top level of references/ only
+
+    def test_symlink_leaving_the_skill_is_dropped(self, tmp_path, monkeypatch):
+        sd = self._skill(tmp_path, monkeypatch)
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOKEN")
+        os.symlink(secret, sd / "references" / "leak.md")
+        os.symlink(sd / "forms.md", sd / "references" / "inside.md")
+        skill = SkillsRegistry().get_skill("pdfish")
+        assert "references/leak.md" not in skill.files
+        assert "references/inside.md" in skill.files
+
+    def test_file_cap(self, tmp_path, monkeypatch):
+        import freecad_ai.extensions.skills as skills_mod
+        self._skill(tmp_path, monkeypatch)
+        monkeypatch.setattr(skills_mod, "MAX_SKILL_FILES", 2)
+        assert len(SkillsRegistry().get_skill("pdfish").files) == 2
+
+    def test_path_keys_resolve_with_normalisation(self, tmp_path, monkeypatch):
+        self._skill(tmp_path, monkeypatch)
+        reg = SkillsRegistry()
+        for key in ["references/tables/m4.md", "./references/tables/m4.md",
+                    "references\\tables\\M4.md"]:
+            assert "M4 table." in reg.get_skill_resource("pdfish", key)["output"], key
+        assert "How to fill" in reg.get_skill_resource("pdfish", "forms.md")["output"]
+
+    def test_legacy_alias_still_resolves(self, tmp_path, monkeypatch):
+        self._skill(tmp_path, monkeypatch)
+        assert "M3 table." in SkillsRegistry().get_skill_resource("pdfish", "m3")["output"]
+
+    def test_binary_resource_is_refused_with_size(self, tmp_path, monkeypatch):
+        self._skill(tmp_path, monkeypatch)
+        err = SkillsRegistry().get_skill_resource("pdfish", "assets/logo.png")["error"]
+        assert "bytes" in err and "script" in err
+
+    def test_large_resource_is_truncated(self, tmp_path, monkeypatch):
+        import freecad_ai.extensions.skills as skills_mod
+        self._skill(tmp_path, monkeypatch)
+        monkeypatch.setattr(skills_mod, "MAX_RESOURCE_BYTES", 5)
+        out = SkillsRegistry().get_skill_resource("pdfish", "forms.md")["output"]
+        assert out.startswith("# For") and "truncated" in out
+
+    def test_unknown_key_lists_at_most_20(self, tmp_path, monkeypatch):
+        sd = self._skill(tmp_path, monkeypatch)
+        for i in range(30):
+            (sd / "references" / f"r{i:02d}.md").write_text("x\n")
+        err = SkillsRegistry().get_skill_resource("pdfish", "nope")["error"]
+        listed = err.split("Available: ", 1)[1].split(", ")
+        assert len(listed) == 21 and listed[-1] == "…and 15 more"   # 35 keys
+
+    def test_manifest_groups(self, tmp_path, monkeypatch):
+        self._skill(tmp_path, monkeypatch)
+        text = SkillsRegistry().execute_skill("pdfish")["inject_prompt"]
+        docs, scripts, assets = (text.index("### Documents"), text.index("### Scripts"),
+                                 text.index("### Assets"))
+        assert docs < text.index("`forms.md`") < scripts
+        assert "How to fill forms." in text
+        assert "(resource='m3')" in text                     # legacy hint kept
+        assert scripts < text.index("`scripts/fill.py`") < assets
+        assert "run_skill_script(skill='pdfish'" in text
+        assert assets < text.index("`assets/logo.png`")
+
+    def test_manifest_cap(self, tmp_path, monkeypatch):
+        import freecad_ai.extensions.skills as skills_mod
+        self._skill(tmp_path, monkeypatch)
+        monkeypatch.setattr(skills_mod, "MANIFEST_MAX", 2)
+        text = SkillsRegistry().execute_skill("pdfish")["inject_prompt"]
+        assert "…and 3 more" in text
