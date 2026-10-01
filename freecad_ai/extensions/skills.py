@@ -274,10 +274,7 @@ class SkillsRegistry:
             return {"error": f"Skill '{name}' has no references."}
         key = self._resolve_key(skill, resource)
         if key is None:
-            keys = sorted(skill.files)
-            listed = ", ".join(keys[:20])
-            if len(keys) > 20:
-                listed += f", …and {len(keys) - 20} more"
+            listed = _list_keys(skill.files)
             return {"error": (f"Reference '{resource}' not found in skill "
                               f"'{name}'. Available: {listed}")}
         path = skill.files[key]
@@ -317,11 +314,42 @@ class SkillsRegistry:
         scripts = sorted(k for k in skill.files if k.endswith(".py"))
         if key is None:
             return "", (f"Script '{script}' not found in skill '{name}'. "
-                        f"Available: {', '.join(scripts) or 'none'}"), []
+                        f"Available: {_list_keys(scripts) or 'none'}"), []
         if not key.endswith(".py"):
             return "", (f"Only Python scripts run inside FreeCAD. Read '{key}' "
                         f"with use_skill(name='{name}', resource='{key}') instead."), []
         return skill.files[key], "", [(k, skill.files[k]) for k in scripts]
+
+    def find_unvalidatable(self, name: str) -> str:
+        """Return a relative path (or reason) that makes the skill's Python
+        impossible to validate up front, or "" if all is well.
+
+        Scripts can import siblings from their own folder, so everything
+        importable must be a scanned .py file. Flags native modules, sourceless
+        .pyc files, .py files that resolve outside the folder, and a file count
+        that reached MAX_SKILL_FILES (more .py files may exist unscanned).
+        """
+        skill = self._skills.get(name)
+        if not skill:
+            return ""
+        if len(skill.files) >= MAX_SKILL_FILES:
+            return f"(more than {MAX_SKILL_FILES} files in the skill)"
+        root = os.path.realpath(skill.path)
+        for dirpath, dirnames, filenames in os.walk(skill.path, followlinks=False):
+            in_cache = os.path.basename(dirpath) == "__pycache__"
+            for fn in sorted(filenames):
+                low = fn.lower()
+                path = os.path.join(dirpath, fn)
+                rel = os.path.relpath(path, skill.path).replace(os.sep, "/")
+                if low.endswith((".so", ".pyd")):
+                    return rel
+                if low.endswith(".pyc") and not in_cache:
+                    return rel
+                if low.endswith(".py"):
+                    real = os.path.realpath(path)
+                    if os.path.commonpath([root, real]) != root:
+                        return rel
+        return ""
 
     def _run_handler(self, skill: Skill, args: str) -> dict | None:
         """Try to load and run a skill's handler.py.
@@ -453,6 +481,15 @@ def _describe(frontmatter: dict, body: str) -> str:
 
 def _shorten(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _list_keys(keys, limit: int = 20) -> str:
+    """Comma-separated sorted keys, capped at `limit` with a '…and N more' tail."""
+    keys = sorted(keys)
+    listed = ", ".join(keys[:limit])
+    if len(keys) > limit:
+        listed += f", …and {len(keys) - limit} more"
+    return listed
 
 
 def _scan_skill_files(skill_dir: str) -> dict:

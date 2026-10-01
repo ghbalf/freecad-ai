@@ -91,3 +91,46 @@ def test_registered_as_general_tool():
     tool = next(t for t in ft.ALL_TOOLS if t.name == "run_skill_script")
     assert tool.category == "general"
     assert [p.name for p in tool.parameters] == ["skill", "script", "args"]
+
+
+def test_sourceless_pyc_is_rejected(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    (skill / "scripts" / "helper.pyc").write_bytes(b"\0\0")
+    result = ft._handle_run_skill_script("maker", "scripts/make.py")
+    assert not result.success and "scripts/helper.pyc" in result.error
+    assert "Dangerous mode" in result.error and not calls
+
+
+def test_pyc_skill_runs_in_dangerous_mode(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, True)
+    (skill / "scripts" / "helper.pyc").write_bytes(b"\0\0")
+    assert ft._handle_run_skill_script("maker", "scripts/make.py").success
+    assert calls[0]["skip_safety"] is True
+
+
+def test_pycache_pyc_is_allowed(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    (skill / "scripts" / "__pycache__").mkdir()
+    (skill / "scripts" / "__pycache__" / "make.cpython-311.pyc").write_bytes(b"\0")
+    assert ft._handle_run_skill_script("maker", "scripts/make.py").success
+
+
+def test_escaping_symlink_py_is_rejected(skill, calls, monkeypatch, tmp_path):
+    _dangerous(monkeypatch, False)
+    outside = tmp_path / "outside.py"
+    outside.write_text("import subprocess\n")
+    (skill / "scripts" / "helper.py").symlink_to(outside)
+    result = ft._handle_run_skill_script("maker", "scripts/make.py")
+    assert not result.success and "scripts/helper.py" in result.error and not calls
+
+
+def test_unknown_script_list_is_capped(skill, calls):
+    for i in range(25):
+        (skill / "scripts" / f"s{i:02d}.py").write_text("pass\n")
+    err = ft._handle_run_skill_script("maker", "scripts/nope.py").error
+    assert "…and 6 more" in err
+
+
+def test_none_args_are_tolerated(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    assert ft._handle_run_skill_script("maker", "scripts/make.py", None).success

@@ -5412,11 +5412,18 @@ def _handle_run_skill_script(skill: str, script: str, args: str = "") -> ToolRes
     if err:
         return ToolResult(success=False, output="", error=err)
     try:
-        argv = shlex.split(args)
+        argv = shlex.split(str(args or ""))
     except ValueError as e:
         return ToolResult(success=False, output="", error=f"Could not parse args: {e}")
     dangerous = get_dangerous_mode().active
     if not dangerous:
+        bad = SkillsRegistry().find_unvalidatable(skill)
+        if bad:
+            return ToolResult(
+                success=False, output="",
+                error=(f"Cannot run '{script}': '{bad}' in skill '{skill}' cannot be "
+                       "validated (native module, sourceless .pyc, file outside the "
+                       "skill folder, or too many files). Dangerous mode skips this check."))
         # execute_code only sees the runpy wrapper, so validate the script and
         # every module it could import from its skill here.
         warnings = []
