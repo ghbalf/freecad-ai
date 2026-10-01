@@ -16,6 +16,11 @@ import shutil
 from dataclasses import dataclass, field
 
 from ..config import SKILLS_DIR
+from .skill_frontmatter import parse_frontmatter
+
+DESCRIPTION_MAX = 1024        # Agent Skills limit
+PROMPT_DESCRIPTION_MAX = 300  # what the system-prompt skill list shows
+_FALLBACK_DESCRIPTION_MAX = 100
 
 # Built-in skills directory (in the repo, alongside freecad_ai/)
 BUILTIN_SKILLS_DIR = os.path.join(
@@ -31,6 +36,8 @@ class Skill:
     description: str = ""
     path: str = ""
     content: str = ""  # SKILL.md contents
+    body: str = ""  # SKILL.md without frontmatter: what gets injected
+    frontmatter: dict = field(default_factory=dict)
     trigger: str = ""  # Slash command, e.g. "/thread-insert"
     has_handler: bool = False
     validation_path: str = ""
@@ -72,25 +79,8 @@ class SkillsRegistry:
             except (OSError, UnicodeDecodeError):
                 continue
 
-            # Extract description: prefer YAML frontmatter "description",
-            # otherwise use first non-empty, non-heading content line.
-            description = ""
-            body = content
-            if content.startswith("---\n"):
-                end = content.find("\n---\n", 4)
-                if end != -1:
-                    frontmatter = content[4:end]
-                    body = content[end + 5:]
-                    for fm_line in frontmatter.splitlines():
-                        if fm_line.startswith("description:"):
-                            description = fm_line[12:].strip().strip("\"'")[:100]
-                            break
-            if not description:
-                for line in body.splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        description = line[:100]
-                        break
+            frontmatter, body = parse_frontmatter(content)
+            description = _describe(frontmatter, body)
 
             handler_path = os.path.join(skill_dir, "handler.py")
 
@@ -117,6 +107,8 @@ class SkillsRegistry:
                 description=description,
                 path=skill_dir,
                 content=content,
+                body=body,
+                frontmatter=frontmatter,
                 trigger=f"/{entry}",
                 has_handler=os.path.isfile(handler_path),
                 validation_path=validation_path,
@@ -128,6 +120,7 @@ class SkillsRegistry:
         self._skills[name] = Skill(
             name=name,
             content=content,
+            body=content,
             trigger=trigger or f"/{name}",
         )
 
@@ -147,7 +140,7 @@ class SkillsRegistry:
         for skill in self._skills.values():
             parts.append(f"\n### {skill.name}")
             if skill.description:
-                parts.append(skill.description)
+                parts.append(_shorten(skill.description, PROMPT_DESCRIPTION_MAX))
             if skill.trigger:
                 parts.append(f"Invoke with: `{skill.trigger}`")
         return "\n".join(parts)
@@ -196,7 +189,7 @@ class SkillsRegistry:
 
         # Default: inject SKILL.md content into the prompt, plus a manifest of
         # any on-demand reference files the skill bundles (tier-3 disclosure).
-        content = skill.content + self.render_references_manifest(skill)
+        content = skill.body + self.render_references_manifest(skill)
         return {"inject_prompt": content}
 
     def render_references_manifest(self, skill: Skill) -> str:
@@ -315,20 +308,13 @@ class SkillsRegistry:
 
             # Read description from whichever is active (user overrides built-in)
             active_path = u_path or b_path
-            description = ""
+            description = compatibility = ""
             try:
                 with open(active_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                body = content
-                if content.startswith("---\n"):
-                    end = content.find("\n---\n", 4)
-                    if end != -1:
-                        body = content[end + 5:]
-                for line in body.splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        description = line[:80]
-                        break
+                    frontmatter, body = parse_frontmatter(f.read())
+                description = _describe(frontmatter, body)
+                compat = frontmatter.get("compatibility")
+                compatibility = compat if isinstance(compat, str) else ""
             except Exception:
                 pass
 
@@ -343,6 +329,7 @@ class SkillsRegistry:
             results.append({
                 "name": name,
                 "description": description,
+                "compatibility": compatibility,
                 "source": source,
                 "has_user_copy": u_path is not None,
                 "is_modified": source == "modified",
@@ -368,6 +355,22 @@ class SkillsRegistry:
             shutil.rmtree(user_skill_dir)
             return True
         return False
+
+
+def _describe(frontmatter: dict, body: str) -> str:
+    """Frontmatter description, else the body's first non-heading line."""
+    desc = frontmatter.get("description")
+    if isinstance(desc, str) and desc.strip():
+        return desc.strip()[:DESCRIPTION_MAX]
+    for line in body.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return line[:_FALLBACK_DESCRIPTION_MAX]
+    return ""
+
+
+def _shorten(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
 def _reference_summary(path: str) -> str:

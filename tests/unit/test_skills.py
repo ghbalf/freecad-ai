@@ -378,3 +378,54 @@ class TestUseSkillResource:
         result = _handle_use_skill("debug-model")
         assert result.success is True
         assert "Diagnose broken models." in result.output
+
+
+class TestAgentSkillsFrontmatter:
+    def _registry(self, tmp_path, monkeypatch, skill_md, name="fm"):
+        import freecad_ai.extensions.skills as skills_mod
+        sd = tmp_path / "skills" / name
+        sd.mkdir(parents=True)
+        (sd / "SKILL.md").write_text(skill_md)
+        monkeypatch.setattr(skills_mod, "SKILLS_DIR", str(tmp_path / "skills"))
+        monkeypatch.setattr(skills_mod, "BUILTIN_SKILLS_DIR", str(tmp_path / "none"))
+        return SkillsRegistry()
+
+    def test_long_description_kept_up_to_1024(self, tmp_path, monkeypatch):
+        reg = self._registry(tmp_path, monkeypatch,
+                             f"---\ndescription: {'x' * 2000}\n---\n# T\n")
+        assert len(reg.get_skill("fm").description) == 1024
+
+    def test_prompt_list_shortens_to_300(self, tmp_path, monkeypatch):
+        reg = self._registry(tmp_path, monkeypatch,
+                             f"---\ndescription: {'y' * 500}\n---\n# T\n")
+        text = reg.get_descriptions()
+        assert "y" * 299 + "…" in text and "y" * 300 not in text
+
+    def test_folded_description(self, tmp_path, monkeypatch):
+        reg = self._registry(tmp_path, monkeypatch,
+                             "---\ndescription: >\n  Make gears.\n  Use for spur gears.\n---\n# T\n")
+        assert reg.get_skill("fm").description == "Make gears. Use for spur gears."
+
+    def test_injection_is_body_only(self, tmp_path, monkeypatch):
+        reg = self._registry(tmp_path, monkeypatch,
+                             "---\nname: fm\ndescription: D\n---\n# Body title\nSteps.\n")
+        injected = reg.execute_skill("fm")["inject_prompt"]
+        assert injected.startswith("# Body title")
+        assert "description: D" not in injected
+        assert reg.get_skill("fm").content.startswith("---\nname: fm")  # optimizer reads this
+
+    def test_frontmatter_fields_stored(self, tmp_path, monkeypatch):
+        reg = self._registry(tmp_path, monkeypatch,
+                             "---\nname: other-name\ndescription: D\ncompatibility: FreeCAD 1.1\n"
+                             "metadata:\n  author: alf\n---\n# T\n")
+        skill = reg.get_skill("fm")
+        assert skill.trigger == "/fm"                     # folder wins over name:
+        assert skill.frontmatter["compatibility"] == "FreeCAD 1.1"
+        assert skill.frontmatter["metadata"] == {"author": "alf"}
+
+    def test_status_reads_frontmatter_description(self, tmp_path, monkeypatch):
+        self._registry(tmp_path, monkeypatch,
+                       "---\ndescription: From frontmatter\ncompatibility: FreeCAD 1.1\n---\n# T\nBody line\n")
+        (info,) = SkillsRegistry.get_skill_status()
+        assert info["description"] == "From frontmatter"
+        assert info["compatibility"] == "FreeCAD 1.1"
