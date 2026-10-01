@@ -478,7 +478,8 @@ class TestSkillFiles:
         for i in range(30):
             (sd / "references" / f"r{i:02d}.md").write_text("x\n")
         err = SkillsRegistry().get_skill_resource("pdfish", "nope")["error"]
-        assert err.count("references/r") == 20 and "more" in err
+        listed = err.split("Available: ", 1)[1].split(", ")
+        assert len(listed) == 21 and listed[-1] == "…and 15 more"   # 35 keys
 
     def test_manifest_groups(self, tmp_path, monkeypatch):
         self._skill(tmp_path, monkeypatch)
@@ -1477,6 +1478,9 @@ BUILTIN_NAMES = sorted(n for n in os.listdir(BUILTIN)
 
 
 def _relative_links(body):
+    # A link inside a code span or fence is an example, not a link.
+    body = re.sub(r"```.*?```", "", body, flags=re.S)
+    body = re.sub(r"`[^`\n]*`", "", body)
     for target in _LINK_RE.findall(body):
         target = target.split("#", 1)[0]
         if target and "://" not in target and not target.startswith(("/", "mailto:")):
