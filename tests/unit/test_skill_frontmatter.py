@@ -57,3 +57,14 @@ def test_unterminated_frontmatter_is_body():
 def test_garbage_lines_are_ignored_not_raised():
     fm, _ = parse_frontmatter("---\n: nope\n  stray indent\nname: ok\n{weird\n---\n")
     assert fm == {"name": "ok"}
+
+
+def test_zero_indent_list_is_parsed():
+    assert parse_frontmatter("---\nallowed-tools:\n- Read\n- Bash\nname: x\n---\n")[0] == {
+        "allowed-tools": ["Read", "Bash"], "name": "x"}
+
+
+def test_utf8_bom_is_stripped():
+    fm, body = parse_frontmatter("﻿---\nname: bom\n---\n# B\n")
+    assert fm == {"name": "bom"}
+    assert body == "# B\n"

@@ -12,6 +12,7 @@ _KEY_RE = re.compile(r"^([A-Za-z0-9_-]+):(?:\s+(.*))?$")
 
 
 def _split(text: str) -> tuple[str, str]:
+    text = text.lstrip('﻿')  # Strip UTF-8 BOM if present
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
         return "", text
@@ -65,6 +66,11 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
         while i < len(lines) and (not lines[i].strip() or lines[i][:1] in " \t"):
             block.append(lines[i])
             i += 1
+        # If raw is empty and no indented block collected, consume zero-indent list items
+        if not raw and not block and i < len(lines) and lines[i].startswith("- "):
+            while i < len(lines) and lines[i].startswith("- "):
+                block.append(lines[i])
+                i += 1
         if raw[:1] in (">", "|"):
             fields[key] = _block_scalar(raw[0], block)
         elif raw.startswith("[") and raw.endswith("]"):
