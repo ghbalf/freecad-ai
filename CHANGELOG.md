@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A `/skill` command that failed now says so in the chat.** When a skill's
+  `handler.py` raised, or returned `{"error": ...}` (e.g. `/optimize-skill`
+  with no skills to optimize), the chat showed your command and then nothing
+  at all: the error result matched neither the "send to the model" nor the
+  "show output" branch and was dropped. It is now shown as `Error: ...`. The
+  `use_skill` tool path already reported these errors correctly.
+
 ## [0.31.0-alpha] - 2026-09-28
 
 ### Added

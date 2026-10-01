@@ -2889,6 +2889,9 @@ class ChatDockWidget(QDockWidget):
         elif exec_result.get("output"):
             self._append_html(render_message("system", exec_result["output"]))
             self.conversation.add_system_message(exec_result["output"])
+        elif exec_result.get("error"):
+            self._append_html(render_message(
+                "system", translate("ChatDockWidget", "Error: ") + exec_result["error"]))
 
         return True
 
