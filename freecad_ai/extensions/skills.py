@@ -303,6 +303,26 @@ class SkillsRegistry:
                      f"of {size} bytes]")
         return {"output": text}
 
+    def resolve_script(self, name: str, script: str) -> tuple:
+        """Resolve a runnable script from a skill's allowlist.
+
+        Returns (abspath, "", py_paths) or ("", error, []). py_paths lists
+        every .py file in the skill, so the caller can validate the modules
+        a script may import, not just the script itself.
+        """
+        skill = self._skills.get(name)
+        if not skill:
+            return "", f"Unknown skill: {name}", []
+        key = self._resolve_key(skill, script)
+        scripts = sorted(k for k in skill.files if k.endswith(".py"))
+        if key is None:
+            return "", (f"Script '{script}' not found in skill '{name}'. "
+                        f"Available: {', '.join(scripts) or 'none'}"), []
+        if not key.endswith(".py"):
+            return "", (f"Only Python scripts run inside FreeCAD. Read '{key}' "
+                        f"with use_skill(name='{name}', resource='{key}') instead."), []
+        return skill.files[key], "", [(k, skill.files[k]) for k in scripts]
+
     def _run_handler(self, skill: Skill, args: str) -> dict | None:
         """Try to load and run a skill's handler.py.
 

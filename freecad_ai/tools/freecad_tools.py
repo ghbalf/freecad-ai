@@ -5398,6 +5398,66 @@ USE_SKILL = ToolDefinition(
 )
 
 
+# ── run_skill_script ───────────────────────────────────────
+
+def _handle_run_skill_script(skill: str, script: str, args: str = "") -> ToolResult:
+    """Run a skill's Python script (Agent Skills scripts/) inside FreeCAD."""
+    import shlex
+    from ..core.dangerous_mode import get_dangerous_mode
+    from ..core.executor import _validate_code
+    from ..extensions.skill_scripts import build_script_wrapper
+    from ..extensions.skills import SkillsRegistry
+
+    path, err, py_files = SkillsRegistry().resolve_script(skill, script)
+    if err:
+        return ToolResult(success=False, output="", error=err)
+    try:
+        argv = shlex.split(args)
+    except ValueError as e:
+        return ToolResult(success=False, output="", error=f"Could not parse args: {e}")
+    dangerous = get_dangerous_mode().active
+    if not dangerous:
+        # execute_code only sees the runpy wrapper, so validate the script and
+        # every module it could import from its skill here.
+        warnings = []
+        for key, py_path in py_files:
+            try:
+                with open(py_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+            except (OSError, UnicodeDecodeError) as e:
+                return ToolResult(success=False, output="",
+                                  error=f"Could not read {key}: {e}")
+            warnings += [f"{key}: {w}" for w in _validate_code(text)]
+        if warnings:
+            return ToolResult(success=False, output="",
+                              error="Pre-execution validation failed:\n" + "\n".join(warnings))
+    result = execute_code(build_script_wrapper(path, argv), skip_safety=dangerous)
+    if result.success:
+        out = result.stdout.strip() or f"Script '{script}' ran successfully (no output)."
+        return ToolResult(success=True, output=out,
+                          data={"script": path, "stdout": result.stdout})
+    return ToolResult(success=False, output=result.stdout, error=result.stderr)
+
+
+RUN_SKILL_SCRIPT = ToolDefinition(
+    name="run_skill_script",
+    description=(
+        "Run a Python script that a skill ships in its folder (listed under "
+        "'Scripts' when the skill is loaded). It runs inside FreeCAD like a "
+        "command-line program: `args` is split like a shell command line into "
+        "sys.argv. Use the script path exactly as listed, e.g. 'scripts/make.py'."
+    ),
+    category="general",
+    parameters=[
+        ToolParam("skill", "string", "Skill name, e.g. 'gear'"),
+        ToolParam("script", "string", "Script path from the skill's list, e.g. 'scripts/make.py'"),
+        ToolParam("args", "string", "Command-line arguments, e.g. \"--teeth 20 --out 'my gear'\"",
+                  required=False, default=""),
+    ],
+    handler=_handle_run_skill_script,
+)
+
+
 # ── Assembly tools ──────────────────────────────────────────
 
 
@@ -5742,6 +5802,7 @@ ALL_TOOLS = [
     ZOOM_OBJECT,
     REPORT_SKILL_PARAMS,
     USE_SKILL,
+    RUN_SKILL_SCRIPT,
     CREATE_ASSEMBLY,
     ADD_ASSEMBLY_JOINT,
     ADD_PART_TO_ASSEMBLY,
