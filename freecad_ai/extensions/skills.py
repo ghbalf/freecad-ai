@@ -486,7 +486,11 @@ def _skill_dirs_in(root: str) -> list:
         return []
     if os.path.isfile(os.path.join(root, "SKILL.md")):
         return [(os.path.basename(os.path.normpath(root)), root)]
-    return [(entry, os.path.join(root, entry)) for entry in sorted(os.listdir(root))
+    try:
+        entries = sorted(os.listdir(root))
+    except OSError:
+        return []
+    return [(entry, os.path.join(root, entry)) for entry in entries
             if os.path.isfile(os.path.join(root, entry, "SKILL.md"))]
 
 

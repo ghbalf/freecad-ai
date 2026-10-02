@@ -591,3 +591,19 @@ class TestExtraSkillDirs:
         assert status["gear"]["description"] == "external gear"
         assert status["gear"]["has_user_copy"] is False   # Reset stays disabled
         assert status["lattice"]["source"] == "modified"  # user copy still wins
+
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
+                        reason="root can read any dir")
+    def test_unreadable_extra_dir_is_skipped(self, tmp_path, monkeypatch):
+        extra = self._dirs(tmp_path, monkeypatch)
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0)
+        try:
+            reg = SkillsRegistry(extra_dirs=[str(locked), str(extra)])
+            assert reg.get_skill("gear").description == "external gear"
+            assert reg.get_skill("lattice").description == "user lattice"
+            status = SkillsRegistry.get_skill_status(extra_dirs=[str(locked)])
+            assert "gear" in {s["name"] for s in status}
+        finally:
+            locked.chmod(0o755)
