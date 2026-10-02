@@ -328,8 +328,8 @@ class SkillsRegistry:
                         f"with use_skill(name='{name}', resource='{key}') instead."), []
         path = skill.files[key]
         py = []
-        for dirpath, _dirs, filenames in os.walk(os.path.dirname(path), followlinks=False):
-            for fn in sorted(filenames):
+        for dirpath, _dirs, filenames in _walk_script_tree(os.path.dirname(path), skill.path):
+            for fn in filenames:
                 if fn.lower().endswith(".py"):
                     full = os.path.join(dirpath, fn)
                     rel = os.path.relpath(full, skill.path).replace(os.sep, "/")
@@ -355,7 +355,7 @@ class SkillsRegistry:
                 top = os.path.dirname(skill.files[key])
         root = os.path.realpath(skill.path)
         seen = 0
-        for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+        for dirpath, dirnames, filenames in _walk_script_tree(top, skill.path):
             for d in dirnames:
                 dpath = os.path.join(dirpath, d)
                 if os.path.islink(dpath) and not _inside(root, os.path.realpath(dpath)):
@@ -542,6 +542,30 @@ def _list_keys(keys, limit: int = 20) -> str:
     if len(keys) > limit:
         listed += f", …and {len(keys) - limit} more"
     return listed
+
+
+def _walk_script_tree(top: str, skill_dir: str):
+    """os.walk over `top` that also descends into symlinked dirs resolving
+    inside the skill (they are importable too), visiting each real dir once
+    so a link loop terminates. Escaping links are yielded as dirnames but not
+    entered; find_unvalidatable refuses them. Stops after MAX_SKILL_FILES
+    files, which find_unvalidatable also refuses."""
+    root = os.path.realpath(skill_dir)
+    seen_dirs = set()
+    files = 0
+    for dirpath, dirnames, filenames in os.walk(top, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in seen_dirs or not _inside(root, real):
+            dirnames[:] = []
+            continue
+        seen_dirs.add(real)
+        filenames = sorted(filenames)
+        yield dirpath, list(dirnames), filenames
+        dirnames[:] = [d for d in dirnames
+                       if _inside(root, os.path.realpath(os.path.join(dirpath, d)))]
+        files += len(filenames)
+        if files >= MAX_SKILL_FILES:
+            return
 
 
 def _inside(root: str, real: str) -> bool:

@@ -230,3 +230,19 @@ def test_path_containing_subprocess_is_not_a_false_positive(tmp_path, monkeypatc
     result = ft._handle_run_skill_script("subprocess-helpers", "scripts/a.py")
     assert "validation failed" not in (result.error or "")
     assert "No active document" in result.error  # got past Layer 1
+
+
+def test_internal_symlinked_dir_is_validated(skill, calls, monkeypatch):
+    # scripts/lib -> ../lib is importable from the script, so it is checked
+    _dangerous(monkeypatch, False)
+    (skill / "lib").mkdir()
+    (skill / "lib" / "evil.py").write_text("import subprocess\n")
+    (skill / "scripts" / "lib").symlink_to(skill / "lib", target_is_directory=True)
+    result = ft._handle_run_skill_script("maker", "scripts/make.py")
+    assert not result.success and "evil.py" in result.error and not calls
+
+
+def test_symlink_loop_terminates(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    (skill / "scripts" / "loop").symlink_to(skill / "scripts", target_is_directory=True)
+    assert ft._handle_run_skill_script("maker", "scripts/make.py").success
