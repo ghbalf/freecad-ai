@@ -125,7 +125,7 @@ RECORDED = {
         "checkboxes": ("Also scan FreeCAD macro directory",),
         "combos": 0, "spins": 0, "fields": 0, "buttons": 5},
     # buttons: 3 -- Browse... joined with the extra skill folders box (Agent
-    # Skills compat). The wiki settings-dialog-3.png is NOT retaken yet.
+    # Skills compat).
     "Skills": {
         "checkboxes": (), "combos": 0, "spins": 0, "fields": 0, "buttons": 3},
     "Hooks": {
