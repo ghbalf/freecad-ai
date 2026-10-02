@@ -5400,7 +5400,7 @@ USE_SKILL = ToolDefinition(
 
 # ── run_skill_script ───────────────────────────────────────
 
-def _handle_run_skill_script(skill: str, script: str, args: str = "") -> ToolResult:
+def _handle_run_skill_script(skill: str, script: str, args="") -> ToolResult:
     """Run a skill's Python script (Agent Skills scripts/) inside FreeCAD."""
     import shlex
     from ..core.dangerous_mode import get_dangerous_mode
@@ -5412,12 +5412,15 @@ def _handle_run_skill_script(skill: str, script: str, args: str = "") -> ToolRes
     if err:
         return ToolResult(success=False, output="", error=err)
     try:
-        argv = shlex.split(str(args or ""))
+        if isinstance(args, (list, tuple)):
+            argv = [str(a) for a in args]
+        else:
+            argv = shlex.split(str(args or ""))
     except ValueError as e:
         return ToolResult(success=False, output="", error=f"Could not parse args: {e}")
     dangerous = get_dangerous_mode().active
     if not dangerous:
-        bad = SkillsRegistry().find_unvalidatable(skill)
+        bad = SkillsRegistry().find_unvalidatable(skill, script)
         if bad:
             return ToolResult(
                 success=False, output="",
@@ -5425,7 +5428,7 @@ def _handle_run_skill_script(skill: str, script: str, args: str = "") -> ToolRes
                        "validated (native module, sourceless .pyc, file outside the "
                        "skill folder, or too many files). Dangerous mode skips this check."))
         # execute_code only sees the runpy wrapper, so validate the script and
-        # every module it could import from its skill here.
+        # every module it could import from the script's folder here.
         warnings = []
         for key, py_path in py_files:
             try:
@@ -5438,7 +5441,8 @@ def _handle_run_skill_script(skill: str, script: str, args: str = "") -> ToolRes
         if warnings:
             return ToolResult(success=False, output="",
                               error="Pre-execution validation failed:\n" + "\n".join(warnings))
-    result = execute_code(build_script_wrapper(path, argv), skip_safety=dangerous)
+    result = execute_code(build_script_wrapper(path, argv), skip_safety=dangerous,
+                          static_check=False)  # wrapper text is ours; files validated above
     if result.success:
         out = result.stdout.strip() or f"Script '{script}' ran successfully (no output)."
         return ToolResult(success=True, output=out,

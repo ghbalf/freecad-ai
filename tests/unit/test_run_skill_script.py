@@ -24,8 +24,9 @@ def skill(tmp_path, monkeypatch):
 def calls(monkeypatch):
     recorded = []
 
-    def fake_execute_code(code, skip_safety=False):
-        recorded.append({"code": code, "skip_safety": skip_safety})
+    def fake_execute_code(code, skip_safety=False, static_check=True):
+        recorded.append({"code": code, "skip_safety": skip_safety,
+                         "static_check": static_check})
         return SimpleNamespace(success=True, stdout="made\n", stderr="")
 
     monkeypatch.setattr(ft, "execute_code", fake_execute_code)
@@ -161,3 +162,71 @@ def test_file_cap_reached_is_refused(skill, calls, monkeypatch):
         (skill / "scripts" / f"extra{i}.py").write_text("pass\n")
     result = ft._handle_run_skill_script("maker", "scripts/extra0.py")
     assert not result.success and "Dangerous mode" in result.error and not calls
+
+
+# ── final-review fixes ─────────────────────────────────────
+
+def test_list_args_are_used_as_argv(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    assert ft._handle_run_skill_script("maker", "scripts/make.py", ["40", 20, "a b"]).success
+    assert "'40', '20', 'a b'" in calls[0]["code"]
+
+
+def test_tuple_args_are_used_as_argv(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    assert ft._handle_run_skill_script("maker", "scripts/make.py", ("1", "2")).success
+    assert "'1', '2'" in calls[0]["code"]
+
+
+def test_unrelated_sibling_folder_does_not_block(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    (skill / "evals").mkdir()
+    (skill / "evals" / "run.py").write_text("import subprocess\n")
+    assert ft._handle_run_skill_script("maker", "scripts/make.py").success
+
+
+def test_skipped_dir_py_under_script_tree_is_validated(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    (skill / "scripts" / "node_modules").mkdir()
+    (skill / "scripts" / "node_modules" / "evil.py").write_text("import subprocess\n")
+    result = ft._handle_run_skill_script("maker", "scripts/make.py")
+    assert not result.success and "node_modules/evil.py" in result.error and not calls
+
+
+def test_dot_dir_py_under_script_tree_is_validated(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    (skill / "scripts" / ".hid").mkdir()
+    (skill / "scripts" / ".hid" / "evil.py").write_text("import subprocess\n")
+    result = ft._handle_run_skill_script("maker", "scripts/make.py")
+    assert not result.success and ".hid/evil.py" in result.error and not calls
+
+
+def test_native_module_outside_script_tree_does_not_block(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    (skill / "assets").mkdir()
+    (skill / "assets" / "x.so").write_bytes(b"\0")
+    assert ft._handle_run_skill_script("maker", "scripts/make.py").success
+
+
+def test_static_check_is_skipped_only_for_the_wrapper(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    ft._handle_run_skill_script("maker", "scripts/make.py")
+    assert calls[0]["static_check"] is False and calls[0]["skip_safety"] is False
+
+
+def test_path_containing_subprocess_is_not_a_false_positive(tmp_path, monkeypatch):
+    """The wrapper text (it embeds the path) must not trip static validation."""
+    import freecad_ai.core.executor as ex
+    import freecad_ai.core.active_document as ad
+    sd = tmp_path / "skills" / "subprocess-helpers" / "scripts"
+    sd.mkdir(parents=True)
+    (sd.parent / "SKILL.md").write_text("# H\nHelps.\n")
+    (sd / "a.py").write_text("print('ok')\n")
+    monkeypatch.setattr(skills_mod, "SKILLS_DIR", str(tmp_path / "skills"))
+    monkeypatch.setattr(skills_mod, "BUILTIN_SKILLS_DIR", str(tmp_path / "none"))
+    _dangerous(monkeypatch, False)
+    monkeypatch.setattr(ex, "_sandbox_test", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(ad, "get_synced_active_document", lambda: None)
+    result = ft._handle_run_skill_script("subprocess-helpers", "scripts/a.py")
+    assert "validation failed" not in (result.error or "")
+    assert "No active document" in result.error  # got past Layer 1

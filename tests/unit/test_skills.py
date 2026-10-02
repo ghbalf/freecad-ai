@@ -607,3 +607,45 @@ class TestExtraSkillDirs:
             assert "gear" in {s["name"] for s in status}
         finally:
             locked.chmod(0o755)
+
+
+class TestFinalReviewFixes:
+    def _reg(self, tmp_path, monkeypatch, name="s"):
+        import freecad_ai.extensions.skills as skills_mod
+        sd = tmp_path / "skills" / name
+        sd.mkdir(parents=True)
+        (sd / "SKILL.md").write_text("# S\nBody.\n")
+        monkeypatch.setattr(skills_mod, "SKILLS_DIR", str(tmp_path / "skills"))
+        monkeypatch.setattr(skills_mod, "BUILTIN_SKILLS_DIR", str(tmp_path / "none"))
+        return sd
+
+    def test_optimizer_backup_is_not_a_skill_file(self, tmp_path, monkeypatch):
+        sd = self._reg(tmp_path, monkeypatch)
+        (sd / "SKILL.md.original").write_text("old\n")
+        skill = SkillsRegistry().get_skill("s")
+        assert "SKILL.md.original" not in skill.files
+        assert "SKILL.md.original" not in SkillsRegistry().render_references_manifest(skill)
+
+    def test_truncated_latin1_is_not_silently_corrupted(self, tmp_path, monkeypatch):
+        sd = self._reg(tmp_path, monkeypatch)
+        (sd / "big.txt").write_bytes(b"caf\xe9 " * 30000)
+        result = SkillsRegistry().get_skill_resource("s", "big.txt")
+        assert "error" in result and "binary" in result["error"]
+
+    def test_truncated_utf8_cut_mid_character_is_kept_clean(self, tmp_path, monkeypatch):
+        import freecad_ai.extensions.skills as skills_mod
+        sd = self._reg(tmp_path, monkeypatch)
+        n = skills_mod.MAX_RESOURCE_BYTES
+        (sd / "big.txt").write_bytes(b"a" * (n - 1) + "é".encode() + b"tail" * 10)
+        out = SkillsRegistry().get_skill_resource("s", "big.txt")["output"]
+        assert out.startswith("a" * (n - 1)) and "�" not in out
+
+    def test_cross_drive_commonpath_is_treated_as_outside(self, tmp_path, monkeypatch):
+        import freecad_ai.extensions.skills as skills_mod
+        sd = self._reg(tmp_path, monkeypatch)
+        (sd / "f.md").write_text("x")
+        def boom(paths):
+            raise ValueError("Paths don't have the same drive")
+        monkeypatch.setattr(skills_mod.os.path, "commonpath", boom)
+        skill = SkillsRegistry().get_skill("s")  # must not raise
+        assert skill is not None and "f.md" not in skill.files

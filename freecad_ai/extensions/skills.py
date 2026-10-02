@@ -26,7 +26,7 @@ _FALLBACK_DESCRIPTION_MAX = 100
 MAX_SKILL_FILES = 500
 MAX_RESOURCE_BYTES = 100_000
 MANIFEST_MAX = 40
-_SKIP_ROOT_FILES = {"SKILL.md", "handler.py", "VALIDATION.md"}
+_SKIP_ROOT_FILES = {"SKILL.md", "SKILL.md.original", "handler.py", "VALIDATION.md"}
 _SKIP_DIRS = {"__pycache__", "node_modules", ".venv", ".git"}
 
 _log = logging.getLogger(__name__)
@@ -283,7 +283,19 @@ class SkillsRegistry:
         binary = b"\0" in data[:8192]
         if not binary:
             try:
-                text = data.decode("utf-8", "ignore" if truncated else "strict")
+                if truncated:
+                    # The cut may land inside a multi-byte character: trim at
+                    # most 3 trailing bytes to a boundary, then decode strictly
+                    # so genuinely non-UTF-8 files are still refused.
+                    for cut in range(4):
+                        try:
+                            text = data[:len(data) - cut].decode("utf-8")
+                            break
+                        except UnicodeDecodeError:
+                            if cut == 3:
+                                raise
+                else:
+                    text = data.decode("utf-8")
             except UnicodeDecodeError:
                 binary = True
         if binary:
@@ -298,8 +310,10 @@ class SkillsRegistry:
         """Resolve a runnable script from a skill's allowlist.
 
         Returns (abspath, "", py_paths) or ("", error, []). py_paths lists
-        every .py file in the skill, so the caller can validate the modules
-        a script may import, not just the script itself.
+        every .py file under the script's own directory (read from disk,
+        including folders the allowlist scan skips): that directory is
+        sys.path[0], so those are the modules the script can import. The
+        caller validates them, not just the script itself.
         """
         skill = self._skills.get(name)
         if not skill:
@@ -312,32 +326,45 @@ class SkillsRegistry:
         if not key.endswith(".py"):
             return "", (f"Only Python scripts run inside FreeCAD. Read '{key}' "
                         f"with use_skill(name='{name}', resource='{key}') instead."), []
-        return skill.files[key], "", [(k, skill.files[k]) for k in scripts]
+        path = skill.files[key]
+        py = []
+        for dirpath, _dirs, filenames in os.walk(os.path.dirname(path), followlinks=False):
+            for fn in sorted(filenames):
+                if fn.lower().endswith(".py"):
+                    full = os.path.join(dirpath, fn)
+                    rel = os.path.relpath(full, skill.path).replace(os.sep, "/")
+                    py.append((rel, full))
+        return path, "", py
 
-    def find_unvalidatable(self, name: str) -> str:
-        """Return a relative path (or reason) that makes the skill's Python
+    def find_unvalidatable(self, name: str, script: str = "") -> str:
+        """Return a relative path (or reason) that makes the script's Python
         impossible to validate up front, or "" if all is well.
 
-        Scripts can import siblings from their own folder, so everything
-        importable must be a scanned .py file. Flags native modules, sourceless
-        .pyc files, .py files that resolve outside the folder, and a file count
-        that reached MAX_SKILL_FILES (more .py files may exist unscanned).
+        Only the script's own directory tree matters (it is sys.path[0]; with
+        no `script`, the whole skill). Flags native modules, sourceless .pyc
+        files, .py files and directories that resolve outside the skill
+        folder, and a tree holding MAX_SKILL_FILES files or more.
         """
         skill = self._skills.get(name)
         if not skill:
             return ""
-        if len(skill.files) >= MAX_SKILL_FILES:
-            return f"(more than {MAX_SKILL_FILES} files in the skill)"
+        top = skill.path
+        if script:
+            key = self._resolve_key(skill, script)
+            if key is not None and key in skill.files:
+                top = os.path.dirname(skill.files[key])
         root = os.path.realpath(skill.path)
-        for dirpath, dirnames, filenames in os.walk(skill.path, followlinks=False):
+        seen = 0
+        for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
             for d in dirnames:
                 dpath = os.path.join(dirpath, d)
-                if os.path.islink(dpath):
-                    real = os.path.realpath(dpath)
-                    if os.path.commonpath([root, real]) != root:
-                        return os.path.relpath(dpath, skill.path).replace(os.sep, "/")
+                if os.path.islink(dpath) and not _inside(root, os.path.realpath(dpath)):
+                    return os.path.relpath(dpath, skill.path).replace(os.sep, "/")
             in_cache = os.path.basename(dirpath) == "__pycache__"
             for fn in sorted(filenames):
+                seen += 1
+                if seen >= MAX_SKILL_FILES:
+                    return f"(more than {MAX_SKILL_FILES} files in the script's folder)"
                 low = fn.lower()
                 path = os.path.join(dirpath, fn)
                 rel = os.path.relpath(path, skill.path).replace(os.sep, "/")
@@ -345,10 +372,8 @@ class SkillsRegistry:
                     return rel
                 if low.endswith(".pyc") and not in_cache:
                     return rel
-                if low.endswith(".py"):
-                    real = os.path.realpath(path)
-                    if os.path.commonpath([root, real]) != root:
-                        return rel
+                if low.endswith(".py") and not _inside(root, os.path.realpath(path)):
+                    return rel
         return ""
 
     def _run_handler(self, skill: Skill, args: str) -> dict | None:
@@ -519,6 +544,14 @@ def _list_keys(keys, limit: int = 20) -> str:
     return listed
 
 
+def _inside(root: str, real: str) -> bool:
+    """True when `real` lies within `root` (False across Windows drives)."""
+    try:
+        return os.path.commonpath([root, real]) == root
+    except ValueError:
+        return False
+
+
 def _scan_skill_files(skill_dir: str) -> dict:
     """Allowlist of every file in a skill folder, keyed by POSIX relative path.
 
@@ -537,7 +570,7 @@ def _scan_skill_files(skill_dir: str) -> dict:
                 continue
             path = os.path.join(dirpath, fn)
             real = os.path.realpath(path)
-            if os.path.commonpath([root, real]) != root or not os.path.isfile(real):
+            if not _inside(root, real) or not os.path.isfile(real):
                 continue
             key = fn if rel_dir == "." else f"{rel_dir.replace(os.sep, '/')}/{fn}"
             if len(files) >= MAX_SKILL_FILES:
