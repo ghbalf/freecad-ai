@@ -670,6 +670,11 @@ class AppConfig:
     # least specific first, so a project file adds to your defaults instead
     # of taking their place.
     merge_agents_md: bool = False
+    # Extra skill folders, e.g. ~/.claude/skills (Agent Skills format). Empty
+    # (the default) scans only the built-in and user dirs, as before. Stored
+    # as typed; ~ is expanded when read. Scan order: built-in, these (in list
+    # order), then the user dir; a later folder's skill wins on a name clash.
+    extra_skill_dirs: list = field(default_factory=list)
 
     # ── Prompt caching (#47) ────────────────────────────────────
     # Every provider that discounts repeated prompts matches on a *prefix*

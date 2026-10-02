@@ -528,3 +528,66 @@ class TestSkillFiles:
         monkeypatch.setattr(skills_mod, "MANIFEST_MAX", 2)
         text = SkillsRegistry().execute_skill("pdfish")["inject_prompt"]
         assert "…and 3 more" in text
+
+
+class TestExtraSkillDirs:
+    def _write(self, root, name, desc):
+        sd = root / name
+        sd.mkdir(parents=True)
+        (sd / "SKILL.md").write_text(f"---\ndescription: {desc}\n---\n# {name}\n")
+
+    def _dirs(self, tmp_path, monkeypatch):
+        import freecad_ai.extensions.skills as skills_mod
+        builtin, extra, user = (tmp_path / "builtin", tmp_path / "extra", tmp_path / "user")
+        self._write(builtin, "gear", "built-in gear")
+        self._write(builtin, "lattice", "built-in lattice")
+        self._write(extra, "gear", "external gear")
+        self._write(extra, "lattice", "external lattice")
+        self._write(user, "lattice", "user lattice")
+        monkeypatch.setattr(skills_mod, "BUILTIN_SKILLS_DIR", str(builtin))
+        monkeypatch.setattr(skills_mod, "SKILLS_DIR", str(user))
+        return extra
+
+    def test_default_is_empty(self):
+        from freecad_ai.config import AppConfig
+        assert AppConfig().extra_skill_dirs == []
+        assert AppConfig.from_dict({"extra_skill_dirs": ["~/x"]}).extra_skill_dirs == ["~/x"]
+
+    def test_precedence_builtin_extra_user(self, tmp_path, monkeypatch):
+        extra = self._dirs(tmp_path, monkeypatch)
+        reg = SkillsRegistry(extra_dirs=[str(extra)])
+        assert reg.get_skill("gear").description == "external gear"
+        assert reg.get_skill("lattice").description == "user lattice"
+
+    def test_reads_config_when_not_given(self, tmp_path, monkeypatch):
+        import freecad_ai.config as config_mod
+        extra = self._dirs(tmp_path, monkeypatch)
+        cfg = config_mod.AppConfig()
+        cfg.extra_skill_dirs = [str(extra)]
+        monkeypatch.setattr(config_mod, "load_config", lambda: cfg)
+        assert SkillsRegistry().get_skill("gear").description == "external gear"
+
+    def test_tilde_expanded_and_missing_dir_skipped(self, tmp_path, monkeypatch):
+        extra = self._dirs(tmp_path, monkeypatch)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        reg = SkillsRegistry(extra_dirs=["~/extra", str(tmp_path / "missing")])
+        assert reg.get_skill("gear").description == "external gear"
+
+    def test_string_instead_of_list_is_one_dir(self, tmp_path, monkeypatch):
+        extra = self._dirs(tmp_path, monkeypatch)
+        reg = SkillsRegistry(extra_dirs=str(extra))
+        assert reg.get_skill("gear").description == "external gear"
+
+    def test_extra_dir_that_is_itself_a_skill(self, tmp_path, monkeypatch):
+        extra = self._dirs(tmp_path, monkeypatch)
+        self._write(tmp_path / "solo", "my-skill", "solo skill")
+        reg = SkillsRegistry(extra_dirs=[str(tmp_path / "solo" / "my-skill")])
+        assert reg.get_skill("my-skill").description == "solo skill"
+
+    def test_status_marks_external(self, tmp_path, monkeypatch):
+        extra = self._dirs(tmp_path, monkeypatch)
+        status = {s["name"]: s for s in SkillsRegistry.get_skill_status(extra_dirs=[str(extra)])}
+        assert status["gear"]["source"] == "external"
+        assert status["gear"]["description"] == "external gear"
+        assert status["gear"]["has_user_copy"] is False   # Reset stays disabled
+        assert status["lattice"]["source"] == "modified"  # user copy still wins

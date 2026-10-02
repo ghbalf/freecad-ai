@@ -57,31 +57,25 @@ class Skill:
 class SkillsRegistry:
     """Registry of available skills with execution support."""
 
-    def __init__(self):
+    def __init__(self, extra_dirs=None):
         self._skills: dict[str, Skill] = {}
+        self._extra_dirs = _extra_skill_dirs(extra_dirs)
         self._load_skills()
 
     def _load_skills(self):
         """Scan skills directories and load skill definitions.
 
-        Scans both the built-in skills directory (in the repo) and the user
-        skills directory (~/.config/FreeCAD/FreeCADAI/skills/). User skills
-        take precedence over built-in skills with the same name.
+        Order: built-in, extra_skill_dirs (list order), user dir
+        (~/.config/FreeCAD/FreeCADAI/skills/). A later folder's skill wins
+        on a name clash, so the user dir always has the last word.
         """
-        # Load built-in first, then user (user overrides built-in)
-        for skills_dir in (BUILTIN_SKILLS_DIR, SKILLS_DIR):
+        for skills_dir in (BUILTIN_SKILLS_DIR, *self._extra_dirs, SKILLS_DIR):
             self._scan_skills_dir(skills_dir)
 
     def _scan_skills_dir(self, skills_dir: str):
         """Scan a single directory for skill definitions."""
-        if not os.path.isdir(skills_dir):
-            return
-
-        for entry in os.listdir(skills_dir):
-            skill_dir = os.path.join(skills_dir, entry)
+        for entry, skill_dir in _skill_dirs_in(skills_dir):
             skill_file = os.path.join(skill_dir, "SKILL.md")
-            if not os.path.isdir(skill_dir) or not os.path.isfile(skill_file):
-                continue
 
             try:
                 with open(skill_file, "r", encoding="utf-8") as f:
@@ -390,40 +384,34 @@ class SkillsRegistry:
         return None
 
     @staticmethod
-    def get_skill_status() -> list[dict]:
+    def get_skill_status(extra_dirs=None) -> list[dict]:
         """Return status info for all skills across built-in and user dirs.
 
         Each entry: {"name", "description", "source", "has_user_copy",
                      "is_modified", "builtin_path", "user_path"}
 
-        source: "built-in", "user", or "modified" (user copy differs from built-in)
+        source: "built-in", "user", "external" (from extra_skill_dirs), or "modified"
+        (user copy differs from built-in)
         """
         results = []
-        builtin_skills = {}
-        user_skills = {}
+        builtin_skills = {n: os.path.join(p, "SKILL.md")
+                          for n, p in _skill_dirs_in(BUILTIN_SKILLS_DIR)}
+        external_skills = {}
+        for root in _extra_skill_dirs(extra_dirs):
+            external_skills.update({n: os.path.join(p, "SKILL.md")
+                                    for n, p in _skill_dirs_in(root)})
+        user_skills = {n: os.path.join(p, "SKILL.md")
+                       for n, p in _skill_dirs_in(SKILLS_DIR)}
 
-        # Scan built-in
-        if os.path.isdir(BUILTIN_SKILLS_DIR):
-            for entry in sorted(os.listdir(BUILTIN_SKILLS_DIR)):
-                skill_file = os.path.join(BUILTIN_SKILLS_DIR, entry, "SKILL.md")
-                if os.path.isfile(skill_file):
-                    builtin_skills[entry] = skill_file
-
-        # Scan user
-        if os.path.isdir(SKILLS_DIR):
-            for entry in sorted(os.listdir(SKILLS_DIR)):
-                skill_file = os.path.join(SKILLS_DIR, entry, "SKILL.md")
-                if os.path.isfile(skill_file):
-                    user_skills[entry] = skill_file
-
-        all_names = sorted(set(builtin_skills) | set(user_skills))
+        all_names = sorted(set(builtin_skills) | set(external_skills) | set(user_skills))
 
         for name in all_names:
             b_path = builtin_skills.get(name)
             u_path = user_skills.get(name)
+            e_path = external_skills.get(name)
 
             # Read description from whichever is active (user overrides built-in)
-            active_path = u_path or b_path
+            active_path = u_path or e_path or b_path
             description = compatibility = ""
             try:
                 with open(active_path, "r", encoding="utf-8") as f:
@@ -437,10 +425,12 @@ class SkillsRegistry:
             if b_path and u_path:
                 is_modified = _file_hash(b_path) != _file_hash(u_path)
                 source = "modified" if is_modified else "built-in"
-            elif b_path:
-                source = "built-in"
-            else:
+            elif u_path:
                 source = "user"
+            elif e_path:
+                source = "external"
+            else:
+                source = "built-in"
 
             results.append({
                 "name": name,
@@ -451,6 +441,7 @@ class SkillsRegistry:
                 "is_modified": source == "modified",
                 "builtin_path": b_path or "",
                 "user_path": u_path or "",
+                "external_path": e_path or "",
             })
 
         return results
@@ -471,6 +462,32 @@ class SkillsRegistry:
             shutil.rmtree(user_skill_dir)
             return True
         return False
+
+
+def _extra_skill_dirs(dirs) -> list:
+    """Normalise extra_skill_dirs: a hand-edited string is one dir, not chars."""
+    if dirs is None:
+        try:
+            from ..config import load_config
+            dirs = load_config().extra_skill_dirs
+        except Exception:
+            dirs = []
+    if isinstance(dirs, str):
+        dirs = [dirs]
+    if not isinstance(dirs, (list, tuple)):
+        return []
+    return [os.path.expanduser(d.strip()) for d in dirs
+            if isinstance(d, str) and d.strip()]
+
+
+def _skill_dirs_in(root: str) -> list:
+    """(name, path) of each skill under root; root itself if it is a skill."""
+    if not os.path.isdir(root):
+        return []
+    if os.path.isfile(os.path.join(root, "SKILL.md")):
+        return [(os.path.basename(os.path.normpath(root)), root)]
+    return [(entry, os.path.join(root, entry)) for entry in sorted(os.listdir(root))
+            if os.path.isfile(os.path.join(root, entry, "SKILL.md"))]
 
 
 def _describe(frontmatter: dict, body: str) -> str:
