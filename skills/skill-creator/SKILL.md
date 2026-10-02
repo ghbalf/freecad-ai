@@ -64,12 +64,28 @@ The user invokes it with `/<name>`.
 
 ```
 skill-name/
-├── SKILL.md          (required — instructions injected into LLM prompt)
-├── handler.py        (optional — Python handler with execute(args) function)
-└── references/       (optional — additional docs loaded as needed)
-    ├── dimensions.md
-    └── materials.md
+├── SKILL.md          (required — frontmatter `name` + `description`, then instructions)
+├── handler.py        (optional, FreeCAD AI only — deterministic execute(args) handler)
+├── references/       (optional — docs the model reads on demand, subfolders allowed)
+│   ├── dimensions.md
+│   └── materials.md
+├── scripts/          (optional — Python scripts run with run_skill_script)
+└── assets/           (optional — templates/data files the scripts open via __file__)
 ```
+
+This is the open Agent Skills layout, so the same folder also works in Claude Code,
+Codex or Gemini CLI. Start SKILL.md with frontmatter whose `name` equals the folder name:
+
+```
+---
+name: skill-name
+description: "What it does and when to use it, in one or two sentences."
+---
+```
+
+Quote the description: other harnesses parse it as strict YAML, where an unquoted `: ` breaks it.
+Link files with relative Markdown links, e.g. `[thread table](references/thread-tables.md)`;
+the model loads them with `use_skill(name=..., resource="references/thread-tables.md")`.
 
 #### Progressive disclosure
 
@@ -224,3 +240,5 @@ fastener/
     ├── imperial-bolts.md    # #2–1" dimensions
     └── materials.md         # Strength grades, torque specs
 ```
+
+Reference files may live in subfolders (`references/metric/m3.md`). A script in `scripts/` runs inside FreeCAD like a command-line program: it sees `__name__ == "__main__"`, `sys.argv`, and its own `__file__`, so it can open `../assets/...` next to it. Use `sys.exit(1)` to report failure.

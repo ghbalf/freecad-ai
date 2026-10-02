@@ -1,3 +1,8 @@
+---
+name: thread-insert
+description: "Create properly sized holes for heat-set threaded inserts (common in 3D printed parts)."
+---
+
 # Heat-Set Thread Insert Holes
 
 Create properly sized holes for heat-set threaded inserts (common in 3D printed parts).

@@ -1,3 +1,8 @@
+---
+name: gear
+description: "Create an involute spur gear using FreeCAD's Part module."
+---
+
 # Spur Gear Generator
 
 Create an involute spur gear using FreeCAD's Part module.

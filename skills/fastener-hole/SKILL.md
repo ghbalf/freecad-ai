@@ -1,3 +1,8 @@
+---
+name: fastener-hole
+description: "Create standard fastener holes: clearance, counterbore, or countersink."
+---
+
 # Fastener Hole Patterns
 
 Create standard fastener holes: clearance, counterbore, or countersink.

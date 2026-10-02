@@ -1,3 +1,8 @@
+---
+name: enclosure
+description: "Generate a parametric electronics enclosure with a base and lid."
+---
+
 # Enclosure Generator
 
 Generate a parametric electronics enclosure with a base and lid.
