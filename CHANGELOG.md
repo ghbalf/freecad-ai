@@ -21,10 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`run_skill_script(skill, script, args)`** runs a skill's Python (`.py`)
   scripts inside FreeCAD, as `__main__` with `sys.argv` and `__file__` set;
   `sys.exit(n)` with `n != 0` is reported as an error. Outside Dangerous mode
-  every `.py` in the skill is validated first, and a skill that holds code the
+  every `.py` in the script's own folder (including subfolders such as
+  `node_modules`) is validated first, and a script whose folder holds code the
   validator cannot see (`.so`/`.pyd`, a `.pyc` outside `__pycache__`, a `.py`
   file or directory symlinked outside the skill, or 500 or more files) is
-  refused. Non-Python scripts can be read but not run.
+  refused. `args` may be a string or a list. Non-Python scripts can be read but not run.
 - **Extra skill folders** (Settings → Tools → Skills, one path per line with
   a *Browse…* button, or Edit → Preferences; `extra_skill_dirs` in
   `config.json`). Empty by default, so nothing changes until you add one. `~`
