@@ -134,3 +134,30 @@ def test_unknown_script_list_is_capped(skill, calls):
 def test_none_args_are_tolerated(skill, calls, monkeypatch):
     _dangerous(monkeypatch, False)
     assert ft._handle_run_skill_script("maker", "scripts/make.py", None).success
+
+
+def test_escaping_symlinked_dir_is_rejected(skill, calls, monkeypatch, tmp_path):
+    _dangerous(monkeypatch, False)
+    outside = tmp_path / "outside_lib"
+    outside.mkdir()
+    (outside / "x.py").write_text("import os\n")
+    (skill / "scripts" / "lib").symlink_to(outside, target_is_directory=True)
+    result = ft._handle_run_skill_script("maker", "scripts/make.py")
+    assert not result.success and "scripts/lib" in result.error and not calls
+
+
+def test_internal_symlinked_dir_is_allowed(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    (skill / "real").mkdir()
+    (skill / "real" / "x.py").write_text("pass\n")
+    (skill / "scripts" / "lib").symlink_to(skill / "real", target_is_directory=True)
+    assert ft._handle_run_skill_script("maker", "scripts/make.py").success
+
+
+def test_file_cap_reached_is_refused(skill, calls, monkeypatch):
+    _dangerous(monkeypatch, False)
+    monkeypatch.setattr(skills_mod, "MAX_SKILL_FILES", 2)
+    for i in range(3):
+        (skill / "scripts" / f"extra{i}.py").write_text("pass\n")
+    result = ft._handle_run_skill_script("maker", "scripts/extra0.py")
+    assert not result.success and "Dangerous mode" in result.error and not calls

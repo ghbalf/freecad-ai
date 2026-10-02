@@ -336,6 +336,12 @@ class SkillsRegistry:
             return f"(more than {MAX_SKILL_FILES} files in the skill)"
         root = os.path.realpath(skill.path)
         for dirpath, dirnames, filenames in os.walk(skill.path, followlinks=False):
+            for d in dirnames:
+                dpath = os.path.join(dirpath, d)
+                if os.path.islink(dpath):
+                    real = os.path.realpath(dpath)
+                    if os.path.commonpath([root, real]) != root:
+                        return os.path.relpath(dpath, skill.path).replace(os.sep, "/")
             in_cache = os.path.basename(dirpath) == "__pycache__"
             for fn in sorted(filenames):
                 low = fn.lower()
