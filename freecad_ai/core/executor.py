@@ -177,6 +177,14 @@ def extract_truncated_block(text: str) -> str | None:
     return code if code.strip() else None
 
 
+# Keep in step with _find_freecad_cmd below.
+FREECAD_CMD_SEARCHED = (
+    "No FreeCAD console binary found. Searched: bin/freecadcmd next to the "
+    "running FreeCAD, ~/bin/FreeCAD*.AppImage, /usr/local/bin/FreeCAD*.AppImage, "
+    "/usr/bin/freecadcmd, /usr/bin/freecad, /usr/local/bin/freecad, "
+    "~/bin/freecad, and freecadcmd/freecad on PATH.")
+
+
 def _find_freecad_cmd() -> str:
     """Find the FreeCAD executable for console-mode subprocess runs.
 
