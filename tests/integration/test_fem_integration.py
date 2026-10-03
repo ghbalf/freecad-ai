@@ -88,3 +88,19 @@ def test_missing_material_is_reported(tmp_path, freecad_bin):
     s = _summary(_go(tmp_path, freecad_bin, fem.build_solve_code("Analysis", ""), doc))
     assert s == {"error": "The analysis is not ready: No material object defined "
                           "in the analysis."}
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def test_results_import_and_replace_on_a_second_run(tmp_path, freecad_bin):
+    doc = _cantilever(tmp_path, freecad_bin)
+    s = _summary(_go(tmp_path, freecad_bin, fem.build_solve_code("Analysis", ""), doc))
+    code = ("import sys\nsys.path.insert(0, {!r})\n"
+            "from freecad_ai.core import fem\n"
+            "an = App.ActiveDocument.getObject('Analysis')\n"
+            "for _ in range(2):\n"
+            "    fem.import_results(an, {!r})\n"
+            "    App.ActiveDocument.recompute()\n"
+            "print(sorted(o.Name for o in App.ActiveDocument.Objects))\n").format(_REPO, s["frd"])
+    out = _go(tmp_path, freecad_bin, code, doc).stdout
+    assert "'CCX_Results'" in out and "'Pipeline_CCX_Results'" in out
+    assert "CCX_Results001" not in out

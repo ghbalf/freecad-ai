@@ -141,3 +141,90 @@ def build_solve_code(analysis_name, mesh_size):
     """The child code that solves ``analysis_name`` and writes summary.json."""
     return "ANALYSIS = {!r}\nMESH_SIZE = {!r}\n".format(
         analysis_name, mesh_size or "") + _SOLVE_CODE
+
+
+CONVERGENCE_NOTE = (
+    "Note: a coarse mesh underestimates peak stress. Re-run with a smaller "
+    "mesh_size and compare to check convergence.")
+
+
+class FemError(Exception):
+    """A problem the user can fix; the message is the tool's error text."""
+
+
+def prepare_copy(analysis, copy_path):
+    """Find the analysis and save a copy of its document. GUI thread only.
+
+    Returns (document name, analysis object name).
+    """
+    from .active_document import resolve_active_document
+    doc = resolve_active_document()
+    if doc is None:
+        raise FemError("No active document")
+    analyses = [o for o in doc.Objects if o.isDerivedFrom("Fem::FemAnalysis")]
+    if not analyses:
+        raise FemError("The active document has no FEM analysis. Set one up "
+                       "(analysis, material, constraints, loads) with execute_code first.")
+    labels = ", ".join(a.Label for a in analyses)
+    if analysis:
+        found = [a for a in analyses if analysis in (a.Name, a.Label)]
+        if not found:
+            raise FemError("No analysis named {!r}. Analyses: {}".format(analysis, labels))
+        chosen = found[0]
+    elif len(analyses) > 1:
+        raise FemError("Several analyses ({}): pass analysis to pick one.".format(labels))
+    else:
+        chosen = analyses[0]
+    doc.saveCopy(copy_path)
+    return doc.Name, chosen.Name
+
+
+def import_results(analysis, frd_path):
+    """Replace the analysis's results with those in ``frd_path``."""
+    from femresult import resulttools
+    from feminout import importCcxFrdResults
+    resulttools.purge_results(analysis)
+    importCcxFrdResults.importFrd(frd_path, analysis, "CCX_")
+
+
+def import_into(doc_name, analysis_name, frd_path):
+    """Import results into the document the solve started from. GUI thread only."""
+    import FreeCAD as App
+    doc = App.getDocument(doc_name)
+    analysis = doc.getObject(analysis_name)
+    if analysis is None:
+        raise FemError("analysis {!r} no longer exists".format(analysis_name))
+    import_results(analysis, frd_path)
+    doc.recompute()
+
+
+def format_summary(summary, import_note=""):
+    """The text the LLM sees for a solved analysis."""
+    lines = ["FEM analysis {!r} solved with CalculiX in {:g} s.".format(
+        summary["analysis"], summary.get("elapsed_s", 0))]
+    if summary.get("solver_created"):
+        lines.append("The analysis had no CalculiX solver; a default CalculiX "
+                     "solver (SolverCcxTools) was used for this run.")
+    mesh = [summary["mesher"]]
+    if summary.get("mesh_size"):
+        mesh.append(summary["mesh_size"])
+    mesh += ["{} nodes".format(summary["nodes"]), "{} elements".format(summary["elements"])]
+    lines.append("Mesh: {}.".format(", ".join(mesh)))
+    static = "max_von_mises" in summary
+    if static:
+        at = ", ".join("{:.4g}".format(c) for c in summary["max_von_mises_at"])
+        lines.append("Max von Mises stress: {:.4g} MPa at ({}) mm".format(
+            summary["max_von_mises"], at))
+    if "max_displacement" in summary:
+        lines.append("Max displacement: {:.4g} mm".format(summary["max_displacement"]))
+    if not static:
+        lines.append("Analysis type {!r}: only static analyses are summarised.".format(
+            summary.get("analysis_type", "")))
+    if summary.get("ccx_warnings"):
+        lines.append("CalculiX warnings:")
+        lines += summary["ccx_warnings"][:20]
+    if import_note:
+        lines.append(import_note)
+    if static:
+        lines.append(CONVERGENCE_NOTE)
+    return "\n".join(lines)
