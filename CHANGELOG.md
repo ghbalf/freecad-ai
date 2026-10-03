@@ -39,6 +39,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Not included: `allowed-tools` in frontmatter is not enforced, and
   other harnesses' skill folders are not discovered automatically or
   installed from URLs; add them by hand as extra skill folders.
+- **`execute_code_headless` runs long Python jobs in a separate FreeCAD
+  process** (#114). Heavy booleans, batch exports or analyses no longer
+  freeze the GUI, and a crash in the code cannot take FreeCAD down. The
+  process works on a copy of the active document (unsaved edits included)
+  and never changes the open one; results come back as printed output plus
+  any files written under `WORK_DIR`, kept in the last 20 run folders under
+  the config directory's `headless/`. Default timeout 600 s; the chat's Stop
+  button ends a run. Verified on Linux only: the macOS and Windows code paths
+  exist but are untested.
+- **`run_fem_analysis`** (#113): solves an existing FEM analysis with
+  CalculiX in a separate FreeCAD process (FreeCAD stays responsive) and
+  returns max von Mises stress, max displacement and mesh size. A Gmsh mesh
+  is regenerated on every run (or created if the analysis has none, size
+  via `mesh_size`); a missing CalculiX solver is added for the run. Results
+  are imported into the open analysis, replacing earlier ones, so they can
+  be colour-plotted. Setting up the analysis (material, constraints, loads)
+  stays with `execute_code`. Tested on Linux only; the macOS/Windows paths
+  to `ccx` and `gmsh` are untested.
 - **MCP clients now see `capture_viewport` screenshots** (#112). Over MCP
   the result carries the PNG as an `image` content block after the text, in
   both protocol eras, so Claude Desktop, Claude Code and other clients can

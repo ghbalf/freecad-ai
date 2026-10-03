@@ -177,6 +177,14 @@ def extract_truncated_block(text: str) -> str | None:
     return code if code.strip() else None
 
 
+# Keep in step with _find_freecad_cmd below.
+FREECAD_CMD_SEARCHED = (
+    "No FreeCAD console binary found. Searched: bin/freecadcmd next to the "
+    "running FreeCAD, ~/bin/FreeCAD*.AppImage, /usr/local/bin/FreeCAD*.AppImage, "
+    "/usr/bin/freecadcmd, /usr/bin/freecad, /usr/local/bin/freecad, "
+    "~/bin/freecad, and freecadcmd/freecad on PATH.")
+
+
 def _find_freecad_cmd() -> str:
     """Find the FreeCAD executable for console-mode subprocess runs.
 
@@ -287,38 +295,43 @@ def _collect_object_issues(objects_state, baseline_bad):
     return issues
 
 
-def _sandbox_test(code: str, timeout: int = 15, document_path: str | None = None) -> tuple:
-    """Test code in a headless FreeCAD subprocess.
+# Installed in place of the real FreeCADGui in every child script: see the
+# comment above {gui_stub} in _SANDBOX_HARNESS for why the real one must
+# never be imported there.
+_GUI_STUB = '''    import types
+    class _NoOpGui:
+        def __getattr__(self, _name):
+            return self
+        def __call__(self, *a, **kw):
+            return self
+    _fake_gui = types.ModuleType("FreeCADGui")
+    _fake_gui.ActiveDocument = _NoOpGui()
+    _fake_gui.SendMsgToActiveView = lambda *a, **kw: None
+    _fake_gui.updateGui = lambda *a, **kw: None
+    sys.modules["FreeCADGui"] = _fake_gui'''
 
-    Returns (safe: bool, error_message: str).
-    If FreeCAD console is not available, returns (True, "") to skip sandboxing.
-    """
-    freecad_bin = _find_freecad_cmd()
-    if not freecad_bin:
-        return True, ""  # Can't sandbox, let it through
 
-    result_file = tempfile.mktemp(suffix=".json")
-    script_file = tempfile.mktemp(suffix=".py")
-
+def _open_block(document_path, who, new_name):
+    """Harness lines that leave the document to work on in ``doc``."""
     if document_path:
-        open_block = (
+        return (
             "    App.openDocument({path!r})\n"
             "    doc = App.ActiveDocument\n"
             "    if doc is None:\n"
-            "        raise RuntimeError('Sandbox: openDocument did not set ActiveDocument')\n"
+            "        raise RuntimeError('{who}: openDocument did not set ActiveDocument')\n"
             "    App.setActiveDocument(doc.Name)"
-        ).format(path=document_path)
-    else:
-        open_block = '    doc = App.newDocument("SandboxTest")'
+        ).format(path=document_path, who=who)
+    return '    doc = App.newDocument("{}")'.format(new_name)
 
-    # Harness: run user code, then close all documents without saving (temp copy is disposable).
-    # Stub FreeCADGui view methods that only work in a graphical session.
-    # Harness captures two classes of failure that Python exceptions miss:
-    #   1. Errors the C++ layer logs to fd 2 (PositionBySupport attachment
-    #      failures, topological naming mismatches) — bracketed by markers
-    #      here, read and baselined by the parent after the process exits
-    #   2. Features that build a null/invalid Shape without raising
-    harness = '''import sys, os as _os, json, traceback
+
+# Harness: run user code, then close all documents without saving (temp copy is disposable).
+# Stub FreeCADGui view methods that only work in a graphical session.
+# Harness captures two classes of failure that Python exceptions miss:
+#   1. Errors the C++ layer logs to fd 2 (PositionBySupport attachment
+#      failures, topological naming mismatches) — bracketed by markers
+#      here, read and baselined by the parent after the process exits
+#   2. Features that build a null/invalid Shape without raising
+_SANDBOX_HARNESS = '''import sys, os as _os, json, traceback
 {collect_fn_src}
 result = {{"ok": False, "error": ""}}
 try:
@@ -355,17 +368,7 @@ try:
     # touches Arch/Draft (which pull in PySide) segfaults this console
     # binary — no display, no QApplication event loop — so the real module
     # must never be imported here at all, not just patched afterward.
-    import types
-    class _NoOpGui:
-        def __getattr__(self, _name):
-            return self
-        def __call__(self, *a, **kw):
-            return self
-    _fake_gui = types.ModuleType("FreeCADGui")
-    _fake_gui.ActiveDocument = _NoOpGui()
-    _fake_gui.SendMsgToActiveView = lambda *a, **kw: None
-    _fake_gui.updateGui = lambda *a, **kw: None
-    sys.modules["FreeCADGui"] = _fake_gui
+{gui_stub}
 {open_block}
 
     # Per-object problem snapshot — shared by the baseline (pre-code) and the
@@ -452,14 +455,106 @@ finally:
     # handlers / lingering non-daemon threads that a plain sys.exit can wait on.
     import os as _os
     _os._exit(0)
-'''.format(
-        collect_fn_src=inspect.getsource(_collect_object_issues),
-        begin_marker=_USER_CODE_BEGIN,
-        end_marker=_USER_CODE_END,
-        open_block=open_block,
-        indented_code="\n".join("    " + line for line in code.splitlines()),
-        result_path=result_file,
-    )
+'''
+
+# Headless runs (#114) report what the code printed and whether it raised;
+# unlike the sandbox they pass no verdict on the model. User output goes to
+# line-buffered files rather than memory so a run killed for its timeout still
+# leaves what it printed. The code is exec'd from its source rather than
+# pasted in indented, which would change multi-line string literals.
+_HEADLESS_HARNESS = '''import sys, os as _os, json, traceback
+WORK_DIR = {work_dir!r}
+result = {{"ok": False, "error": ""}}
+_out = open(_os.path.join(WORK_DIR, "output.log"), "w", encoding="utf-8", buffering=1)
+_err = open(_os.path.join(WORK_DIR, "stderr.log"), "w", encoding="utf-8", buffering=1)
+try:
+    import FreeCAD as App
+{gui_stub}
+{open_block}
+    _src = {code!r}
+    _path = _os.path.join(WORK_DIR, "user_code.py")
+    _ns = {{"__name__": "__main__", "__file__": _path, "__builtins__": __builtins__,
+           "App": App, "FreeCAD": App, "WORK_DIR": WORK_DIR,
+           "Gui": sys.modules["FreeCADGui"], "FreeCADGui": sys.modules["FreeCADGui"]}}
+    for _name in ("Part", "PartDesign", "Sketcher", "Draft", "Mesh", "BOPTools", "math"):
+        try:
+            _ns[_name] = __import__(_name)
+        except Exception:
+            pass
+    _saved = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _out, _err
+    try:
+        exec(compile(_src, _path, "exec"), _ns)
+    except SystemExit as _exit:
+        if _exit.code not in (None, 0):
+            raise
+    finally:
+        sys.stdout, sys.stderr = _saved
+    result["ok"] = True
+except BaseException:
+    result["error"] = traceback.format_exc()
+finally:
+    try:
+        import FreeCAD as App
+        for _dn in list(App.listDocuments().keys()):
+            App.closeDocument(_dn)
+    except BaseException:
+        pass
+    for _f in (_out, _err):
+        try:
+            _f.close()
+        except Exception:
+            pass
+    with open({result_path!r}, "w", encoding="utf-8") as f:
+        json.dump(result, f)
+    # See _SANDBOX_HARNESS: some builds never exit after -c on an opened document (#14).
+    _os._exit(0)
+'''
+
+
+
+def _build_child_script(code, *, document_path, result_path, mode="sandbox"):
+    """Source of the script a FreeCAD console child runs.
+
+    ``sandbox``: the pass/fail pre-check used by execute_code.
+    ``headless``: execute_code_headless (#114).
+    """
+    if mode == "sandbox":
+        return _SANDBOX_HARNESS.format(
+            collect_fn_src=inspect.getsource(_collect_object_issues),
+            begin_marker=_USER_CODE_BEGIN,
+            end_marker=_USER_CODE_END,
+            gui_stub=_GUI_STUB,
+            open_block=_open_block(document_path, "Sandbox", "SandboxTest"),
+            indented_code="\n".join("    " + line for line in code.splitlines()),
+            result_path=result_path,
+        )
+    if mode == "headless":
+        return _HEADLESS_HARNESS.format(
+            work_dir=os.path.dirname(result_path),
+            gui_stub=_GUI_STUB,
+            open_block=_open_block(document_path, "Headless", "Headless"),
+            code=code,
+            result_path=result_path,
+        )
+    raise ValueError("unknown child-script mode: {!r}".format(mode))
+
+
+def _sandbox_test(code: str, timeout: int = 15, document_path: str | None = None) -> tuple:
+    """Test code in a headless FreeCAD subprocess.
+
+    Returns (safe: bool, error_message: str).
+    If FreeCAD console is not available, returns (True, "") to skip sandboxing.
+    """
+    freecad_bin = _find_freecad_cmd()
+    if not freecad_bin:
+        return True, ""  # Can't sandbox, let it through
+
+    result_file = tempfile.mktemp(suffix=".json")
+    script_file = tempfile.mktemp(suffix=".py")
+
+    harness = _build_child_script(
+        code, document_path=document_path, result_path=result_file, mode="sandbox")
 
     try:
         with open(script_file, "w") as f:
