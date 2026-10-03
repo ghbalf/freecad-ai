@@ -141,9 +141,39 @@ def test_import_into_returns_the_labels_it_created(monkeypatch):
     monkeypatch.setattr(fem, "import_results", lambda a, frd: a.Group.extend([
         _typed("CCX_Results", "Fem::FemResultObjectPython", "CCX_Results001"),
         _typed("Pipeline_CCX_Results", "Fem::FemPostPipeline")]))
-    doc = SimpleNamespace(getObject={"Analysis": an}.get, recompute=lambda: None)
+    _fake_doc(monkeypatch, an)
+    assert fem.import_into("Part1", "Analysis", "/r/x.frd") == (
+        "CCX_Results001", "Pipeline_CCX_Results")
+
+
+def _fake_doc(monkeypatch, analysis):
+    calls = []
+    doc = SimpleNamespace(
+        getObject={"Analysis": analysis}.get, recompute=lambda: calls.append("recompute"),
+        openTransaction=lambda label: calls.append(("open", label)),
+        commitTransaction=lambda: calls.append("commit"),
+        abortTransaction=lambda: calls.append("abort"))
     freecad = ModuleType("FreeCAD")
     freecad.getDocument = {"Part1": doc}.__getitem__
     monkeypatch.setitem(sys.modules, "FreeCAD", freecad)
-    assert fem.import_into("Part1", "Analysis", "/r/x.frd") == (
-        "CCX_Results001", "Pipeline_CCX_Results")
+    return calls
+
+
+def test_import_into_is_one_undo_step(monkeypatch):
+    # The purge deletes the old results and pipelines; Ctrl+Z must bring them back
+    calls = _fake_doc(monkeypatch, SimpleNamespace(Group=[]))
+    monkeypatch.setattr(fem, "import_results", lambda a, frd: calls.append("import"))
+    fem.import_into("Part1", "Analysis", "/r/x.frd")
+    assert calls == [("open", "Import FEM results"), "import", "recompute", "commit"]
+
+
+def test_a_failed_import_is_rolled_back(monkeypatch):
+    calls = _fake_doc(monkeypatch, SimpleNamespace(Group=[]))
+
+    def boom(a, frd):
+        calls.append("import")
+        raise RuntimeError("bad frd")
+    monkeypatch.setattr(fem, "import_results", boom)
+    with pytest.raises(RuntimeError, match="bad frd"):
+        fem.import_into("Part1", "Analysis", "/r/x.frd")
+    assert calls == [("open", "Import FEM results"), "import", "abort", "recompute"]

@@ -225,8 +225,16 @@ def import_into(doc_name, analysis_name, frd_path):
     analysis = doc.getObject(analysis_name)
     if analysis is None:
         raise FemError("analysis {!r} no longer exists".format(analysis_name))
-    import_results(analysis, frd_path)
-    doc.recompute()
+    # One undo step: the purge deletes the old results and pipelines
+    doc.openTransaction("Import FEM results")
+    try:
+        import_results(analysis, frd_path)
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        doc.recompute()
+        raise
 
     def newest(type_id):
         found = [o.Label for o in analysis.Group if o.isDerivedFrom(type_id)]
