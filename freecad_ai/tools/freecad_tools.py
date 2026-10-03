@@ -3569,6 +3569,89 @@ EXECUTE_CODE = ToolDefinition(
 )
 
 
+# ── execute_code_headless ───────────────────────────────────
+
+def _headless_tool_result(run):
+    """Turn a core.headless.HeadlessRun into a ToolResult."""
+    from ..core.headless import cap_text
+    parts = [cap_text(run.stdout, os.path.join(run.run_dir, "output.log")).strip()]
+    if run.stderr.strip():
+        parts.append("--- stderr ---\n" + cap_text(
+            run.stderr, os.path.join(run.run_dir, "stderr.log")).strip())
+    output = "\n".join(p for p in parts if p)
+    data = {"run_dir": run.run_dir, "exit_code": run.exit_code,
+            "duration_s": run.duration_s}
+    if run.status == "ok":
+        return ToolResult(success=True, output=output or "Code ran without output",
+                          data=data)
+    return ToolResult(success=False, output=output, data=data, error=run.error)
+
+
+def _handle_execute_code_headless(code: str, timeout=600) -> ToolResult:
+    """Run code in a separate FreeCAD console process (#114).
+
+    Registered with main_thread=False: this runs on the calling worker thread
+    and only the document copy goes to the GUI thread.
+    """
+    from ..core import executor, headless
+    from ..core.dangerous_mode import get_dangerous_mode
+    from . import executor_utils
+
+    try:
+        timeout = max(1, int(float(timeout)))
+    except (TypeError, ValueError):
+        return ToolResult(success=False, output="",
+                          error="timeout must be a number of seconds, got {!r}".format(timeout))
+    if not get_dangerous_mode().active:
+        warnings = executor._validate_code(code)
+        if warnings:
+            return ToolResult(success=False, output="",
+                              error="Static validation failed:\n" + "\n".join(warnings))
+    freecad_bin = executor._find_freecad_cmd()
+    if not freecad_bin:
+        return ToolResult(success=False, output="", error=executor.FREECAD_CMD_SEARCHED)
+
+    run_dir = headless.new_run_dir()
+    copy_path = os.path.join(run_dir, "input.FCStd")
+    try:
+        document_path = executor_utils.run_on_main(
+            lambda: headless.save_active_copy(copy_path))
+    except Exception as e:
+        return ToolResult(success=False, output="",
+                          error="Could not copy the document: {}".format(e))
+    run = headless.run_headless(
+        code, freecad_bin=freecad_bin, run_dir=run_dir, document_path=document_path,
+        timeout=timeout, is_cancelled=executor_utils.current_thread_interrupted)
+    return _headless_tool_result(run)
+
+
+EXECUTE_CODE_HEADLESS = ToolDefinition(
+    name="execute_code_headless",
+    description=(
+        "Run Python in a separate FreeCAD console process, for long jobs "
+        "(heavy booleans, batch exports, analyses) that would freeze the GUI "
+        "under execute_code. It works on a COPY of the active document "
+        "(unsaved edits included; App.ActiveDocument), or on a new empty "
+        "document if none is open. The open document is not changed: use "
+        "execute_code to modify the model. Write result files under WORK_DIR "
+        "(the run folder, also the working directory); they stay there after "
+        "the call. Returns what the code printed. FreeCADGui is a stub: view "
+        "calls do nothing and Gui.Selection does not exist. "
+        "A crash in the code cannot take FreeCAD down. timeout defaults to 600 "
+        "seconds; pass a smaller one for quick jobs, because some MCP clients "
+        "give up after about 60 s."),
+    category="general",
+    parameters=[
+        ToolParam("code", "string", "Python code to run"),
+        ToolParam("timeout", "integer",
+                  "Seconds before the process is killed (default 600)",
+                  required=False, default=600),
+    ],
+    handler=_handle_execute_code_headless,
+    main_thread=False,
+)
+
+
 # ── run_macro ────────────────────────────────────────────────
 
 def _macro_allowed_dirs() -> list:
@@ -5804,6 +5887,7 @@ ALL_TOOLS = [
     MODIFY_PROPERTY,
     EXPORT_MODEL,
     EXECUTE_CODE,
+    EXECUTE_CODE_HEADLESS,
     RUN_MACRO,
     UNDO,
     REDO,

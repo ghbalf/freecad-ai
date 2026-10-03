@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Not included: `allowed-tools` in frontmatter is not enforced, and
   other harnesses' skill folders are not discovered automatically or
   installed from URLs; add them by hand as extra skill folders.
+- **`execute_code_headless` runs long Python jobs in a separate FreeCAD
+  process** (#114). Heavy booleans, batch exports or analyses no longer
+  freeze the GUI, and a crash in the code cannot take FreeCAD down. The
+  process works on a copy of the active document (unsaved edits included)
+  and never changes the open one; results come back as printed output plus
+  any files written under `WORK_DIR`, kept in the last 20 run folders under
+  the config directory's `headless/`. Default timeout 600 s; the chat's Stop
+  button ends a run. Verified on Linux only: the macOS and Windows code paths
+  exist but are untested.
 
 ### Changed
 

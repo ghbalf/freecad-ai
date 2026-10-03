@@ -1,0 +1,190 @@
+import sys, os as _os, json, traceback
+def _collect_object_issues(objects_state, baseline_bad):
+    """Return post-execution validation issues the executed code is responsible for.
+
+    ``objects_state`` is a list of ``{"name", "null", "invalid", "invalid_state"}``
+    dicts captured AFTER the user code ran. ``baseline_bad`` is the set of object
+    names that already had a problem (null/invalid shape or Invalid state) BEFORE
+    it ran.
+
+    Objects already broken in the baseline are suppressed: the code didn't
+    introduce their invalidity, so it must not be blamed for it. An STL imported
+    and converted to a solid yields an OCC-invalid Part::Feature, and the sandbox
+    dry-runs against a copy of the saved document — so that invalid solid is
+    present on every run. Reporting it failed unrelated code (e.g. a sketch on a
+    selected face) and sent the model chasing a phantom bug across all retries.
+
+    Only new objects (names absent from ``baseline_bad``) or objects the code
+    newly broke are reported. The shape source of truth lives here so the
+    subprocess harness and the unit tests exercise identical logic.
+    """
+    # Object types whose Shape is legitimately null in a valid, complete state.
+    # An empty sketch ("create a sketch on the selected face" — geometry is
+    # drawn later in the editor) and an empty body (a container before its
+    # first feature) both report Shape.isNull() == True while State stays
+    # "Up-to-date". Flagging their null shape produced a false positive that
+    # failed the sketch-on-a-face workflow; the model then injected junk
+    # placeholder geometry to defeat the check (issue #18). A genuinely failed
+    # object of these types (e.g. a sketch whose attachment didn't resolve)
+    # still lands in an Invalid state and is caught by the invalid_state report
+    # below. Kept local so it ships with the function source into the sandbox
+    # harness (inspect.getsource doesn't carry module globals).
+    # Arch/BIM containers (Site, Building, BuildingPart/Floor) are pure
+    # organizational groups — they hold no geometry of their own and report a
+    # null Shape for their entire lifetime, empty or fully populated. Flagging
+    # that blocked every Arch.makeSite/makeBuilding/makeFloor call. These are
+    # scripted objects (Part::FeaturePython / App::GeometryPython) — the
+    # generic TypeId is shared with countless unrelated object types, so the
+    # semantic type has to come from Proxy.Type instead (e.g. "Site",
+    # "BuildingPart" — Building and Floor are both BuildingPart under the hood).
+    null_shape_ok_types = {"Sketcher::SketchObject", "PartDesign::Body"}
+    null_shape_ok_proxy_types = {"Site", "Building", "BuildingPart", "Floor"}
+    issues = []
+    for st in objects_state:
+        name = st["name"]
+        if name in baseline_bad:
+            continue
+        if st.get("null"):
+            if (st.get("type") not in null_shape_ok_types
+                    and st.get("proxy_type") not in null_shape_ok_proxy_types):
+                issues.append("Object '" + name + "' has null shape")
+        elif st.get("invalid"):
+            issues.append("Object '" + name + "' has invalid shape")
+        if st.get("invalid_state"):
+            issues.append("Object '" + name + "' is in Invalid state")
+    return issues
+
+result = {"ok": False, "error": ""}
+try:
+    import FreeCAD as App
+
+    # Console channel: FreeCAD's C++ layer logs attachment and recompute
+    # failures without raising anything Python can catch, and writes them to
+    # fd 2. The parent reads that stream (see _console_errors_from_stderr).
+    #
+    # PrintError and PrintWarning both land there with no severity prefix, so
+    # the stream cannot be sorted out after the fact — a redundant-constraint
+    # warning would read exactly like a failure. SetStatus drops the warnings
+    # at the source instead, leaving fd 2 carrying errors only. If that call
+    # fails the parent is told, and ignores the stream rather than guessing.
+    #
+    # An App.Console.AddObserver hook used to do this job. It never ran: the
+    # method does not exist on __FreeCADConsole__ in console mode, so it raised
+    # into a bare except and the channel was silently dead (#83).
+    _console_capture_status = "ok"
+    try:
+        App.Console.SetStatus("Console", "Wrn", False)
+    except Exception as _gate_err:
+        _console_capture_status = "{}: {}".format(
+            type(_gate_err).__name__, _gate_err)
+    result["console_capture"] = _console_capture_status
+
+    # Console mode: install a fake FreeCADGui module instead of importing the
+    # real one. LLM-generated code routinely ends with view-framing cosmetics
+    # (Gui.ActiveDocument.ActiveView.viewIsometric(), fitAll(),
+    # SendMsgToActiveView("ViewFit")); a real headless FreeCADGui has no
+    # ActiveDocument, so these raise AttributeError and fail the pre-check for
+    # geometry that runs fine in the user's real GUI (#14). A plain no-op stub
+    # covers that. Importing the *real* FreeCADGui and then anything that
+    # touches Arch/Draft (which pull in PySide) segfaults this console
+    # binary — no display, no QApplication event loop — so the real module
+    # must never be imported here at all, not just patched afterward.
+    import types
+    class _NoOpGui:
+        def __getattr__(self, _name):
+            return self
+        def __call__(self, *a, **kw):
+            return self
+    _fake_gui = types.ModuleType("FreeCADGui")
+    _fake_gui.ActiveDocument = _NoOpGui()
+    _fake_gui.SendMsgToActiveView = lambda *a, **kw: None
+    _fake_gui.updateGui = lambda *a, **kw: None
+    sys.modules["FreeCADGui"] = _fake_gui
+    doc = App.newDocument("SandboxTest")
+
+    # Per-object problem snapshot — shared by the baseline (pre-code) and the
+    # post-execution walk so both judge invalidity identically.
+    def _snap(_obj):
+        _null = False
+        _invalid = False
+        _shape = getattr(_obj, "Shape", None)
+        if _shape is not None:
+            try:
+                _null = bool(_shape.isNull())
+                _invalid = (not _null) and (not _shape.isValid())
+            except Exception:
+                pass
+        _state = getattr(_obj, "State", None)
+        _bad_state = bool(_state and "Invalid" in _state)
+        _proxy_type = getattr(getattr(_obj, "Proxy", None), "Type", "")
+        return {"name": _obj.Name, "type": getattr(_obj, "TypeId", ""),
+                 "proxy_type": _proxy_type,
+                 "null": _null, "invalid": _invalid, "invalid_state": _bad_state}
+
+    # Baseline: objects already broken in the opened document BEFORE user code
+    # runs. The sandbox dry-runs against a copy of the saved document, so an
+    # imported-and-converted mesh→solid that OCC considers invalid is present
+    # on every run; without this snapshot it would fail unrelated code.
+    #
+    # Recompute once here, BEFORE snapshotting the baseline. The document was
+    # opened fresh (its on-disk cached shapes reflect whatever environment
+    # last saved it — typically the real GUI process), but the post-execution
+    # check further down forces its own doc.recompute() unconditionally. Some
+    # objects (e.g. a complex Arch::Wall whose Draft/OCC boolean fuse is
+    # sensitive to the fake-FreeCADGui/headless environment here) recompute
+    # differently under this sandbox than they did live — genuinely fine in
+    # the user's document, but landing in an Invalid state the moment this
+    # harness recomputes it. Without matching that recompute before the
+    # baseline snapshot, such an object is absent from `_baseline_bad` and
+    # every subsequent call — even a no-op read — gets its Invalid state
+    # blamed on that call's code.
+    doc.recompute()
+    _baseline_bad = set()
+    for _obj in doc.Objects:
+        _s = _snap(_obj)
+        if _s["null"] or _s["invalid"] or _s["invalid_state"]:
+            _baseline_bad.add(_s["name"])
+
+    # Everything logged up to here describes the document as it was opened.
+    _os.write(2, b"\n__FCAI_USER_CODE_BEGIN__\n")
+
+    # --- user code ---
+    x = 1
+    if x:
+        print('hi')
+    # --- end user code ---
+    doc.recompute()
+    _os.write(2, b"\n__FCAI_USER_CODE_END__\n")
+
+    # Post-execution validation: collect console errors + flag only the shapes
+    # this code created or newly broke. Either signal means the code "ran" but
+    # broke the model — the case where Python-exception-only checking fails.
+    # Console errors are merged by the parent, which is the only side that can
+    # read this process's stderr.
+    _issues = []
+    _objects_state = [_snap(_obj) for _obj in doc.Objects]
+    _issues.extend(_collect_object_issues(_objects_state, _baseline_bad))
+
+    if _issues:
+        result["error"] = "Post-execution validation found issues:\n" + "\n".join(_issues)
+    else:
+        result["ok"] = True
+except Exception as e:
+    result["error"] = traceback.format_exc()
+finally:
+    try:
+        import FreeCAD as App
+        for _dn in list(App.listDocuments().keys()):
+            App.closeDocument(_dn)
+    except Exception:
+        pass
+    with open('/tmp/fcai_r.json', "w") as f:
+        json.dump(result, f)
+    # Force the interpreter to exit. On some FreeCAD builds, running a script
+    # via `-c` against an OPENED document leaves the process in interactive
+    # mode (Qt/console event loop never returns), so subprocess.run() would
+    # block until its timeout and the sandbox always reported a spurious
+    # "timed out" — even for trivial code (issue #14). os._exit skips atexit
+    # handlers / lingering non-daemon threads that a plain sys.exit can wait on.
+    import os as _os
+    _os._exit(0)
