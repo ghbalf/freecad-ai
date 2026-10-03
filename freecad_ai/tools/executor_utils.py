@@ -38,6 +38,11 @@ class MainThreadToolExecutor:
     def set_registry(self, registry):
         self._registry = registry
 
+    def _runs_on_caller(self, tool_name):
+        """True for tools registered with main_thread=False."""
+        tool = self._registry.get(tool_name) if self._registry is not None else None
+        return getattr(tool, "main_thread", True) is False
+
     def execute(self, tool_name: str, args: dict) -> ToolResult:
         """Execute a tool. In base class, runs directly."""
         holder = {"result": None}
@@ -76,8 +81,10 @@ if _HAS_QT:
             """Call from any thread. Blocks until main thread completes."""
             import json
             app = QtCore.QCoreApplication.instance()
-            if app and QtCore.QThread.currentThread() == app.thread():
-                # Already on main thread -- execute directly (avoids deadlock)
+            on_main = app and QtCore.QThread.currentThread() == app.thread()
+            if on_main or self._runs_on_caller(tool_name):
+                # On the main thread already (avoids deadlock), or a tool that
+                # must not block it (main_thread=False)
                 holder = {"result": None}
                 self._do_execute_sync(tool_name, args, holder)
                 return holder["result"]
