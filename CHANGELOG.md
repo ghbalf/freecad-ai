@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.32.0-alpha] - 2026-10-04
+
 ### Added
 
 - **Skills written for other agents now work here (Agent Skills format).**
