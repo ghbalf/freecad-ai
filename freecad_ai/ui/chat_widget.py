@@ -491,9 +491,11 @@ class _LLMWorker(QThread):
                 reasoning_content=turn_thinking if not self._strip_thinking else "")
 
             # Execute each tool call on the main thread
-            # Exception: optimize_iteration runs on worker thread (long-running
-            # LLM calls would freeze the UI if dispatched to main thread).
-            # Its inner tool calls dispatch to main thread via QtMainThreadToolExecutor.
+            # Exceptions run on this worker thread, where a long run neither
+            # freezes the UI nor escapes the Stop button: optimize_iteration
+            # (long-running LLM calls; its inner tool calls dispatch to main
+            # thread via QtMainThreadToolExecutor) and tools registered with
+            # main_thread=False (execute_code_headless, #114).
             results = []
             for tc in tool_calls:
                 # Pre-tool-use hook
@@ -507,7 +509,9 @@ class _LLMWorker(QThread):
                 if hook_result.get("block"):
                     result = {"success": False, "output": "",
                               "error": f"Blocked by hook: {hook_result.get('reason', '')}"}
-                elif tc.name == "optimize_iteration" and self.registry:
+                elif self.registry and (
+                        tc.name == "optimize_iteration"
+                        or getattr(self.registry.get(tc.name), "main_thread", True) is False):
                     tr = self.registry.execute(tc.name, tc.arguments)
                     result = {"success": tr.success, "output": tr.output, "error": tr.error}
                 else:

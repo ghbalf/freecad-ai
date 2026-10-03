@@ -39,6 +39,10 @@ class ToolDefinition:
     handler: Callable[..., "ToolResult"]
     category: str = "general"
     lazy_params: Callable[[], list["ToolParam"]] | None = None
+    # False: the executor runs the handler on the calling worker thread instead
+    # of the GUI thread. For handlers that wait a long time (a subprocess) and
+    # touch FreeCAD only through executor_utils.run_on_main.
+    main_thread: bool = True
 
     def resolve_params(self) -> list["ToolParam"]:
         """Ensure parameters are fully loaded, invoking lazy_params if needed."""

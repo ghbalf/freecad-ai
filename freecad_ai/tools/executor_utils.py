@@ -8,6 +8,7 @@ Used by both _LLMWorker (chat agentic loop) and SkillEvaluator (headless
 evaluation runs).
 """
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,11 @@ class MainThreadToolExecutor:
 
     def set_registry(self, registry):
         self._registry = registry
+
+    def _runs_on_caller(self, tool_name):
+        """True for tools registered with main_thread=False."""
+        tool = self._registry.get(tool_name) if self._registry is not None else None
+        return getattr(tool, "main_thread", True) is False
 
     def execute(self, tool_name: str, args: dict) -> ToolResult:
         """Execute a tool. In base class, runs directly."""
@@ -76,8 +82,10 @@ if _HAS_QT:
             """Call from any thread. Blocks until main thread completes."""
             import json
             app = QtCore.QCoreApplication.instance()
-            if app and QtCore.QThread.currentThread() == app.thread():
-                # Already on main thread -- execute directly (avoids deadlock)
+            on_main = app and QtCore.QThread.currentThread() == app.thread()
+            if on_main or self._runs_on_caller(tool_name):
+                # On the main thread already (avoids deadlock), or a tool that
+                # must not block it (main_thread=False)
                 holder = {"result": None}
                 self._do_execute_sync(tool_name, args, holder)
                 return holder["result"]
@@ -100,3 +108,64 @@ if _HAS_QT:
                 self._mutex.lock()
                 self._condition.wakeAll()
                 self._mutex.unlock()
+
+
+_caller = None
+_caller_lock = threading.Lock()
+
+if _HAS_QT:
+    class _MainThreadCaller(QObject):
+        """Runs callables on the GUI thread for run_on_main."""
+        _call = Signal(object)
+
+        def __init__(self):
+            super().__init__()
+            self._call.connect(self._run, Qt.QueuedConnection)
+
+        def _run(self, box):
+            try:
+                box["value"] = box["fn"]()
+            except BaseException as e:  # handed to the waiting thread
+                box["error"] = e
+            finally:
+                box["done"].set()
+
+        def call(self, fn):
+            box = {"fn": fn, "done": threading.Event()}
+            self._call.emit(box)
+            box["done"].wait()
+            if "error" in box:
+                raise box["error"]
+            return box.get("value")
+
+
+def run_on_main(fn):
+    """Call ``fn()`` on the GUI thread from any thread and return its result.
+
+    For main_thread=False tool handlers, which run on a worker thread but
+    still need FreeCAD's document API for a moment. Calls ``fn`` directly
+    without Qt, without an application object, or on the GUI thread itself.
+    """
+    global _caller
+    if not _HAS_QT:
+        return fn()
+    app = QtCore.QCoreApplication.instance()
+    if app is None or QtCore.QThread.currentThread() == app.thread():
+        return fn()
+    with _caller_lock:
+        if _caller is None:
+            _caller = _MainThreadCaller()
+            # Created on whichever thread got here first; queued calls must
+            # be delivered on the GUI thread.
+            _caller.moveToThread(app.thread())
+    return _caller.call(fn)
+
+
+def current_thread_interrupted():
+    """True once the chat's Stop button asked the calling QThread to stop."""
+    if not _HAS_QT:
+        return False
+    try:
+        return bool(QtCore.QThread.currentThread().isInterruptionRequested())
+    except Exception:
+        return False
