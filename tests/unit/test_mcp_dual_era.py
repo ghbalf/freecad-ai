@@ -486,6 +486,28 @@ class TestToolsCallShape:
         assert result["isError"] is True
         assert result["resultType"] == "complete"
 
+    @pytest.mark.parametrize("make", [_legacy, _modern])
+    def test_tool_images_become_image_blocks_after_the_text(self, make):
+        """#112: a remote client must see the screenshot, not just its path.
+        Same block in both eras; the text still comes first for clients
+        that cannot render images."""
+        from freecad_ai.tools.registry import ToolDefinition, ToolResult
+
+        reg = ToolRegistry()
+        reg.register(ToolDefinition("shot", "takes a shot", [], handler=lambda: ToolResult(
+            True, "saved", images=[{"mimeType": "image/png", "data": "iVBORw0KGgo="}])))
+        content = _server(reg)._handle(
+            make("tools/call", name="shot", arguments={}))["result"]["content"]
+        assert content == [
+            {"type": "text", "text": "saved"},
+            {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"},
+        ]
+
+    def test_a_result_without_images_has_text_blocks_only(self):
+        content = _server(_registry_with("a"))._handle(
+            _legacy("tools/call", name="a", arguments={}))["result"]["content"]
+        assert content == [{"type": "text", "text": "ran a"}]
+
 
 def _headers(mapping):
     """A case-insensitive header object, as http.server hands the handler."""
