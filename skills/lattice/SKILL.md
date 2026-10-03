@@ -1,3 +1,8 @@
+---
+name: lattice
+description: "Generate a 3D lattice or infill pattern inside a bounding region. Useful for lightweight structural parts."
+---
+
 # Lattice / Infill Pattern
 
 Generate a 3D lattice or infill pattern inside a bounding region. Useful for lightweight structural parts.

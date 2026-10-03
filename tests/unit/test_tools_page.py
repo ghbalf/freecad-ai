@@ -147,3 +147,37 @@ class TestEditorPrompt:
         assert page._prepare_editor_open() is True
         page._open_path("/tmp/x.py")
         assert opened == ["/tmp/x.py"]
+
+
+def test_extra_skill_dirs_round_trip(page):
+    cfg = AppConfig()
+    cfg.extra_skill_dirs = ["~/.claude/skills", "/opt/skills"]
+    page.load(cfg)
+    assert page.extra_skill_dirs_edit.toPlainText() == "~/.claude/skills\n/opt/skills"
+    page.extra_skill_dirs_edit.setPlainText("~/.claude/skills\n\n  /new  \n")
+    target = AppConfig()
+    page.apply_to(target)
+    assert target.extra_skill_dirs == ["~/.claude/skills", "/new"]
+
+
+def test_untouched_extra_skill_dirs_are_not_written(page):
+    page.load(AppConfig())
+    target = AppConfig()
+    target.extra_skill_dirs = ["/set/elsewhere"]
+    page.apply_to(target)
+    assert target.extra_skill_dirs == ["/set/elsewhere"]
+
+
+def test_external_skill_listed_from_widget_dirs(page, tmp_path, monkeypatch):
+    import freecad_ai.extensions.skills as skills_mod
+    monkeypatch.setattr(skills_mod, "BUILTIN_SKILLS_DIR", str(tmp_path / "none"))
+    monkeypatch.setattr(skills_mod, "SKILLS_DIR", str(tmp_path / "none2"))
+    sd = tmp_path / "ext" / "pdf"
+    sd.mkdir(parents=True)
+    (sd / "SKILL.md").write_text("---\ndescription: PDF things\ncompatibility: Python 3\n---\n# P\n")
+    page.load(AppConfig())
+    page.extra_skill_dirs_edit.setPlainText(str(tmp_path / "ext"))
+    page._refresh_skills_list()
+    item = page.skills_list.item(0)
+    assert "pdf (external)" in item.text()
+    assert "Python 3" in item.toolTip()

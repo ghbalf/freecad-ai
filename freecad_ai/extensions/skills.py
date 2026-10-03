@@ -10,12 +10,26 @@ Skills can be invoked via /command in the chat input.
 
 import hashlib
 import importlib.util
+import logging
 import os
 import re
 import shutil
 from dataclasses import dataclass, field
 
 from ..config import SKILLS_DIR
+from .skill_frontmatter import parse_frontmatter
+
+DESCRIPTION_MAX = 1024        # Agent Skills limit
+PROMPT_DESCRIPTION_MAX = 300  # what the system-prompt skill list shows
+_FALLBACK_DESCRIPTION_MAX = 100
+
+MAX_SKILL_FILES = 500
+MAX_RESOURCE_BYTES = 100_000
+MANIFEST_MAX = 40
+_SKIP_ROOT_FILES = {"SKILL.md", "SKILL.md.original", "handler.py", "VALIDATION.md"}
+_SKIP_DIRS = {"__pycache__", "node_modules", ".venv", ".git"}
+
+_log = logging.getLogger(__name__)
 
 # Built-in skills directory (in the repo, alongside freecad_ai/)
 BUILTIN_SKILLS_DIR = os.path.join(
@@ -31,40 +45,37 @@ class Skill:
     description: str = ""
     path: str = ""
     content: str = ""  # SKILL.md contents
+    body: str = ""  # SKILL.md without frontmatter: what gets injected
+    frontmatter: dict = field(default_factory=dict)
     trigger: str = ""  # Slash command, e.g. "/thread-insert"
     has_handler: bool = False
     validation_path: str = ""
     references: dict = field(default_factory=dict)  # key (lowercased stem) -> abspath
+    files: dict = field(default_factory=dict)  # "dir/file.ext" -> abspath (allowlist)
 
 
 class SkillsRegistry:
     """Registry of available skills with execution support."""
 
-    def __init__(self):
+    def __init__(self, extra_dirs=None):
         self._skills: dict[str, Skill] = {}
+        self._extra_dirs = _extra_skill_dirs(extra_dirs)
         self._load_skills()
 
     def _load_skills(self):
         """Scan skills directories and load skill definitions.
 
-        Scans both the built-in skills directory (in the repo) and the user
-        skills directory (~/.config/FreeCAD/FreeCADAI/skills/). User skills
-        take precedence over built-in skills with the same name.
+        Order: built-in, extra_skill_dirs (list order), user dir
+        (~/.config/FreeCAD/FreeCADAI/skills/). A later folder's skill wins
+        on a name clash, so the user dir always has the last word.
         """
-        # Load built-in first, then user (user overrides built-in)
-        for skills_dir in (BUILTIN_SKILLS_DIR, SKILLS_DIR):
+        for skills_dir in (BUILTIN_SKILLS_DIR, *self._extra_dirs, SKILLS_DIR):
             self._scan_skills_dir(skills_dir)
 
     def _scan_skills_dir(self, skills_dir: str):
         """Scan a single directory for skill definitions."""
-        if not os.path.isdir(skills_dir):
-            return
-
-        for entry in os.listdir(skills_dir):
-            skill_dir = os.path.join(skills_dir, entry)
+        for entry, skill_dir in _skill_dirs_in(skills_dir):
             skill_file = os.path.join(skill_dir, "SKILL.md")
-            if not os.path.isdir(skill_dir) or not os.path.isfile(skill_file):
-                continue
 
             try:
                 with open(skill_file, "r", encoding="utf-8") as f:
@@ -72,25 +83,8 @@ class SkillsRegistry:
             except (OSError, UnicodeDecodeError):
                 continue
 
-            # Extract description: prefer YAML frontmatter "description",
-            # otherwise use first non-empty, non-heading content line.
-            description = ""
-            body = content
-            if content.startswith("---\n"):
-                end = content.find("\n---\n", 4)
-                if end != -1:
-                    frontmatter = content[4:end]
-                    body = content[end + 5:]
-                    for fm_line in frontmatter.splitlines():
-                        if fm_line.startswith("description:"):
-                            description = fm_line[12:].strip().strip("\"'")[:100]
-                            break
-            if not description:
-                for line in body.splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        description = line[:100]
-                        break
+            frontmatter, body = parse_frontmatter(content)
+            description = _describe(frontmatter, body)
 
             handler_path = os.path.join(skill_dir, "handler.py")
 
@@ -99,28 +93,28 @@ class SkillsRegistry:
             if os.path.isfile(val_file):
                 validation_path = val_file
 
-            # Tier-3 progressive disclosure: scan a sibling references/ dir
-            # (top level only) into a {key -> abspath} allowlist. The model
-            # later names a key, never a path, so traversal is impossible.
+            # Tier-3 progressive disclosure: every file in the folder, keyed by
+            # its relative path (Agent Skills links), plus today's bare-stem
+            # aliases for files directly in references/ (last sorted wins).
+            files = _scan_skill_files(skill_dir)
             references = {}
-            refs_dir = os.path.join(skill_dir, "references")
-            if os.path.isdir(refs_dir):
-                for ref_entry in sorted(os.listdir(refs_dir)):
-                    ref_path = os.path.join(refs_dir, ref_entry)
-                    if not os.path.isfile(ref_path):
-                        continue
-                    key = os.path.splitext(ref_entry)[0].lower()
-                    references[key] = ref_path
+            for key in sorted(files):
+                parts = key.split("/")
+                if len(parts) == 2 and parts[0] == "references":
+                    references[os.path.splitext(parts[1])[0].lower()] = files[key]
 
             self._skills[entry] = Skill(
                 name=entry,
                 description=description,
                 path=skill_dir,
                 content=content,
+                body=body,
+                frontmatter=frontmatter,
                 trigger=f"/{entry}",
                 has_handler=os.path.isfile(handler_path),
                 validation_path=validation_path,
                 references=references,
+                files=files,
             )
 
     def register(self, name: str, content: str, trigger: str = ""):
@@ -128,6 +122,7 @@ class SkillsRegistry:
         self._skills[name] = Skill(
             name=name,
             content=content,
+            body=content,
             trigger=trigger or f"/{name}",
         )
 
@@ -147,7 +142,7 @@ class SkillsRegistry:
         for skill in self._skills.values():
             parts.append(f"\n### {skill.name}")
             if skill.description:
-                parts.append(skill.description)
+                parts.append(_shorten(skill.description, PROMPT_DESCRIPTION_MAX))
             if skill.trigger:
                 parts.append(f"Invoke with: `{skill.trigger}`")
         return "\n".join(parts)
@@ -196,57 +191,191 @@ class SkillsRegistry:
 
         # Default: inject SKILL.md content into the prompt, plus a manifest of
         # any on-demand reference files the skill bundles (tier-3 disclosure).
-        content = skill.content + self.render_references_manifest(skill)
+        content = skill.body + self.render_references_manifest(skill)
         return {"inject_prompt": content}
 
     def render_references_manifest(self, skill: Skill) -> str:
-        """Markdown block advertising a skill's on-demand reference files."""
-        if not skill.references:
+        """Markdown block advertising a skill's files (tier-3 disclosure)."""
+        if not skill.files:
             return ""
+        alias_of = {path: alias for alias, path in skill.references.items()}
+        groups = {"Documents": [], "Scripts": [], "Assets": []}
+        for key in sorted(skill.files):
+            if key.startswith("scripts/"):
+                groups["Scripts"].append(f"- `{key}`")
+            elif key.startswith("assets/"):
+                groups["Assets"].append(f"- `{key}`")
+            else:
+                path = skill.files[key]
+                bullet = f"- `{key}`"
+                if path in alias_of:
+                    bullet += f" (resource='{alias_of[path]}')"
+                summary = _reference_summary(path)
+                if summary:
+                    bullet += f" — {summary}"
+                groups["Documents"].append(bullet)
         lines = [
             "\n\n## Available references",
-            f"Load one when needed with "
-            f"use_skill(name='{skill.name}', resource='<key>'):",
+            f"Read a file with use_skill(name='{skill.name}', resource='<path>').",
         ]
-        for key in sorted(skill.references):
-            summary = _reference_summary(skill.references[key])
-            bullet = f"- `{key}` (resource='{key}')"
-            if summary:
-                bullet += f" — {summary}"
-            lines.append(bullet)
+        if groups["Scripts"]:
+            lines.append(f"Run a Python script with run_skill_script(skill='{skill.name}', "
+                         f"script='<path>', args='<command-line args>').")
+        shown = 0
+        for title, bullets in groups.items():
+            if not bullets or shown >= MANIFEST_MAX:
+                continue
+            take = bullets[:MANIFEST_MAX - shown]
+            lines.append(f"### {title}")
+            lines.extend(take)
+            shown += len(take)
+        if len(skill.files) > shown:
+            lines.append(f"…and {len(skill.files) - shown} more")
         return "\n".join(lines)
 
-    def get_skill_resource(self, name: str, resource: str) -> dict:
-        """Return the contents of a skill's reference file.
+    @staticmethod
+    def _resolve_key(skill: Skill, requested: str) -> "str | None":
+        """Map a requested path or legacy alias onto an allowlist key."""
+        r = requested.strip().replace("\\", "/")
+        while r.startswith("./"):
+            r = r[2:]
+        if r in skill.files:
+            return r
+        lowered = r.lower()
+        for key in skill.files:
+            if key.lower() == lowered:
+                return key
+        alias_path = skill.references.get(os.path.splitext(r)[0].lower())
+        if alias_path:
+            for key, path in skill.files.items():
+                if path == alias_path:
+                    return key
+        return None
 
-        `resource` is a KEY into the pre-scanned Skill.references allowlist —
-        it is never treated as a filesystem path, so directory traversal is
-        impossible. The key may be given with or without an extension and is
-        matched case-insensitively.
+    def get_skill_resource(self, name: str, resource: str) -> dict:
+        """Return the contents of one file from a skill's allowlist.
+
+        `resource` is a relative path or a legacy references/ alias; it is
+        only ever looked up in the pre-scanned Skill.files, never opened as
+        a path, so directory traversal is impossible.
 
         Returns {"output": contents} or {"error": message}.
         """
         skill = self._skills.get(name)
         if not skill:
             return {"error": f"Unknown skill: {name}"}
-        if not skill.references:
+        if not skill.files:
             return {"error": f"Skill '{name}' has no references."}
-
-        key = os.path.splitext(resource.strip())[0].lower()
-        path = skill.references.get(key)
-        if not path:
-            available = ", ".join(sorted(skill.references))
-            return {
-                "error": (
-                    f"Reference '{resource}' not found in skill '{name}'. "
-                    f"Available: {available}"
-                )
-            }
+        key = self._resolve_key(skill, resource)
+        if key is None:
+            listed = _list_keys(skill.files)
+            return {"error": (f"Reference '{resource}' not found in skill "
+                              f"'{name}'. Available: {listed}")}
+        path = skill.files[key]
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                return {"output": f.read()}
-        except (OSError, UnicodeDecodeError) as e:
+            size = os.path.getsize(path)
+            with open(path, "rb") as f:
+                data = f.read(MAX_RESOURCE_BYTES + 1)
+        except OSError as e:
             return {"error": f"Could not read reference '{resource}': {e}"}
+        truncated = len(data) > MAX_RESOURCE_BYTES
+        data = data[:MAX_RESOURCE_BYTES]
+        binary = b"\0" in data[:8192]
+        if not binary:
+            try:
+                if truncated:
+                    # The cut may land inside a multi-byte character: trim at
+                    # most 3 trailing bytes to a boundary, then decode strictly
+                    # so genuinely non-UTF-8 files are still refused.
+                    for cut in range(4):
+                        try:
+                            text = data[:len(data) - cut].decode("utf-8")
+                            break
+                        except UnicodeDecodeError:
+                            if cut == 3:
+                                raise
+                else:
+                    text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                binary = True
+        if binary:
+            return {"error": (f"'{key}' is a binary file ({size} bytes). It is "
+                              f"meant for the skill's scripts, not for reading.")}
+        if truncated:
+            text += (f"\n\n[truncated: showing the first {MAX_RESOURCE_BYTES} "
+                     f"of {size} bytes]")
+        return {"output": text}
+
+    def resolve_script(self, name: str, script: str) -> tuple:
+        """Resolve a runnable script from a skill's allowlist.
+
+        Returns (abspath, "", py_paths) or ("", error, []). py_paths lists
+        every .py file under the script's own directory (read from disk,
+        including folders the allowlist scan skips): that directory is
+        sys.path[0], so those are the modules the script can import. The
+        caller validates them, not just the script itself.
+        """
+        skill = self._skills.get(name)
+        if not skill:
+            return "", f"Unknown skill: {name}", []
+        key = self._resolve_key(skill, script)
+        scripts = sorted(k for k in skill.files if k.endswith(".py"))
+        if key is None:
+            return "", (f"Script '{script}' not found in skill '{name}'. "
+                        f"Available: {_list_keys(scripts) or 'none'}"), []
+        if not key.endswith(".py"):
+            return "", (f"Only Python scripts run inside FreeCAD. Read '{key}' "
+                        f"with use_skill(name='{name}', resource='{key}') instead."), []
+        path = skill.files[key]
+        py = []
+        for dirpath, _dirs, filenames in _walk_script_tree(os.path.dirname(path), skill.path):
+            for fn in filenames:
+                if fn.lower().endswith(".py"):
+                    full = os.path.join(dirpath, fn)
+                    rel = os.path.relpath(full, skill.path).replace(os.sep, "/")
+                    py.append((rel, full))
+        return path, "", py
+
+    def find_unvalidatable(self, name: str, script: str = "") -> str:
+        """Return a relative path (or reason) that makes the script's Python
+        impossible to validate up front, or "" if all is well.
+
+        Only the script's own directory tree matters (it is sys.path[0]; with
+        no `script`, the whole skill). Flags native modules, sourceless .pyc
+        files, .py files and directories that resolve outside the skill
+        folder, and a tree holding MAX_SKILL_FILES files or more.
+        """
+        skill = self._skills.get(name)
+        if not skill:
+            return ""
+        top = skill.path
+        if script:
+            key = self._resolve_key(skill, script)
+            if key is not None and key in skill.files:
+                top = os.path.dirname(skill.files[key])
+        root = os.path.realpath(skill.path)
+        seen = 0
+        for dirpath, dirnames, filenames in _walk_script_tree(top, skill.path):
+            for d in dirnames:
+                dpath = os.path.join(dirpath, d)
+                # not os.path.islink: on 3.11 it is False for Windows junctions
+                if not _inside(root, os.path.realpath(dpath)):
+                    return os.path.relpath(dpath, skill.path).replace(os.sep, "/")
+            in_cache = os.path.basename(dirpath) == "__pycache__"
+            for fn in sorted(filenames):
+                seen += 1
+                if seen >= MAX_SKILL_FILES:
+                    return f"(more than {MAX_SKILL_FILES} files in the script's folder)"
+                low = fn.lower()
+                path = os.path.join(dirpath, fn)
+                rel = os.path.relpath(path, skill.path).replace(os.sep, "/")
+                if low.endswith((".so", ".pyd")):
+                    return rel
+                if low.endswith(".pyc") and not in_cache:
+                    return rel
+                if low.endswith(".py") and not _inside(root, os.path.realpath(path)):
+                    return rel
+        return ""
 
     def _run_handler(self, skill: Skill, args: str) -> dict | None:
         """Try to load and run a skill's handler.py.
@@ -281,73 +410,64 @@ class SkillsRegistry:
         return None
 
     @staticmethod
-    def get_skill_status() -> list[dict]:
+    def get_skill_status(extra_dirs=None) -> list[dict]:
         """Return status info for all skills across built-in and user dirs.
 
         Each entry: {"name", "description", "source", "has_user_copy",
                      "is_modified", "builtin_path", "user_path"}
 
-        source: "built-in", "user", or "modified" (user copy differs from built-in)
+        source: "built-in", "user", "external" (from extra_skill_dirs), or "modified"
+        (user copy differs from built-in)
         """
         results = []
-        builtin_skills = {}
-        user_skills = {}
+        builtin_skills = {n: os.path.join(p, "SKILL.md")
+                          for n, p in _skill_dirs_in(BUILTIN_SKILLS_DIR)}
+        external_skills = {}
+        for root in _extra_skill_dirs(extra_dirs):
+            external_skills.update({n: os.path.join(p, "SKILL.md")
+                                    for n, p in _skill_dirs_in(root)})
+        user_skills = {n: os.path.join(p, "SKILL.md")
+                       for n, p in _skill_dirs_in(SKILLS_DIR)}
 
-        # Scan built-in
-        if os.path.isdir(BUILTIN_SKILLS_DIR):
-            for entry in sorted(os.listdir(BUILTIN_SKILLS_DIR)):
-                skill_file = os.path.join(BUILTIN_SKILLS_DIR, entry, "SKILL.md")
-                if os.path.isfile(skill_file):
-                    builtin_skills[entry] = skill_file
-
-        # Scan user
-        if os.path.isdir(SKILLS_DIR):
-            for entry in sorted(os.listdir(SKILLS_DIR)):
-                skill_file = os.path.join(SKILLS_DIR, entry, "SKILL.md")
-                if os.path.isfile(skill_file):
-                    user_skills[entry] = skill_file
-
-        all_names = sorted(set(builtin_skills) | set(user_skills))
+        all_names = sorted(set(builtin_skills) | set(external_skills) | set(user_skills))
 
         for name in all_names:
             b_path = builtin_skills.get(name)
             u_path = user_skills.get(name)
+            e_path = external_skills.get(name)
 
             # Read description from whichever is active (user overrides built-in)
-            active_path = u_path or b_path
-            description = ""
+            active_path = u_path or e_path or b_path
+            description = compatibility = ""
             try:
                 with open(active_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                body = content
-                if content.startswith("---\n"):
-                    end = content.find("\n---\n", 4)
-                    if end != -1:
-                        body = content[end + 5:]
-                for line in body.splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        description = line[:80]
-                        break
+                    frontmatter, body = parse_frontmatter(f.read())
+                description = _describe(frontmatter, body)
+                compat = frontmatter.get("compatibility")
+                compatibility = compat if isinstance(compat, str) else ""
             except Exception:
                 pass
 
             if b_path and u_path:
                 is_modified = _file_hash(b_path) != _file_hash(u_path)
                 source = "modified" if is_modified else "built-in"
-            elif b_path:
-                source = "built-in"
-            else:
+            elif u_path:
                 source = "user"
+            elif e_path:
+                source = "external"
+            else:
+                source = "built-in"
 
             results.append({
                 "name": name,
                 "description": description,
+                "compatibility": compatibility,
                 "source": source,
                 "has_user_copy": u_path is not None,
                 "is_modified": source == "modified",
                 "builtin_path": b_path or "",
                 "user_path": u_path or "",
+                "external_path": e_path or "",
             })
 
         return results
@@ -368,6 +488,122 @@ class SkillsRegistry:
             shutil.rmtree(user_skill_dir)
             return True
         return False
+
+
+def _extra_skill_dirs(dirs) -> list:
+    """Normalise extra_skill_dirs: a hand-edited string is one dir, not chars."""
+    if dirs is None:
+        try:
+            from ..config import load_config
+            dirs = load_config().extra_skill_dirs
+        except Exception:
+            dirs = []
+    if isinstance(dirs, str):
+        dirs = [dirs]
+    if not isinstance(dirs, (list, tuple)):
+        return []
+    return [os.path.expanduser(d.strip()) for d in dirs
+            if isinstance(d, str) and d.strip()]
+
+
+def _skill_dirs_in(root: str) -> list:
+    """(name, path) of each skill under root; root itself if it is a skill."""
+    if not os.path.isdir(root):
+        return []
+    if os.path.isfile(os.path.join(root, "SKILL.md")):
+        return [(os.path.basename(os.path.normpath(root)), root)]
+    try:
+        entries = sorted(os.listdir(root))
+    except OSError:
+        return []
+    return [(entry, os.path.join(root, entry)) for entry in entries
+            if os.path.isfile(os.path.join(root, entry, "SKILL.md"))]
+
+
+def _describe(frontmatter: dict, body: str) -> str:
+    """Frontmatter description, else the body's first non-heading line."""
+    desc = frontmatter.get("description")
+    if isinstance(desc, str) and desc.strip():
+        return desc.strip()[:DESCRIPTION_MAX]
+    for line in body.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return line[:_FALLBACK_DESCRIPTION_MAX]
+    return ""
+
+
+def _shorten(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _list_keys(keys, limit: int = 20) -> str:
+    """Comma-separated sorted keys, capped at `limit` with a '…and N more' tail."""
+    keys = sorted(keys)
+    listed = ", ".join(keys[:limit])
+    if len(keys) > limit:
+        listed += f", …and {len(keys) - limit} more"
+    return listed
+
+
+def _walk_script_tree(top: str, skill_dir: str):
+    """os.walk over `top` that also descends into symlinked dirs resolving
+    inside the skill (they are importable too), visiting each real dir once
+    so a link loop terminates. Escaping links are yielded as dirnames but not
+    entered; find_unvalidatable refuses them. Stops after MAX_SKILL_FILES
+    files, which find_unvalidatable also refuses."""
+    root = os.path.realpath(skill_dir)
+    seen_dirs = set()
+    files = 0
+    for dirpath, dirnames, filenames in os.walk(top, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in seen_dirs or not _inside(root, real):
+            dirnames[:] = []
+            continue
+        seen_dirs.add(real)
+        filenames = sorted(filenames)
+        yield dirpath, list(dirnames), filenames
+        dirnames[:] = [d for d in dirnames
+                       if _inside(root, os.path.realpath(os.path.join(dirpath, d)))]
+        files += len(filenames)
+        if files >= MAX_SKILL_FILES:
+            return
+
+
+def _inside(root: str, real: str) -> bool:
+    """True when `real` lies within `root` (False across Windows drives)."""
+    try:
+        return os.path.commonpath([root, real]) == root
+    except ValueError:
+        return False
+
+
+def _scan_skill_files(skill_dir: str) -> dict:
+    """Allowlist of every file in a skill folder, keyed by POSIX relative path.
+
+    Built once at load time; reads only ever pick from it, so the model can
+    name a path but never reach outside the folder. Symlinks are kept only
+    when their target is inside the skill's own realpath.
+    """
+    root = os.path.realpath(skill_dir)
+    files = {}
+    for dirpath, dirnames, filenames in os.walk(skill_dir):
+        dirnames[:] = sorted(d for d in dirnames
+                             if not d.startswith(".") and d not in _SKIP_DIRS)
+        rel_dir = os.path.relpath(dirpath, skill_dir)
+        for fn in sorted(filenames):
+            if fn.startswith(".") or (rel_dir == "." and fn in _SKIP_ROOT_FILES):
+                continue
+            path = os.path.join(dirpath, fn)
+            real = os.path.realpath(path)
+            if not _inside(root, real) or not os.path.isfile(real):
+                continue
+            key = fn if rel_dir == "." else f"{rel_dir.replace(os.sep, '/')}/{fn}"
+            if len(files) >= MAX_SKILL_FILES:
+                _log.warning("Skill %s has more than %d files; the rest are ignored",
+                             skill_dir, MAX_SKILL_FILES)
+                return files
+            files[key] = path
+    return files
 
 
 def _reference_summary(path: str) -> str:

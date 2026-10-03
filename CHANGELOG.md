@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Skills written for other agents now work here (Agent Skills format).**
+  A skill folder from Claude Code, Codex, Gemini CLI and others loads
+  unchanged: the full frontmatter `description` is kept (up to 1024
+  characters; the skill list in the prompt shows 300), and every file in the
+  folder is reachable by the relative path its `SKILL.md` links to
+  (`references/tables/m3.md`, `forms.md`) through `use_skill(name,
+  resource=...)`, at most 100 KB per file and 500 files per skill. Binary
+  files are refused. Old `resource='m3'` keys keep working, and the manifest
+  groups the files into Documents / Scripts / Assets.
+- **`run_skill_script(skill, script, args)`** runs a skill's Python (`.py`)
+  scripts inside FreeCAD, as `__main__` with `sys.argv` and `__file__` set;
+  `sys.exit(n)` with `n != 0` is reported as an error. Outside Dangerous mode
+  every `.py` in the script's own folder (including subfolders such as
+  `node_modules`) is validated first, and a script whose folder holds code the
+  validator cannot see (`.so`/`.pyd`, a `.pyc` outside `__pycache__`, a `.py`
+  file or directory symlinked outside the skill, or 500 or more files) is
+  refused. `args` may be a string or a list. Non-Python scripts can be read but not run.
+- **Extra skill folders** (Settings → Tools → Skills, one path per line with
+  a *Browse…* button, or Edit → Preferences; `extra_skill_dirs` in
+  `config.json`). Empty by default, so nothing changes until you add one. `~`
+  is expanded; missing or unreadable folders are skipped. Precedence is
+  built-in < extra folders < your user skills folder. Skills from these
+  folders are tagged ↗ in the list, with their compatibility in a tooltip.
+  Skills there can run Python inside FreeCAD; only add folders you trust.
+- The built-in skills are valid Agent Skills (enforced by
+  `tests/unit/test_skill_conformance.py`), so they also load in other
+  harnesses, most usefully there together with our MCP server.
+- Not included: `allowed-tools` in frontmatter is not enforced, and
+  other harnesses' skill folders are not discovered automatically or
+  installed from URLs; add them by hand as extra skill folders.
+
+### Changed
+
+- **A skill's frontmatter is no longer sent to the model** when it is
+  invoked; only the instructions below it are, as in other harnesses. The
+  model already sees the name and description in the skill list.
+
+### Fixed
+
+- **A `/skill` command that failed now says so in the chat.** When a skill's
+  `handler.py` raised, or returned `{"error": ...}` (e.g. `/optimize-skill`
+  with no skills to optimize), the chat showed your command and then nothing
+  at all: the error result matched neither the "send to the model" nor the
+  "show output" branch and was dropped. It is now shown as `Error: ...`. The
+  `use_skill` tool path already reported these errors correctly.
+
 ## [0.31.0-alpha] - 2026-09-28
 
 ### Added

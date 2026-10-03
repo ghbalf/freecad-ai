@@ -20,6 +20,7 @@ QListWidget = QtWidgets.QListWidget
 QListWidgetItem = QtWidgets.QListWidgetItem
 QFileDialog = QtWidgets.QFileDialog
 QMessageBox = QtWidgets.QMessageBox
+QPlainTextEdit = QtWidgets.QPlainTextEdit
 
 _RERANK_METHODS = ["off", "keyword", "llm"]
 
@@ -150,6 +151,21 @@ class ToolsPage(SettingsPage):
         skills_btn_layout.addStretch()
         skills_layout.addLayout(skills_btn_layout)
 
+        extra_label = QLabel(translate(
+            "SettingsDialog",
+            "Extra skill folders (one per line), e.g. ~/.claude/skills. "
+            "Skills there can run Python inside FreeCAD; only add folders you trust."))
+        extra_label.setWordWrap(True)
+        skills_layout.addWidget(extra_label)
+        extra_row = QHBoxLayout()
+        self.extra_skill_dirs_edit = QPlainTextEdit()
+        self.extra_skill_dirs_edit.setMaximumHeight(60)
+        extra_row.addWidget(self.extra_skill_dirs_edit)
+        extra_browse_btn = QPushButton(translate("SettingsDialog", "Browse\u2026"))
+        extra_browse_btn.clicked.connect(self._browse_extra_skill_dir)
+        extra_row.addWidget(extra_browse_btn, 0, QtCore.Qt.AlignTop)
+        skills_layout.addLayout(extra_row)
+
         skills_group.setLayout(skills_layout)
         layout.addWidget(skills_group)
 
@@ -217,6 +233,7 @@ class ToolsPage(SettingsPage):
         self.use_external_editor_cb.setChecked(cfg.use_external_editor)
         self.scan_macros_cb.setChecked(cfg.scan_freecad_macros)
         self._load_user_tools_list()
+        self.extra_skill_dirs_edit.setPlainText("\n".join(cfg.extra_skill_dirs))
         self._refresh_skills_list()
         self._refresh_hooks_list()
 
@@ -229,6 +246,7 @@ class ToolsPage(SettingsPage):
                                     if s.strip()],
             "use_external_editor": self.use_external_editor_cb.isChecked(),
             "scan_freecad_macros": self.scan_macros_cb.isChecked(),
+            "extra_skill_dirs": self._extra_dirs_from_widget(),
         }
 
     def apply_to(self, cfg):
@@ -576,12 +594,25 @@ class ToolsPage(SettingsPage):
 
     # ── Skills management ──────────────────────────────────────
 
+    def _extra_dirs_from_widget(self):
+        return [line.strip() for line in
+                self.extra_skill_dirs_edit.toPlainText().splitlines() if line.strip()]
+
+    def _browse_extra_skill_dir(self):
+        path = QFileDialog.getExistingDirectory(
+            self, translate("SettingsDialog", "Choose a skills folder"))
+        if path:
+            self.extra_skill_dirs_edit.setPlainText(
+                "\n".join(self._extra_dirs_from_widget() + [path]))
+            self._refresh_skills_list()
+
     def _refresh_skills_list(self):
         """Populate the skills list with status indicators."""
         from ...extensions.skills import SkillsRegistry
 
         self.skills_list.clear()
-        self._skills_status = SkillsRegistry.get_skill_status()
+        self._skills_status = SkillsRegistry.get_skill_status(
+            extra_dirs=self._extra_dirs_from_widget())
 
         for info in self._skills_status:
             source = info["source"]
@@ -594,14 +625,21 @@ class ToolsPage(SettingsPage):
             elif source == "user":
                 icon = "\u2606"  # ☆
                 tag = "user"
+            elif source == "external":
+                icon = "\u2197"  # ↗
+                tag = "external"
             else:
                 icon = "\u2713"  # ✓
                 tag = "built-in"
 
             label = f"{icon} {name} ({tag})"
             if desc:
-                label += f" — {desc}"
-            self.skills_list.addItem(label)
+                label += f" — {desc[:80]}"
+            item = QListWidgetItem(label)
+            if info.get("compatibility"):
+                item.setToolTip(translate("SettingsDialog", "Compatibility: ")
+                                + info["compatibility"])
+            self.skills_list.addItem(item)
 
         self._update_skills_reset_btn()
 

@@ -1,4 +1,5 @@
 ---
+name: sketch-from-image
 description: Extract 2D geometry from an attached image and create a FreeCAD sketch from it.
 ---
 
