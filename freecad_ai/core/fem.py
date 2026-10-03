@@ -21,6 +21,14 @@ def _fail(msg):
     return {"error": msg}
 
 
+def _type(obj):
+    return getattr(getattr(obj, "Proxy", None), "Type", "")
+
+
+def _tail(text, n=20):
+    return "\n".join((text or "").strip().splitlines()[-n:])
+
+
 def _solve():
     t0 = time.time()
     doc = App.ActiveDocument
@@ -29,8 +37,14 @@ def _solve():
         return _fail("Analysis {!r} not found in the document copy".format(ANALYSIS))
     summary = {"analysis": analysis.Label, "solver_created": False}
 
-    solvers = [o for o in analysis.Group
-               if getattr(getattr(o, "Proxy", None), "Type", "") == "Fem::SolverCcxTools"]
+    # FreeCAD 1.1's GUI makes SolverCalculiX; SolverCcxTools is its older
+    # subclass. FreeCAD's own solver skips suppressed objects.
+    members = [o for o in analysis.Group if not getattr(o, "Suppressed", False)]
+    solvers = [o for o in members
+               if _type(o) in ("Fem::SolverCalculiX", "Fem::SolverCcxTools")]
+    if len(solvers) > 1:
+        return _fail("The analysis has several CalculiX solvers: {}. Keep one.".format(
+            ", ".join(o.Label for o in solvers)))
     if solvers:
         solver = solvers[0]
     else:
@@ -39,13 +53,13 @@ def _solve():
         summary["solver_created"] = True
     summary["analysis_type"] = getattr(solver, "AnalysisType", "static")
 
-    meshes = [o for o in analysis.Group if o.isDerivedFrom("Fem::FemMeshObject")
-              and getattr(getattr(o, "Proxy", None), "Type", "") != "Fem::MeshResult"]
+    meshes = [o for o in members if o.isDerivedFrom("Fem::FemMeshObject")
+              and _type(o) != "Fem::MeshResult"]
     if len(meshes) > 1:
         return _fail("The analysis has several meshes: {}. Keep one.".format(
             ", ".join(m.Label for m in meshes)))
     mesh = meshes[0] if meshes else None
-    is_gmsh = mesh is None or getattr(getattr(mesh, "Proxy", None), "Type", "") == "Fem::FemMeshGmsh"
+    is_gmsh = mesh is None or _type(mesh) == "Fem::FemMeshGmsh"
     if mesh is None:
         parts = []
         for o in analysis.Group:
@@ -69,17 +83,25 @@ def _solve():
     if is_gmsh:
         if MESH_SIZE:
             mesh.CharacteristicLengthMax = MESH_SIZE
+        import Fem
         from femmesh.gmshtools import GmshTools
+        # create_mesh() returns nothing and keeps the old mesh when gmsh
+        # fails, so clear it first and check gmsh's exit code
+        mesh.FemMesh = Fem.FemMesh()
         try:
-            err = GmshTools(mesh).create_mesh()
+            gt = GmshTools(mesh)
+            gt.create_mesh()
         except Exception as e:
             if type(e).__name__ == "GmshError":
                 return _fail("Gmsh not found ({}). Install it, set its path in "
                              "Preferences → FEM → Gmsh, or add a Netgen mesh to "
                              "the analysis in FreeCAD.".format(str(e).strip()))
             return _fail("Meshing failed: {}".format(str(e).strip()))
-        if err:
-            return _fail("Meshing failed: {}".format(str(err).strip()))
+        if gt.process.exitCode() or not mesh.FemMesh.NodeCount:
+            out = bytes(gt.process.readAllStandardError()).decode("utf-8", "replace")
+            out = out or bytes(gt.process.readAllStandardOutput()).decode("utf-8", "replace")
+            return _fail("Meshing failed (gmsh exit code {}):\n{}".format(
+                gt.process.exitCode(), _tail(out) or "no output"))
         summary["mesher"] = "gmsh"
         summary["mesh_size"] = "{:g} mm".format(mesh.CharacteristicLengthMax.Value)
     else:
@@ -106,26 +128,29 @@ def _solve():
         return _fail("The analysis is not ready: " + msg.strip())
     fea.purge_results()
     fea.write_inp_file()
-    fea.ccx_run()
+    ret = fea.ccx_run()
     stdout = getattr(fea, "ccx_stdout", "") or ""
+    if ret:
+        return _fail("CalculiX failed (exit code {}):\n{}".format(
+            ret, _tail(stdout + "\n" + (getattr(fea, "ccx_stderr", "") or ""))))
     summary["ccx_warnings"] = [ln.strip() for ln in stdout.splitlines()
                                if "*WARNING" in ln.upper()][:20]
     frds = glob.glob(os.path.join(work, "*.frd"))
     if not frds:
-        return _fail("CalculiX produced no results:\n"
-                     + "\n".join(stdout.splitlines()[-20:]))
+        return _fail("CalculiX produced no results:\n" + _tail(stdout))
     summary["frd"] = frds[0]
     fea.load_results()
     results = [o for o in analysis.Group
                if o.isDerivedFrom("Fem::FemResultObjectPython")]
-    if results and summary["analysis_type"] == "static":
+    if summary["analysis_type"] == "static":
+        vm = list(results[0].vonMises) if results else []
+        if not vm:
+            return _fail("CalculiX produced no results:\n" + _tail(stdout))
         r = results[0]
-        vm = list(r.vonMises)
-        if vm:
-            i = max(range(len(vm)), key=vm.__getitem__)
-            summary["max_von_mises"] = vm[i]
-            p = r.Mesh.FemMesh.Nodes[r.NodeNumbers[i]]
-            summary["max_von_mises_at"] = [p.x, p.y, p.z]
+        i = max(range(len(vm)), key=vm.__getitem__)
+        summary["max_von_mises"] = vm[i]
+        p = r.Mesh.FemMesh.Nodes[r.NodeNumbers[i]]
+        summary["max_von_mises_at"] = [p.x, p.y, p.z]
         if len(r.DisplacementLengths):
             summary["max_displacement"] = max(r.DisplacementLengths)
     summary["elapsed_s"] = round(time.time() - t0, 2)

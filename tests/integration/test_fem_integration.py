@@ -104,3 +104,90 @@ def test_results_import_and_replace_on_a_second_run(tmp_path, freecad_bin):
     assert names == "('CCX_Results', 'Pipeline_CCX_Results')"
     assert "'CCX_Results'" in objects and "'Pipeline_CCX_Results'" in objects
     assert "CCX_Results001" not in objects
+
+
+def _cantilever_with(tmp_path, freecad_bin, extra):
+    """The cantilever plus ``extra`` (code run before the save; sees doc, an, box)."""
+    target = str(tmp_path / "cantilever.FCStd")
+    _go(tmp_path, freecad_bin, "MATERIAL = True\nTARGET = {!r}\n".format(target)
+        + _MAKE.replace("doc.saveAs(TARGET)", extra + "\ndoc.saveAs(TARGET)"))
+    return target
+
+
+_GMSH_MESH = '''
+mesh = ObjectsFem.makeMeshGmsh(doc, "FEMMeshGmsh")
+mesh.Shape = box
+mesh.CharacteristicLengthMax = "5 mm"
+an.addObject(mesh)
+from femmesh.gmshtools import GmshTools
+GmshTools(mesh).create_mesh()
+'''
+
+
+def test_the_gui_calculix_solver_type_is_used(tmp_path, freecad_bin):
+    # Review: FreeCAD 1.1's GUI makes Fem::SolverCalculiX, not SolverCcxTools
+    doc = _cantilever_with(tmp_path, freecad_bin,
+                           "sol = ObjectsFem.makeSolverCalculiX(doc, 'SolverCalculiX')\n"
+                           "sol.AnalysisType = 'frequency'\nan.addObject(sol)")
+    s = _summary(_go(tmp_path, freecad_bin, fem.build_solve_code("Analysis", ""), doc))
+    assert "error" not in s, s
+    assert s["solver_created"] is False and s["analysis_type"] == "frequency"
+
+
+def test_several_calculix_solvers_are_an_error(tmp_path, freecad_bin):
+    doc = _cantilever_with(tmp_path, freecad_bin,
+                           "an.addObject(ObjectsFem.makeSolverCalculiX(doc, 'SolverA'))\n"
+                           "an.addObject(ObjectsFem.makeSolverCalculiXCcxTools(doc, 'SolverB'))")
+    s = _summary(_go(tmp_path, freecad_bin, fem.build_solve_code("Analysis", ""), doc))
+    assert "SolverA" in s.get("error", "") and "SolverB" in s["error"], s
+
+
+def test_a_failed_gmsh_remesh_is_an_error_not_a_stale_solve(tmp_path, freecad_bin):
+    # Review: a failed regeneration kept the old mesh and "solved" to zeros
+    doc = _cantilever_with(tmp_path, freecad_bin,
+                           _GMSH_MESH + "box.Length = 300\ndoc.recompute()")
+    fail_gmsh = ("from femmesh import gmshtools as _g\n"
+                 "_orig = _g.GmshTools.get_gmsh_command\n"
+                 "def _bad(self):\n    _orig(self)\n    self.gmsh_bin = '/bin/false'\n"
+                 "_g.GmshTools.get_gmsh_command = _bad\n")
+    s = _summary(_go(tmp_path, freecad_bin,
+                     fail_gmsh + fem.build_solve_code("Analysis", ""), doc))
+    assert s.get("error", "").startswith("Meshing failed"), s
+
+
+def test_an_existing_gmsh_mesh_is_regenerated(tmp_path, freecad_bin):
+    doc = _cantilever_with(tmp_path, freecad_bin,
+                           _GMSH_MESH + "box.Length = 300\ndoc.recompute()")
+    s = _summary(_go(tmp_path, freecad_bin, fem.build_solve_code("Analysis", ""), doc))
+    assert "error" not in s, s
+    assert s["nodes"] > 400 and s["max_displacement"] > 10  # the 300 mm beam
+
+
+def test_a_failing_calculix_exit_code_is_an_error(tmp_path, freecad_bin):
+    fail_ccx = ("from femtools import ccxtools as _c\n"
+                "_orig = _c.FemToolsCcx.start_ccx\n"
+                "def _bad(self):\n    _orig(self)\n    return 1\n"
+                "_c.FemToolsCcx.start_ccx = _bad\n")
+    doc = _cantilever(tmp_path, freecad_bin)
+    s = _summary(_go(tmp_path, freecad_bin,
+                     fail_ccx + fem.build_solve_code("Analysis", ""), doc))
+    assert s.get("error", "").startswith("CalculiX failed (exit code 1)"), s
+
+
+def test_a_static_run_without_results_is_an_error(tmp_path, freecad_bin):
+    no_results = ("from femtools import ccxtools as _c\n"
+                  "_c.FemToolsCcx.load_results = lambda self: None\n")
+    doc = _cantilever(tmp_path, freecad_bin)
+    s = _summary(_go(tmp_path, freecad_bin,
+                     no_results + fem.build_solve_code("Analysis", ""), doc))
+    assert s.get("error", "").startswith("CalculiX produced no results"), s
+
+
+def test_a_suppressed_mesh_is_ignored(tmp_path, freecad_bin):
+    # Review: FreeCAD's own solver skips suppressed meshes
+    doc = _cantilever_with(tmp_path, freecad_bin, _GMSH_MESH + (
+        "old = ObjectsFem.makeMeshGmsh(doc, 'OldMesh')\nold.Shape = box\n"
+        "old.Suppressed = True\nan.addObject(old)"))
+    s = _summary(_go(tmp_path, freecad_bin, fem.build_solve_code("Analysis", ""), doc))
+    assert "error" not in s, s
+    assert s["nodes"] > 0
