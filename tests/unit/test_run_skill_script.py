@@ -246,3 +246,15 @@ def test_symlink_loop_terminates(skill, calls, monkeypatch):
     _dangerous(monkeypatch, False)
     (skill / "scripts" / "loop").symlink_to(skill / "scripts", target_is_directory=True)
     assert ft._handle_run_skill_script("maker", "scripts/make.py").success
+
+
+def test_escaping_dir_that_is_not_islink_is_refused(skill, calls, monkeypatch):
+    # A Windows junction: realpath resolves it but os.path.islink says False
+    _dangerous(monkeypatch, False)
+    outside = skill.parent.parent / "outside"
+    outside.mkdir()
+    (outside / "evil.py").write_text("x = 1\n")
+    (skill / "scripts" / "lib").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(skills_mod.os.path, "islink", lambda p: False)
+    result = ft._handle_run_skill_script("maker", "scripts/make.py")
+    assert not result.success and "scripts/lib" in result.error and not calls

@@ -358,7 +358,8 @@ class SkillsRegistry:
         for dirpath, dirnames, filenames in _walk_script_tree(top, skill.path):
             for d in dirnames:
                 dpath = os.path.join(dirpath, d)
-                if os.path.islink(dpath) and not _inside(root, os.path.realpath(dpath)):
+                # not os.path.islink: on 3.11 it is False for Windows junctions
+                if not _inside(root, os.path.realpath(dpath)):
                     return os.path.relpath(dpath, skill.path).replace(os.sep, "/")
             in_cache = os.path.basename(dirpath) == "__pycache__"
             for fn in sorted(filenames):
