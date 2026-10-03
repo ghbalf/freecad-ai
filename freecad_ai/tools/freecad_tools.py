@@ -3587,6 +3587,23 @@ def _headless_tool_result(run):
     return ToolResult(success=False, output=output, data=data, error=run.error)
 
 
+def _start_headless(timeout):
+    """Shared start of the headless tools (#114, #113).
+
+    Returns (timeout, freecad_bin, run_dir), or a failed ToolResult.
+    """
+    from ..core import executor, headless
+    try:
+        timeout = max(1, int(float(timeout)))
+    except (TypeError, ValueError):
+        return ToolResult(success=False, output="",
+                          error="timeout must be a number of seconds, got {!r}".format(timeout))
+    freecad_bin = executor._find_freecad_cmd()
+    if not freecad_bin:
+        return ToolResult(success=False, output="", error=executor.FREECAD_CMD_SEARCHED)
+    return timeout, freecad_bin, headless.new_run_dir()
+
+
 def _handle_execute_code_headless(code: str, timeout=600) -> ToolResult:
     """Run code in a separate FreeCAD console process (#114).
 
@@ -3597,21 +3614,15 @@ def _handle_execute_code_headless(code: str, timeout=600) -> ToolResult:
     from ..core.dangerous_mode import get_dangerous_mode
     from . import executor_utils
 
-    try:
-        timeout = max(1, int(float(timeout)))
-    except (TypeError, ValueError):
-        return ToolResult(success=False, output="",
-                          error="timeout must be a number of seconds, got {!r}".format(timeout))
     if not get_dangerous_mode().active:
         warnings = executor._validate_code(code)
         if warnings:
             return ToolResult(success=False, output="",
                               error="Static validation failed:\n" + "\n".join(warnings))
-    freecad_bin = executor._find_freecad_cmd()
-    if not freecad_bin:
-        return ToolResult(success=False, output="", error=executor.FREECAD_CMD_SEARCHED)
-
-    run_dir = headless.new_run_dir()
+    start = _start_headless(timeout)
+    if isinstance(start, ToolResult):
+        return start
+    timeout, freecad_bin, run_dir = start
     copy_path = os.path.join(run_dir, "input.FCStd")
     try:
         document_path = executor_utils.run_on_main(

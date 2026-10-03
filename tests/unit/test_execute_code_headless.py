@@ -141,3 +141,13 @@ def test_registered_off_the_main_thread():
                                                                ("timeout", False)]
     for phrase in ("WORK_DIR", "execute_code", "not changed", "60 s"):
         assert phrase in tool.description
+
+
+def test_start_headless_returns_timeout_binary_and_run_dir(env, tmp_path):
+    assert ft._start_headless("60") == (60, "/opt/fc/bin/freecadcmd", str(tmp_path))
+
+
+def test_start_headless_failures_are_tool_results(env, monkeypatch):
+    assert "timeout" in ft._start_headless("soon").error
+    monkeypatch.setattr(ex, "_find_freecad_cmd", lambda: "")
+    assert "freecadcmd" in ft._start_headless(5).error
