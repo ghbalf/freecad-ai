@@ -257,6 +257,9 @@ class MCPServer:
             content = [{"type": "text", "text": result.output}]
             if result.data:
                 content.append({"type": "text", "text": str(result.data)})
+            for img in result.images:
+                content.append({"type": "image", "data": img["data"],
+                                "mimeType": img["mimeType"]})
             payload = {"content": content, "isError": False}
         else:
             payload = {

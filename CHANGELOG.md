@@ -57,6 +57,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   be colour-plotted. Setting up the analysis (material, constraints, loads)
   stays with `execute_code`. Tested on Linux only; the macOS/Windows paths
   to `ccx` and `gmsh` are untested.
+- **MCP clients now see `capture_viewport` screenshots** (#112). Over MCP
+  the result carries the PNG as an `image` content block after the text, in
+  both protocol eras, so Claude Desktop, Claude Code and other clients can
+  check what they just built. The file is still written to `filepath`, and
+  clients that cannot show images still get the path as text. The chat
+  panel is unchanged.
 
 ### Changed
 

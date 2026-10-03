@@ -64,6 +64,9 @@ class ToolResult:
     output: str  # Human-readable summary
     data: dict = field(default_factory=dict)  # Structured data
     error: str = ""
+    # [{"mimeType": "image/png", "data": <base64>}]; sent as MCP image blocks.
+    # Kept out of `data`, which reaches clients str()-ed as text.
+    images: list = field(default_factory=list)
 
 
 class ToolRegistry:
