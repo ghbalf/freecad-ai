@@ -126,3 +126,61 @@ class TestQtDispatch:
         result, worker_ident = _call_from_worker(
             qapp, lambda: executor.execute("worker_tool", {}))
         assert result.success and seen["worker_tool"] == worker_ident
+
+
+# ── run_on_main / current_thread_interrupted (#114) ────────
+
+class TestRunOnMain:
+    def test_runs_on_the_gui_thread_and_returns_the_value(self, qapp):
+        from freecad_ai.tools import executor_utils
+        value, _ = _call_from_worker(
+            qapp, lambda: executor_utils.run_on_main(threading.get_ident))
+        assert value == threading.get_ident()
+
+    def test_reraises_in_the_caller(self, qapp):
+        from freecad_ai.tools import executor_utils
+
+        def boom():
+            raise RuntimeError("no doc")
+
+        def call():
+            try:
+                executor_utils.run_on_main(boom)
+            except RuntimeError as e:
+                return str(e)
+
+        value, _ = _call_from_worker(qapp, call)
+        assert value == "no doc"
+
+    def test_on_the_gui_thread_it_calls_directly(self, qapp):
+        from freecad_ai.tools import executor_utils
+        assert executor_utils.run_on_main(threading.get_ident) == threading.get_ident()
+
+    def test_without_qt_it_calls_directly(self, monkeypatch):
+        from freecad_ai.tools import executor_utils
+        monkeypatch.setattr(executor_utils, "_HAS_QT", False)
+        assert executor_utils.run_on_main(lambda: 42) == 42
+
+    def test_interruption_of_a_qthread_is_seen(self, qapp):
+        from freecad_ai.tools import executor_utils
+        from freecad_ai.ui.compat import QtCore
+
+        class T(QtCore.QThread):
+            def run(self):
+                self.before = executor_utils.current_thread_interrupted()
+                self.requestInterruption()
+                self.after = executor_utils.current_thread_interrupted()
+
+        t = T()
+        t.start()
+        assert t.wait(5000)
+        assert (t.before, t.after) == (False, True)
+
+    def test_plain_thread_is_never_interrupted(self, qapp):
+        from freecad_ai.tools import executor_utils
+        box = {}
+        t = threading.Thread(
+            target=lambda: box.update(v=executor_utils.current_thread_interrupted()))
+        t.start()
+        t.join(5)
+        assert box["v"] is False

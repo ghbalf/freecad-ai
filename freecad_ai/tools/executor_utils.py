@@ -8,6 +8,7 @@ Used by both _LLMWorker (chat agentic loop) and SkillEvaluator (headless
 evaluation runs).
 """
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -107,3 +108,64 @@ if _HAS_QT:
                 self._mutex.lock()
                 self._condition.wakeAll()
                 self._mutex.unlock()
+
+
+_caller = None
+_caller_lock = threading.Lock()
+
+if _HAS_QT:
+    class _MainThreadCaller(QObject):
+        """Runs callables on the GUI thread for run_on_main."""
+        _call = Signal(object)
+
+        def __init__(self):
+            super().__init__()
+            self._call.connect(self._run, Qt.QueuedConnection)
+
+        def _run(self, box):
+            try:
+                box["value"] = box["fn"]()
+            except BaseException as e:  # handed to the waiting thread
+                box["error"] = e
+            finally:
+                box["done"].set()
+
+        def call(self, fn):
+            box = {"fn": fn, "done": threading.Event()}
+            self._call.emit(box)
+            box["done"].wait()
+            if "error" in box:
+                raise box["error"]
+            return box.get("value")
+
+
+def run_on_main(fn):
+    """Call ``fn()`` on the GUI thread from any thread and return its result.
+
+    For main_thread=False tool handlers, which run on a worker thread but
+    still need FreeCAD's document API for a moment. Calls ``fn`` directly
+    without Qt, without an application object, or on the GUI thread itself.
+    """
+    global _caller
+    if not _HAS_QT:
+        return fn()
+    app = QtCore.QCoreApplication.instance()
+    if app is None or QtCore.QThread.currentThread() == app.thread():
+        return fn()
+    with _caller_lock:
+        if _caller is None:
+            _caller = _MainThreadCaller()
+            # Created on whichever thread got here first; queued calls must
+            # be delivered on the GUI thread.
+            _caller.moveToThread(app.thread())
+    return _caller.call(fn)
+
+
+def current_thread_interrupted():
+    """True once the chat's Stop button asked the calling QThread to stop."""
+    if not _HAS_QT:
+        return False
+    try:
+        return bool(QtCore.QThread.currentThread().isInterruptionRequested())
+    except Exception:
+        return False
