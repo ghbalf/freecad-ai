@@ -48,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the config directory's `headless/`. Default timeout 600 s; the chat's Stop
   button ends a run. Verified on Linux only: the macOS and Windows code paths
   exist but are untested.
+- **`run_fem_analysis`** (#113): solves an existing FEM analysis with
+  CalculiX in a separate FreeCAD process (FreeCAD stays responsive) and
+  returns max von Mises stress, max displacement and mesh size. A Gmsh mesh
+  is regenerated on every run (or created if the analysis has none, size
+  via `mesh_size`); a missing CalculiX solver is added for the run. Results
+  are imported into the open analysis, replacing earlier ones, so they can
+  be colour-plotted. Setting up the analysis (material, constraints, loads)
+  stays with `execute_code`. Tested on Linux only; the macOS/Windows paths
+  to `ccx` and `gmsh` are untested.
 
 ### Changed
 
