@@ -20,12 +20,14 @@ SUMMARY = {"analysis": "Analysis", "solver_created": False, "analysis_type": "st
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """Binary found, one analysis, the child faked to write ``state['summary']``."""
-    state = {"calls": [], "imports": [], "summary": SUMMARY, "status": "ok", "error": ""}
+    state = {"calls": [], "imports": [], "summary": SUMMARY, "status": "ok", "error": "",
+             "names": ("CCX_Results", "Pipeline_CCX_Results")}
     monkeypatch.setattr(ex, "_find_freecad_cmd", lambda: "/opt/fc/bin/freecadcmd")
     monkeypatch.setattr(headless, "new_run_dir", lambda: str(tmp_path))
     monkeypatch.setattr(fem, "prepare_copy", lambda name, path: ("Part1", "Analysis"))
     monkeypatch.setattr(fem, "import_into",
-                        lambda doc, an, frd: state["imports"].append((doc, an, frd)))
+                        lambda doc, an, frd: state["imports"].append((doc, an, frd))
+                        or state["names"])
 
     def fake_run(code, **kw):
         state["calls"].append({"code": code, **kw})
@@ -43,7 +45,8 @@ def test_success_summarises_and_imports(env, tmp_path):
     result = ftool._handle_run_fem_analysis()
     assert result.success
     assert "Max von Mises stress: 324.9 MPa" in result.output
-    assert "Results imported as CCX_Results" in result.output
+    assert ("Results imported as CCX_Results (colour plot via Pipeline_CCX_Results)."
+            in result.output)
     assert env["imports"] == [("Part1", "Analysis", "/r/ccx/Mesh.frd")]
     assert result.data == {"run_dir": str(tmp_path), "summary": SUMMARY}
     call = env["calls"][0]
@@ -51,6 +54,21 @@ def test_success_summarises_and_imports(env, tmp_path):
     assert call["document_path"] == os.path.join(str(tmp_path), "input.FCStd")
     assert call["timeout"] == 600
     assert call["is_cancelled"] is executor_utils.current_thread_interrupted
+
+
+def test_import_note_uses_the_labels_actually_given(env):
+    # Live check: the GUI labels a re-import CCX_Results001
+    env["names"] = ("CCX_Results001", "Pipeline_CCX_Results")
+    result = ftool._handle_run_fem_analysis()
+    assert ("Results imported as CCX_Results001 (colour plot via Pipeline_CCX_Results)."
+            in result.output)
+
+
+def test_import_without_a_pipeline_omits_the_colour_plot_hint(env):
+    env["names"] = ("CCX_Results", None)
+    result = ftool._handle_run_fem_analysis()
+    assert "Results imported as CCX_Results." in result.output
+    assert "colour plot" not in result.output
 
 
 def test_mesh_size_and_timeout_are_passed_on(env):

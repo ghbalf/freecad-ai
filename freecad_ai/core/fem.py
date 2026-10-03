@@ -188,7 +188,13 @@ def import_results(analysis, frd_path):
 
 
 def import_into(doc_name, analysis_name, frd_path):
-    """Import results into the document the solve started from. GUI thread only."""
+    """Import results into the document the solve started from. GUI thread only.
+
+    Returns the labels of the result object and the pipeline (None if there
+    is none). In the GUI a re-imported CCX_Results keeps its Name but is
+    labelled CCX_Results001; labels are what the tree and get_document_state
+    show, and the tools resolve labels too.
+    """
     import FreeCAD as App
     doc = App.getDocument(doc_name)
     analysis = doc.getObject(analysis_name)
@@ -196,6 +202,11 @@ def import_into(doc_name, analysis_name, frd_path):
         raise FemError("analysis {!r} no longer exists".format(analysis_name))
     import_results(analysis, frd_path)
     doc.recompute()
+
+    def newest(type_id):
+        found = [o.Label for o in analysis.Group if o.isDerivedFrom(type_id)]
+        return found[-1] if found else None
+    return newest("Fem::FemResultObjectPython"), newest("Fem::FemPostPipeline")
 
 
 def format_summary(summary, import_note=""):

@@ -45,9 +45,10 @@ def _handle_run_fem_analysis(analysis="", mesh_size="", timeout=600) -> ToolResu
         return ToolResult(success=False, output="", data=data, error=summary["error"])
 
     try:
-        executor_utils.run_on_main(
+        result_name, pipeline = executor_utils.run_on_main(
             lambda: fem.import_into(doc_name, analysis_name, summary["frd"]))
-        note = "Results imported as CCX_Results (colour plot via Pipeline_CCX_Results)."
+        note = "Results imported as {}{}.".format(
+            result_name, " (colour plot via {})".format(pipeline) if pipeline else "")
     except Exception as e:
         note = "Results not imported: {}. Results file: {}".format(e, summary["frd"])
     return ToolResult(success=True, output=fem.format_summary(summary, note), data=data)

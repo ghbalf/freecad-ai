@@ -127,3 +127,23 @@ def test_non_static_summary_has_mesh_data_and_a_note():
     assert "198 nodes" in text and "MPa" not in text
     assert "only static analyses are summarised" in text
     assert fem.CONVERGENCE_NOTE not in text
+
+
+def _typed(name, type_id, label=None):
+    return SimpleNamespace(Name=name, Label=label or name,
+                           isDerivedFrom=lambda t, k=type_id: t == k)
+
+
+def test_import_into_returns_the_labels_it_created(monkeypatch):
+    # Live check: in the GUI a re-imported CCX_Results keeps its Name but is
+    # labelled CCX_Results001, and get_document_state shows labels
+    an = SimpleNamespace(Group=[_typed("Steel", "App::MaterialObjectPython")])
+    monkeypatch.setattr(fem, "import_results", lambda a, frd: a.Group.extend([
+        _typed("CCX_Results", "Fem::FemResultObjectPython", "CCX_Results001"),
+        _typed("Pipeline_CCX_Results", "Fem::FemPostPipeline")]))
+    doc = SimpleNamespace(getObject={"Analysis": an}.get, recompute=lambda: None)
+    freecad = ModuleType("FreeCAD")
+    freecad.getDocument = {"Part1": doc}.__getitem__
+    monkeypatch.setitem(sys.modules, "FreeCAD", freecad)
+    assert fem.import_into("Part1", "Analysis", "/r/x.frd") == (
+        "CCX_Results001", "Pipeline_CCX_Results")
