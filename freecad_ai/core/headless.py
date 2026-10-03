@@ -7,6 +7,7 @@ handler runs on a worker thread (main_thread=False) so the wait here does not
 freeze the GUI.
 """
 
+import atexit
 import json
 import os
 import re
@@ -76,6 +77,22 @@ def cap_text(text, path, limit=OUTPUT_CAP):
         len(text) - limit, path, text[-limit:])
 
 
+# Children still running. The child has its own session, so it gets no
+# SIGHUP when FreeCAD quits, and only the waiting thread enforces the
+# timeout; the exit hook kills whatever is left.
+_live = set()
+
+
+def kill_live_runs():
+    """Kill the process group of every child still running (at exit)."""
+    for proc in list(_live):
+        _kill_group(proc, time.monotonic, time.sleep)
+        _live.discard(proc)
+
+
+atexit.register(kill_live_runs)
+
+
 def run_headless(code, *, freecad_bin, run_dir, document_path, timeout,
                  is_cancelled=lambda: False, launch=subprocess.Popen,
                  clock=time.monotonic, sleep=time.sleep):
@@ -109,15 +126,19 @@ def run_headless(code, *, freecad_bin, run_dir, document_path, timeout,
             return HeadlessRun("launch_failed", "", "",
                                "Could not start {}: {}".format(freecad_bin, e),
                                run_dir, None, 0.0)
-        while proc.poll() is None:
-            if clock() - start >= timeout:
-                stopped = "timeout"
-            elif is_cancelled():
-                stopped = "cancelled"
-            if stopped:
-                _kill_group(proc, clock, sleep)
-                break
-            sleep(POLL_S)
+        _live.add(proc)
+        try:
+            while proc.poll() is None:
+                if clock() - start >= timeout:
+                    stopped = "timeout"
+                elif is_cancelled():
+                    stopped = "cancelled"
+                if stopped:
+                    _kill_group(proc, clock, sleep)
+                    break
+                sleep(POLL_S)
+        finally:
+            _live.discard(proc)
     return _collect(run_dir, proc.returncode, stopped, clock() - start, timeout)
 
 

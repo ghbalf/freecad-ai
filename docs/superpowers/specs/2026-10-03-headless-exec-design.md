@@ -21,11 +21,15 @@ stays responsive and a crash in the script cannot take FreeCAD down.
 
 ## What exists today
 
-- **Every tool call runs on the GUI thread.** `QtMainThreadToolExecutor`
-  (`tools/executor_utils.py`) dispatches each call from the chat worker or
-  the MCP server thread to the GUI thread and blocks until it returns. A
-  handler that waits on a subprocess therefore freezes FreeCAD just as long
-  as running the code in-process would.
+- **Every tool call runs on the GUI thread.** Two dispatchers do this, and
+  both need the `main_thread` flag. `QtMainThreadToolExecutor`
+  (`tools/executor_utils.py`) serves the MCP server thread and the skill
+  evaluator. The chat worker has its own: `_LLMWorker._tool_loop`
+  (`ui/chat_widget.py`) sends every call except `optimize_iteration` to the
+  GUI thread. Either way the caller blocks until the call returns, so a
+  handler that waits on a subprocess freezes FreeCAD just as long as running
+  the code in-process would. (Corrected after the final review: the first
+  version named only the executor, and the chat path was missed.)
 - **`_find_freecad_cmd()`** (`core/executor.py`) finds the console binary
   shipped with the *running* FreeCAD (`getHomePath()/bin/freecadcmd`),
   falling back to AppImages and PATH.

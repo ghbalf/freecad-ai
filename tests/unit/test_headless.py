@@ -192,3 +192,34 @@ def test_new_run_dir_defaults_under_config_dir(tmp_config_dir):
     import freecad_ai.config as config_mod
     path = headless.new_run_dir()
     assert os.path.dirname(path) == os.path.join(config_mod.CONFIG_DIR, "headless")
+
+
+# ── final review: FreeCAD quitting mid-run (#114) ───────────
+
+def test_a_running_child_is_tracked_and_released(tmp_path):
+    proc = FakeProc(polls=2)
+    seen = []
+    _run(tmp_path, proc, {}, is_cancelled=lambda: seen.append(proc in headless._live) or False)
+    assert seen and all(seen)
+    assert proc not in headless._live
+
+
+def test_exit_hook_kills_every_live_child(signals):
+    a, b = FakeProc(polls=None), FakeProc(polls=None)
+    signals.procs += [a, b]
+    headless._live.update({a, b})
+    try:
+        headless.kill_live_runs()
+    finally:
+        headless._live.difference_update({a, b})
+    assert a.returncode is not None and b.returncode is not None
+    assert signals.sent.count(signal.SIGTERM) == 2
+
+
+def test_exit_hook_is_registered():
+    import atexit
+    from unittest.mock import patch
+    import importlib
+    with patch.object(atexit, "register") as reg:
+        importlib.reload(headless)
+    reg.assert_any_call(headless.kill_live_runs)
