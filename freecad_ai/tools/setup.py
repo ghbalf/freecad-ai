@@ -7,6 +7,7 @@ user extension tools, and optionally MCP tools from connected servers.
 import os
 
 from .registry import ToolRegistry
+from .fem_tools import RUN_FEM_ANALYSIS
 from .freecad_tools import ALL_TOOLS
 
 
@@ -19,6 +20,7 @@ def create_default_registry(include_mcp: bool = True, extra_tools: list | None =
     registry = ToolRegistry()
     for tool in ALL_TOOLS:
         registry.register(tool)
+    registry.register(RUN_FEM_ANALYSIS)
 
     # Load user extension tools
     try:
