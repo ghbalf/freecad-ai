@@ -449,11 +449,67 @@ finally:
     _os._exit(0)
 '''
 
+# Headless runs (#114) report what the code printed and whether it raised;
+# unlike the sandbox they pass no verdict on the model. User output goes to
+# line-buffered files rather than memory so a run killed for its timeout still
+# leaves what it printed. The code is exec'd from its source rather than
+# pasted in indented, which would change multi-line string literals.
+_HEADLESS_HARNESS = '''import sys, os as _os, json, traceback
+WORK_DIR = {work_dir!r}
+result = {{"ok": False, "error": ""}}
+_out = open(_os.path.join(WORK_DIR, "output.log"), "w", encoding="utf-8", buffering=1)
+_err = open(_os.path.join(WORK_DIR, "stderr.log"), "w", encoding="utf-8", buffering=1)
+try:
+    import FreeCAD as App
+{gui_stub}
+{open_block}
+    _src = {code!r}
+    _path = _os.path.join(WORK_DIR, "user_code.py")
+    _ns = {{"__name__": "__main__", "__file__": _path, "__builtins__": __builtins__,
+           "App": App, "FreeCAD": App, "WORK_DIR": WORK_DIR,
+           "Gui": sys.modules["FreeCADGui"], "FreeCADGui": sys.modules["FreeCADGui"]}}
+    for _name in ("Part", "PartDesign", "Sketcher", "Draft", "Mesh", "BOPTools", "math"):
+        try:
+            _ns[_name] = __import__(_name)
+        except Exception:
+            pass
+    _saved = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _out, _err
+    try:
+        exec(compile(_src, _path, "exec"), _ns)
+    except SystemExit as _exit:
+        if _exit.code not in (None, 0):
+            raise
+    finally:
+        sys.stdout, sys.stderr = _saved
+    result["ok"] = True
+except BaseException:
+    result["error"] = traceback.format_exc()
+finally:
+    try:
+        import FreeCAD as App
+        for _dn in list(App.listDocuments().keys()):
+            App.closeDocument(_dn)
+    except BaseException:
+        pass
+    for _f in (_out, _err):
+        try:
+            _f.close()
+        except Exception:
+            pass
+    with open({result_path!r}, "w", encoding="utf-8") as f:
+        json.dump(result, f)
+    # See _SANDBOX_HARNESS: some builds never exit after -c on an opened document (#14).
+    _os._exit(0)
+'''
+
+
 
 def _build_child_script(code, *, document_path, result_path, mode="sandbox"):
     """Source of the script a FreeCAD console child runs.
 
     ``sandbox``: the pass/fail pre-check used by execute_code.
+    ``headless``: execute_code_headless (#114).
     """
     if mode == "sandbox":
         return _SANDBOX_HARNESS.format(
@@ -463,6 +519,14 @@ def _build_child_script(code, *, document_path, result_path, mode="sandbox"):
             gui_stub=_GUI_STUB,
             open_block=_open_block(document_path, "Sandbox", "SandboxTest"),
             indented_code="\n".join("    " + line for line in code.splitlines()),
+            result_path=result_path,
+        )
+    if mode == "headless":
+        return _HEADLESS_HARNESS.format(
+            work_dir=os.path.dirname(result_path),
+            gui_stub=_GUI_STUB,
+            open_block=_open_block(document_path, "Headless", "Headless"),
+            code=code,
             result_path=result_path,
         )
     raise ValueError("unknown child-script mode: {!r}".format(mode))
