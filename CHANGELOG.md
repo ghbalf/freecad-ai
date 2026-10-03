@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Not included: `allowed-tools` in frontmatter is not enforced, and
   other harnesses' skill folders are not discovered automatically or
   installed from URLs; add them by hand as extra skill folders.
+- **MCP clients now see `capture_viewport` screenshots** (#112). Over MCP
+  the result carries the PNG as an `image` content block after the text, in
+  both protocol eras, so Claude Desktop, Claude Code and other clients can
+  check what they just built. The file is still written to `filepath`, and
+  clients that cannot show images still get the path as text. The chat
+  panel is unchanged.
 
 ### Changed
 

@@ -301,3 +301,18 @@ class TestViewToolsSchemaGeneration:
         schema_names = {s["name"] for s in schema}
         for tool in VIEW_TOOLS:
             assert tool.name in schema_names
+
+
+def test_capture_viewport_returns_the_png_as_an_image(tmp_path, monkeypatch):
+    """#112: the bytes go out as base64 in `images`, never into `data`."""
+    import base64
+    from freecad_ai.utils import viewport
+
+    png = b"\x89PNG\r\n\x1a\nfake"
+    monkeypatch.setattr(viewport, "capture_viewport_image", lambda w, h, bg: png)
+    target = tmp_path / "shot.png"
+    result = CAPTURE_VIEWPORT.handler(filepath=str(target))
+    assert result.success and target.read_bytes() == png
+    assert result.images == [{"mimeType": "image/png",
+                              "data": base64.b64encode(png).decode("ascii")}]
+    assert base64.b64encode(png).decode("ascii") not in str(result.data)
