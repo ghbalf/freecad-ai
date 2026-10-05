@@ -12,6 +12,7 @@ tool calls on the main thread, feed results back to the LLM.
 import copy
 import json
 import logging
+import re
 import time
 from html import escape as _html_escape
 
@@ -43,6 +44,7 @@ from ..core.executor import extract_code_blocks, extract_truncated_block, execut
 from ..core.loop_control import (
     reasoning_to_persist, resolve_turn_outcome, should_continue_loop)
 from ..core.input_history import InputHistory
+from ..core.references import reference_token, references_from_selection
 from .message_view import (
     _get_theme_colors,
     get_chat_display_stylesheet,
@@ -792,6 +794,8 @@ class _AttachmentStrip(QtWidgets.QWidget):
         # Each item: (widget, kind, data_dict)
         #   kind="image" → data_dict = {"media_type": str, "data": str}
         #   kind="document" → data_dict = {"filename": str, "text": str}
+        #   kind="reference" → data_dict = {"name": str, "label": str,
+        #                                    "sub": str|None, "text": str}
         self._items: list[tuple[QtWidgets.QWidget, str, dict]] = []
         self.hide()
 
@@ -861,6 +865,51 @@ class _AttachmentStrip(QtWidgets.QWidget):
         self._items.append((container, "document", {"filename": filename, "text": text}))
         self.show()
 
+    def add_reference(self, ref: dict) -> bool:
+        """Add a selection-reference chip (e.g. ``@Pad.Face3``) to the strip.
+
+        Duplicate references (same object and sub-element) refresh the
+        stored snapshot and tooltip instead of adding a second chip;
+        returns True only when a chip was added.
+        """
+        key = (ref.get("name"), ref.get("sub"))
+        for w, kind, d in self._items:
+            if kind == "reference" and (d.get("name"), d.get("sub")) == key:
+                d.update(ref)  # re-click refreshes a stale snapshot
+                label = w.findChild(QLabel)
+                if label:
+                    label.setToolTip(ref.get("text", ""))
+                return False
+
+        container = QtWidgets.QWidget()
+        container_layout = QHBoxLayout(container)
+        container_layout.setContentsMargins(4, 2, 4, 2)
+        container_layout.setSpacing(4)
+
+        colors = _get_theme_colors()
+        label = QLabel(reference_token(ref))
+        label.setToolTip(ref.get("text", ""))
+        label.setStyleSheet(
+            f"font-size: 10px; color: {colors['tool_success_text']}; "
+            f"background: {colors['chat_bg']}; "
+            f"border: 1px solid {colors['tool_success_border']}; "
+            f"border-radius: 3px; padding: 2px 6px;"
+        )
+        container_layout.addWidget(label)
+
+        # Remove button
+        remove_btn = QPushButton("x")
+        remove_btn.setMaximumSize(16, 16)
+        remove_btn.setStyleSheet(f"font-size: 10px; padding: 0; border: none; color: {colors['tool_error_text']};")
+        idx = len(self._items)
+        remove_btn.clicked.connect(lambda checked=False, i=idx: self._remove(i))
+        container_layout.addWidget(remove_btn)
+
+        self._layout.insertWidget(self._layout.count() - 1, container)
+        self._items.append((container, "reference", dict(ref)))
+        self.show()
+        return True
+
     def get_images(self) -> list[dict]:
         """Return list of image content block dicts."""
         return [
@@ -873,6 +922,13 @@ class _AttachmentStrip(QtWidgets.QWidget):
         return [
             {"filename": d["filename"], "text": d["text"]}
             for _, kind, d in self._items if kind == "document"
+        ]
+
+    def get_references(self) -> list[dict]:
+        """Return list of selection-reference dicts."""
+        return [
+            {"name": d["name"], "label": d["label"], "sub": d["sub"], "text": d["text"]}
+            for _, kind, d in self._items if kind == "reference"
         ]
 
     def clear(self):
@@ -1211,6 +1267,14 @@ class ChatDockWidget(QDockWidget):
         # Button column: attach + send
         btn_layout = QVBoxLayout()
         btn_layout.setSpacing(2)
+
+        self._reference_btn = QPushButton(translate("ChatDockWidget", "Reference"))
+        self._reference_btn.setMaximumHeight(20)
+        self._reference_btn.setToolTip(translate(
+            "ChatDockWidget",
+            "Attach the current selection as a reference (e.g. @Pad.Face3)"))
+        self._reference_btn.clicked.connect(self._add_selection_reference)
+        btn_layout.addWidget(self._reference_btn)
 
         self._attach_btn = QPushButton(translate("ChatDockWidget", "Attach"))
         self._attach_btn.setMaximumHeight(20)
@@ -1555,6 +1619,9 @@ class ChatDockWidget(QDockWidget):
         pending_docs = self._attachment_strip.get_documents()
         documents = pending_docs or None
 
+        # Collect selection references
+        references = self._attachment_strip.get_references() or None
+
         # Auto-capture viewport if configured
         capture_mode = getattr(self, "_capture_mode_override", None) or get_config().viewport_capture
         if capture_mode == "every_message":
@@ -1568,7 +1635,8 @@ class ChatDockWidget(QDockWidget):
             self._pending_viewport_image = None
 
         # Add to conversation and display
-        self.conversation.add_user_message(text, images=images, documents=documents)
+        self.conversation.add_user_message(text, images=images, documents=documents,
+                                           references=references)
         self._refresh_input_history()
         display_content = self.conversation.messages[-1]["content"]
         self._append_html(render_message("user", display_content))
@@ -1646,6 +1714,33 @@ class ChatDockWidget(QDockWidget):
     def _on_document_added(self, filename: str, text: str):
         """Handle text file added via paste or drop."""
         self._attachment_strip.add_document(filename, text)
+
+    def _add_selection_reference(self):
+        """Capture the current selection as reference chips + @tokens."""
+        refs = references_from_selection()
+        if not refs:
+            self._append_html(render_message(
+                "system", translate(
+                    "ChatDockWidget",
+                    "Nothing selected — select an object, face, or edge in "
+                    "the 3D view or model tree, then click Reference.")))
+            return
+        text = self.input_edit.toPlainText()
+        tokens = []
+        for ref in refs:
+            token = reference_token(ref)
+            if self._attachment_strip.add_reference(ref):
+                tokens.append(token)  # new chip → insert token
+            elif re.search(re.escape(token) + r"(?!\w)(?!\.\w)", text) is None:
+                tokens.append(token)  # chip exists, token missing → re-insert
+        if not tokens:
+            return  # every token is already in the input
+        cursor = self.input_edit.textCursor()
+        before = text[:cursor.position()]
+        separator = "" if not before or before[-1] in (" ", "\n", "\t") else " "
+        cursor.insertText(separator + " ".join(tokens) + " ")
+        self.input_edit.setTextCursor(cursor)
+        self.input_edit.setFocus()
 
     # ── Dock-level drag-and-drop (accepts drops anywhere on the panel) ──
 
@@ -2865,10 +2960,12 @@ class ChatDockWidget(QDockWidget):
         # them to the visible user message, same as a regular send.
         pending_images = self._attachment_strip.get_images() or None
         pending_docs = self._attachment_strip.get_documents() or None
+        pending_refs = self._attachment_strip.get_references() or None
 
         # Display the command (with any attachments)
         self.conversation.add_user_message(text, images=pending_images,
-                                           documents=pending_docs)
+                                           documents=pending_docs,
+                                           references=pending_refs)
         display_content = self.conversation.messages[-1]["content"]
         self._append_html(render_message("user", display_content))
         self._attachment_strip.clear()

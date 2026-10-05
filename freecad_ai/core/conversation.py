@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass, field
 
 from ..config import CONVERSATIONS_DIR, get_config, prune_oldest_files
+from .references import format_reference_block
 
 
 @dataclass
@@ -44,7 +45,8 @@ class Conversation:
         self.compaction_enabled = True
 
     def add_user_message(self, content: str, images: list[dict] | None = None,
-                         documents: list[dict] | None = None):
+                         documents: list[dict] | None = None,
+                         references: list[dict] | None = None):
         """Add a user message, optionally with images and/or documents.
 
         Args:
@@ -53,9 +55,18 @@ class Conversation:
                     type, source, media_type, data (base64).
             documents: Optional list of document dicts, each with keys:
                        filename, text.
+            references: Optional list of selection-reference dicts, each with
+                        keys: name, label, sub, text.
         """
-        if images or documents:
+        if images or documents or references:
             blocks = [{"type": "text", "text": content}]
+            # Selection references annotate the typed text, so they come
+            # right after it, ahead of any file documents.
+            for ref in (references or []):
+                blocks.append({
+                    "type": "text",
+                    "text": format_reference_block(ref),
+                })
             # Append document content as labeled text blocks
             for doc in (documents or []):
                 blocks.append({
