@@ -161,6 +161,12 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "perplexity": {
+        "base_url": "https://api.perplexity.ai/v1",
+        "default_model": "perplexity-3.0",
+        "api_style": "openai",
+        "supports_tools": True,
+    },
     "custom": {
         "base_url": "",
         "default_model": "",
