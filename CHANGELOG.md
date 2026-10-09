@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Reference button: attach the current selection to a chat message.**
+  Select an object, face, edge, or vertex, click **Reference**, and an
+  `@Name` token (e.g. `@Pad.Face3`) drops into the input with a chip in
+  the attachment strip. Sending the message attaches a short text
+  snapshot per reference — object type, placement, and bounding box, or
+  for sub-elements their classification, area/length, center, and normal
+  — so the LLM knows which geometry each `@token` means without
+  re-inspecting the model. Chips deduplicate on object + sub-element;
+  `@` tokens use the object's immutable internal name, so renaming an
+  object never desyncs chip, token, or snapshot (the label still
+  appears in the description text).
+
 ## [0.32.0-alpha] - 2026-10-04
 
 ### Added

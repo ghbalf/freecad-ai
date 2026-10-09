@@ -414,6 +414,25 @@ cp -r docs/hooks/file-attach-example/ "<FreeCADAI dir>/hooks/file-attach/"
 
 Binary files are detected by magic bytes (PDF, ZIP/Office, PNG, JPEG, ELF, etc.) and null-byte content scanning.
 
+### Referencing FreeCAD Objects
+
+Attach your current selection to the next message via the **Reference** button (above Attach):
+
+1. Select geometry in the 3D view or model tree (Ctrl+click for several items).
+2. Click **Reference** — an `@Name` token drops into the input box and a green chip appears in the attachment strip.
+3. Type your question around the tokens (e.g. `why is @Pad.Face3 not parallel to @Pad.Face1?`) and send.
+
+The LLM receives a short snapshot of each reference — object type, placement, and bounding box, or for faces/edges/vertices their classification, area/length, center, and normal — so it knows exactly which geometry an `@token` means without re-inspecting the model.
+
+| Detail | Behaviour |
+|--------|-----------|
+| Whole objects | Click the object in the tree → `@Pad` |
+| Sub-elements | One chip per selected face/edge/vertex → `@Pad.Face3`, `@Pad.Edge7`, `@Pad.Vertex2` |
+| Snapshot timing | Descriptions are captured when you click the button — re-click after moving or editing geometry to refresh |
+| Renamed objects | Tokens use the immutable internal name, so `@Pad` stays valid even after the object's label changes; the label appears in the description text |
+| Removing | The chip's **x** removes the context block; delete the `@token` from the input yourself |
+| Auto-clear | The strip clears after sending, like file attachments |
+
 ### AGENTS.md
 
 Place an `AGENTS.md` or `FREECAD_AI.md` file next to your `.FCStd` file to provide project-specific instructions:
