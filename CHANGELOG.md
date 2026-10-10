@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   folder holding an object doesn't count. Deleting a Body deletes its
   features, as in the GUI, and deleting a feature moves the Body's Tip back.
 
+### Changed
+
+- **Compact above now defaults to 64,000 tokens on new installs** (was 20,000). Tool schemas and the system prompt alone take about 16,500 tokens per request, so the old default compacted after a handful of turns. Existing configurations keep their saved value; raise it on Behavior → Limits if you want the new default. Ollama users: make sure the server's context is at least as large (`OLLAMA_CONTEXT_LENGTH=65536`), see the README.
+
 ### Fixed
 
 - **`modify_property` on a spreadsheet alias reported success, then lost

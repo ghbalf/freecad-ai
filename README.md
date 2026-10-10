@@ -194,6 +194,16 @@ Parameters table sets its output cap, and **Compact above** sets how large a
 conversation on it may grow before older messages are summarised. Both fall
 back to the Behavior page's values when left unset.
 
+**Compact above** defaults to 64,000 tokens on new installs (existing
+configurations keep their saved value). About 16,500 of those tokens are fixed
+overhead sent with every request: roughly 13,300 for the tool schemas and 3,150
+for the system prompt. A threshold much below ~40,000 therefore compacts after
+only a few turns. Keep it below your model's real context window. For Ollama,
+that window is set on the server, not in this workbench: start Ollama with
+`OLLAMA_CONTEXT_LENGTH=65536` (or bake `PARAMETER num_ctx 65536` into a
+Modelfile). Otherwise Ollama silently truncates the prompt at its own, much
+smaller default.
+
 Beyond the active profile chat uses, four utility jobs each pick their own
 profile from a dropdown in Settings: context compaction, skill evaluation,
 tool optimisation, and tool reranking. Left on **inherit**, a utility runs on

@@ -246,6 +246,21 @@ class TestSaveLoad:
         assert c.mode == "plan"
         assert c.provider.name == "anthropic"
 
+    def test_new_install_compacts_above_64k(self, tmp_config_dir):
+        """Tool schemas + system prompt alone are ~16.5k tokens, so the old
+        20k default compacted after a few turns. New installs get 64k."""
+        assert AppConfig().context_window == 64000
+        assert load_config().context_window == 64000
+
+    def test_existing_config_keeps_its_saved_threshold(self, tmp_config_dir):
+        """The 64k default only applies to new installs: a config.json that
+        already stores context_window keeps its value."""
+        import freecad_ai.config as config_mod
+        os.makedirs(os.path.dirname(config_mod.CONFIG_FILE), exist_ok=True)
+        with open(config_mod.CONFIG_FILE, "w") as f:
+            json.dump({"context_window": 20000}, f)
+        assert load_config().context_window == 20000
+
     def test_load_seeds_rerank_params_from_legacy_override_slot(self, tmp_config_dir):
         """Migration: pre-namespace configs stored the reranker override
         model's params inside the shared model_params dict. Those params must

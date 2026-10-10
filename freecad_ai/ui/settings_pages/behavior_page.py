@@ -53,7 +53,7 @@ class BehaviorPage(SettingsPage):
         self.context_window_spin = QSpinBox()
         self.context_window_spin.setRange(4000, 1000000)
         self.context_window_spin.setSingleStep(10000)
-        self.context_window_spin.setValue(20000)
+        self.context_window_spin.setValue(64000)
         self.context_window_spin.setToolTip(
             translate("SettingsDialog",
                       "Older messages are compacted once the conversation\n"
