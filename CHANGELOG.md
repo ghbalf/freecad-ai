@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.33.0-alpha] - 2026-10-10
+
 ### Added
 
 - **Reference button: attach the current selection to a chat message.**
@@ -53,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`create_variable_set` ignored units** (#121) — `"50 mm"` now becomes
   a Length, `"30 deg"` an Angle, and a failed create no longer leaves a
   half-built VarSet. `create_spreadsheet` writes the name before the value.
+- **Windows: every headless child opened an empty console window** (#124).
+  FreeCAD is a GUI process, so Windows gave each console child its own
+  window: the sandbox dry-run on every `execute_code`, `execute_code_headless`
+  and FEM runs, the `cmd:` API-key command on every request, and stdio MCP
+  servers. They now start with `CREATE_NO_WINDOW`; Linux and macOS get
+  exactly the arguments they got before. The sample file-attach hook does the
+  same. Contributed by @Misaka0x26FE (#125). **Untested on Windows:** neither
+  the contributor nor the maintainer has a Windows machine, so the fix is
+  covered only by simulated tests. Please report whether the windows are gone.
 
 ## [0.32.0-alpha] - 2026-10-04
 
