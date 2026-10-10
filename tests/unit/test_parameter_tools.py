@@ -217,3 +217,22 @@ class TestFormatting:
                                    "action": "added", "previous": None,
                                    "value": "20 mm"}) \
             == "added height (B2) = 20 mm"
+
+
+class TestDefinitions:
+    @pytest.mark.parametrize("attr,name,category", [
+        ("READ_VARIABLE_SET", "read_variable_set", "query"),
+        ("EDIT_VARIABLE_SET", "edit_variable_set", "modeling"),
+    ])
+    def test_definition(self, attr, name, category):
+        tool = getattr(pt, attr)
+        assert tool.name == name
+        assert tool.category == category
+        assert tool.parameters[0].name == "object_name"
+        assert tool in pt.PARAMETER_TOOLS
+
+    def test_registered_in_default_registry(self):
+        from freecad_ai.tools.setup import create_default_registry
+        registry = create_default_registry(include_mcp=False)
+        for tool in pt.PARAMETER_TOOLS:
+            assert registry.get(tool.name) is tool

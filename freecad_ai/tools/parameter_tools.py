@@ -200,3 +200,245 @@ def describe_change(change):
     if change["action"] == "removed":
         return f"removed {name} (was {change['previous']})"
     return f"{name}: {change['previous']} → {change['value']}"
+
+
+# ── FreeCAD-side helpers ───────────────────────────────────
+
+_VARSET_BUILTIN = frozenset({"ExpressionEngine", "Label", "Label2", "Visibility"})
+_TOOLS_FOR_TYPE = {
+    "App::VarSet": "read_variable_set / edit_variable_set",
+    "Spreadsheet::Sheet": "read_spreadsheet / edit_spreadsheet",
+}
+
+
+def _fail(message):
+    return ToolResult(success=False, output="", error=message)
+
+
+def _active_doc():
+    from ..core.active_document import get_synced_active_document
+    return get_synced_active_document()
+
+
+def _lookup(doc, object_name, type_id):
+    """(obj, None), or (None, error ToolResult) when missing or the wrong type."""
+    obj = _get_object(doc, object_name)
+    if obj is None:
+        hint = _suggest_similar(doc, object_name)
+        return None, _fail(f"Object '{object_name}' not found.{hint}")
+    if obj.TypeId != type_id:
+        tools = _TOOLS_FOR_TYPE.get(obj.TypeId)
+        tip = f" Use {tools} for it." if tools else ""
+        return None, _fail(f"'{obj.Label}' is a {obj.TypeId}, not a {type_id}.{tip}")
+    return obj, None
+
+
+def _as_dict(value, what):
+    """A dict from a dict or its JSON string (LLMs sometimes stringify)."""
+    if value in (None, ""):
+        return {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            value = None
+    if not isinstance(value, dict):
+        raise ValueError(f"'{what}' must be an object like {{\"width\": 60}}")
+    return value
+
+
+def _referrers(obj, keys, own_expressions):
+    """Labels of what still uses obj.<key> for any of `keys`.
+
+    Other objects reference it qualified (in their ExpressionEngine);
+    the object itself references it bare (own_expressions).
+    """
+    qualified = [reference_pattern(k, (obj.Name, obj.Label)) for k in keys]
+    bare = [reference_pattern(k) for k in keys]
+    users = []
+    for other in obj.InList:
+        exprs = [e for _, e in getattr(other, "ExpressionEngine", [])]
+        if any(p.search(e) for p in qualified for e in exprs):
+            users.append(other.Label)
+    if any(p.search(e) for p in bare for e in own_expressions):
+        users.append(f"{obj.Label} (its own expressions)")
+    return users
+
+
+def _unit_type_of(text):
+    """FreeCAD unit type of `text`, '' if dimensionless, None if not a quantity."""
+    import FreeCAD as App
+    try:
+        kind = App.Units.Quantity(text).Unit.Type
+    except Exception:
+        return None
+    return "" if kind in ("", "1") else kind
+
+
+def new_variable(vs, value):
+    """(property type, converted value) for a new variable on VarSet `vs`."""
+    prop_type = new_property_type(value, _unit_type_of)
+    if prop_type not in vs.supportedProperties():
+        raise ValueError(f"{value!r} has a unit VarSets can't store "
+                         f"({prop_type.replace('App::Property', '')})")
+    if prop_type == "App::PropertyFloat" and isinstance(value, str):
+        import FreeCAD as App
+        return prop_type, App.Units.Quantity(value).Value
+    return prop_type, value
+
+
+def _variables(vs):
+    return [p for p in vs.PropertiesList if p not in _VARSET_BUILTIN]
+
+
+def _short_type(type_id):
+    return type_id.replace("App::Property", "")
+
+
+# ── read_variable_set / edit_variable_set ──────────────────
+
+def _handle_read_variable_set(object_name="", names=None) -> ToolResult:
+    doc = _active_doc()
+    if not doc:
+        return _fail("No active document.")
+    vs, err = _lookup(doc, object_name, "App::VarSet")
+    if err:
+        return err
+    available = _variables(vs)
+    wanted = as_list(names) or available
+    unknown = [n for n in wanted if n not in available]
+    if unknown:
+        return _fail(f"'{vs.Label}' has no variable {', '.join(unknown)}. "
+                     f"Variables: {', '.join(available) or 'none'}")
+    exprs = dict(vs.ExpressionEngine)
+    rows = [{"name": n, "type": _short_type(vs.getTypeIdOfProperty(n)),
+             "value": str(getattr(vs, n)), "expression": exprs.get(n)}
+            for n in wanted]
+    if not rows:
+        output = f"VarSet '{vs.Label}' ({vs.Name}) has no variables."
+    else:
+        lines = [f"{r['name']} ({r['type']}) = {r['value']}"
+                 + (f"  [= {r['expression']}]" if r["expression"] else "")
+                 for r in rows]
+        output = (f"VarSet '{vs.Label}' ({vs.Name}), {len(rows)} variables:\n"
+                  + "\n".join(lines))
+    return ToolResult(success=True, output=output,
+                      data={"name": vs.Name, "label": vs.Label, "variables": rows})
+
+
+def _handle_edit_variable_set(object_name="", set=None, remove=None) -> ToolResult:
+    # `set` shadows the builtin here; it is the tool's public parameter name.
+    try:
+        updates = _as_dict(set, "set")
+    except ValueError as e:
+        return _fail(str(e))
+    removals = as_list(remove)
+    if not updates and not removals:
+        return _fail("Nothing to do: pass set={name: value} and/or remove=[name].")
+    both = [k for k in updates if k in removals]
+    if both:
+        return _fail(f"{', '.join(both)} is in both set and remove.")
+
+    def do(doc):
+        vs, err = _lookup(doc, object_name, "App::VarSet")
+        if err:
+            return err
+        existing = _variables(vs)
+        exprs = dict(vs.ExpressionEngine)
+
+        # Validate every entry before the first change: one bad entry
+        # must leave the VarSet untouched (ValueError aborts the transaction).
+        plan = []
+        for name, value in updates.items():
+            try:
+                if name in existing:
+                    if name in exprs:
+                        raise ValueError(
+                            f"bound to the expression '{exprs[name]}' — "
+                            "change it with set_expression instead")
+                    type_id = vs.getTypeIdOfProperty(name)
+                    plan.append((name, "changed", type_id,
+                                 coerce_for_property(type_id, value)))
+                elif name in _VARSET_BUILTIN or not is_valid_name(name):
+                    raise ValueError("not a valid variable name (letters, "
+                                     "digits and _, not a built-in property)")
+                else:
+                    plan.append((name, "added", *new_variable(vs, value)))
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"{name}: {e}")
+        for name in removals:
+            if name not in existing:
+                raise ValueError(f"'{vs.Label}' has no variable '{name}'. "
+                                 f"Variables: {', '.join(existing) or 'none'}")
+            own = [e for p, e in vs.ExpressionEngine if p != name]
+            users = _referrers(vs, [name], own)
+            if users:
+                raise ValueError(f"'{name}' is still used by {', '.join(users)}"
+                                 " — remove those uses first")
+
+        changes = []
+        for name, action, type_id, value in plan:
+            previous = None
+            if action == "added":
+                vs.addProperty(type_id, name, "Parameters", "")
+            else:
+                previous = str(getattr(vs, name))
+            setattr(vs, name, value)
+            changes.append({"name": name, "action": action,
+                            "type": _short_type(type_id),
+                            "previous": previous, "value": str(getattr(vs, name))})
+        for name in removals:
+            previous = str(getattr(vs, name))
+            vs.removeProperty(name)
+            changes.append({"name": name, "action": "removed",
+                            "previous": previous, "value": None})
+        return ToolResult(
+            success=True,
+            output=(f"Updated VarSet '{vs.Label}': "
+                    + "; ".join(describe_change(c) for c in changes)),
+            data={"name": vs.Name, "label": vs.Label, "changes": changes},
+        )
+
+    return _with_undo("Edit Variable Set", do)
+
+
+READ_VARIABLE_SET = ToolDefinition(
+    name="read_variable_set",
+    description=(
+        "Read the variables of a VarSet: name, type, value with unit, and the "
+        "expression if one is bound. Omit names to read every variable."
+    ),
+    category="query",
+    parameters=[
+        ToolParam("object_name", "string", "Name or label of the VarSet"),
+        ToolParam("names", "array", "Variables to read; omit for all",
+                  required=False, items={"type": "string"}),
+    ],
+    handler=_handle_read_variable_set,
+)
+
+EDIT_VARIABLE_SET = ToolDefinition(
+    name="edit_variable_set",
+    description=(
+        "Change, add or remove variables of an existing VarSet in one undoable "
+        "step. set={name: value} changes a variable, or adds it when missing "
+        "('50 mm' becomes a Length, '30 deg' an Angle, 3 an Integer, 2.5 a "
+        "Float, other text a String). remove=[name] deletes variables that no "
+        "expression uses. If any entry is invalid, nothing changes."
+    ),
+    category="modeling",
+    parameters=[
+        ToolParam("object_name", "string", "Name or label of the VarSet"),
+        ToolParam("set", "object",
+                  "Variables to change or add, e.g. {\"width\": \"60 mm\", \"count\": 4}",
+                  required=False),
+        ToolParam("remove", "array", "Variable names to delete",
+                  required=False, items={"type": "string"}),
+    ],
+    handler=_handle_edit_variable_set,
+)
+
+PARAMETER_TOOLS = [
+    READ_VARIABLE_SET,
+    EDIT_VARIABLE_SET,
+]

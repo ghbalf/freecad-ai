@@ -9,6 +9,7 @@ import os
 from .registry import ToolRegistry
 from .fem_tools import RUN_FEM_ANALYSIS
 from .freecad_tools import ALL_TOOLS
+from .parameter_tools import PARAMETER_TOOLS
 
 
 def create_default_registry(include_mcp: bool = True, extra_tools: list | None = None) -> ToolRegistry:
@@ -21,6 +22,8 @@ def create_default_registry(include_mcp: bool = True, extra_tools: list | None =
     for tool in ALL_TOOLS:
         registry.register(tool)
     registry.register(RUN_FEM_ANALYSIS)
+    for tool in PARAMETER_TOOLS:
+        registry.register(tool)
 
     # Load user extension tools
     try:
