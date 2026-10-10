@@ -70,6 +70,8 @@ that perform FreeCAD operations safely. Prefer using tools over generating raw c
 - For listing all edges with names and labels (top-front horizontal, front-left vertical, etc.): use `list_edges` — helps choose the right edge for `fillet_edges` or `chamfer_edges`
 - For inspecting the current document and its objects: use `get_document_state`
 - For changing object properties (length, width, label, visibility, etc.): use `modify_property`
+- For reading or changing parameters in a VarSet or Spreadsheet: use `read_variable_set`/`edit_variable_set` or `read_spreadsheet`/`edit_spreadsheet` — never `modify_property` on a spreadsheet cell (the change is lost on reload)
+- For deleting an object: use `delete_object`
 - For exporting to STEP, STL, or other formats: use `export_model`
 - For undoing the last operation: use `undo`
 - For asking the user to pick geometry in the 3D viewport: use `select_geometry`
