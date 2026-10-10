@@ -664,6 +664,7 @@ def _handle_edit_spreadsheet(object_name="", set=None, remove=None) -> ToolResul
                 raise ValueError(_unknown_key(sheet, key))
             alias = sheet.getAlias(cell)
             own = [sheet.getContents(c) for c in used if c != cell]
+            own += [text for _, _, text, _ in plan]  # formulas this call writes
             own = [f for f in own if f.startswith("=")]
             users = _referrers(sheet, [cell] + ([alias] if alias else []), own)
             if users:

@@ -367,6 +367,20 @@ results["data"] = {{"success": r.success, "error": r.error,
         assert not d["success"] and "depth" in d["error"]
         assert d["width"] == "50" and d["cells"] == ["A1", "B1"]
 
+    def test_remove_refuses_alias_a_new_formula_uses(self, run_freecad_script):
+        """#126: the use check only saw the formulas already in the sheet."""
+        result = run_freecad_script(_SHEET + """
+r = _handle_edit_spreadsheet(object_name="Params",
+                             set={"depth": "=width*2"}, remove=["width"])
+results["data"] = {"success": r.success, "error": r.error,
+                   "width": sheet.getContents("B1"),
+                   "cells": list(sheet.getNonEmptyCells())}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert not d["success"] and "width" in d["error"]
+        assert d["width"] == "50" and d["cells"] == ["A1", "B1"]
+
     def test_old_value_first_sheet_keeps_its_layout(self, run_freecad_script):
         result = run_freecad_script("""
 from freecad_ai.tools.parameter_tools import _handle_edit_spreadsheet

@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     error and changes nothing. This covers an unparsable formula
     (`"=width*"`), which FreeCAD stores as text, and a bad reference,
     which evaluates to `ERR: …`. Both used to be reported as success.
+  - `edit_spreadsheet` refuses to remove an alias that a formula written
+    in the same call uses. The use check only looked at the formulas
+    already in the sheet.
   - `set` arguments written as a Python-style dict (`{'width': 60}`) are
     now accepted, as JSON already was.
 
