@@ -223,6 +223,8 @@ class TestDefinitions:
     @pytest.mark.parametrize("attr,name,category", [
         ("READ_VARIABLE_SET", "read_variable_set", "query"),
         ("EDIT_VARIABLE_SET", "edit_variable_set", "modeling"),
+        ("READ_SPREADSHEET", "read_spreadsheet", "query"),
+        ("EDIT_SPREADSHEET", "edit_spreadsheet", "modeling"),
     ])
     def test_definition(self, attr, name, category):
         tool = getattr(pt, attr)

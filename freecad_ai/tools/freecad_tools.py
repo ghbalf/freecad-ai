@@ -3234,8 +3234,8 @@ def _handle_create_spreadsheet(
         var_names = []
         for i, (name, value) in enumerate(variables.items()):
             row = i + 1
-            cell = f"A{row}"
-            sheet.set(f"B{row}", str(name))
+            cell = f"B{row}"
+            sheet.set(f"A{row}", str(name))
             sheet.set(cell, str(value))
             try:
                 sheet.setAlias(cell, name)

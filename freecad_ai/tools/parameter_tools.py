@@ -438,7 +438,208 @@ EDIT_VARIABLE_SET = ToolDefinition(
     handler=_handle_edit_variable_set,
 )
 
+# ── read_spreadsheet / edit_spreadsheet ────────────────────
+
+_READ_CAP = 200
+
+
+def _contents(sheet, cell):
+    """Cell contents as typed: FreeCAD stores text cells as "'width"."""
+    text = sheet.getContents(cell)
+    return text[1:] if text.startswith("'") else text
+
+
+def _cell_value(sheet, cell):
+    try:
+        return str(sheet.get(cell))
+    except ValueError:  # empty cell
+        return None
+
+
+def _alias_cells(sheet):
+    return [c for c in sheet.getNonEmptyCells() if sheet.getAlias(c)]
+
+
+def _unknown_key(sheet, key):
+    aliases = [sheet.getAlias(c) for c in _alias_cells(sheet)]
+    near = case_insensitive_match(key, aliases)
+    if near:
+        return (f"No alias '{key}' in '{sheet.Label}' — did you mean '{near}'? "
+                "Aliases are case-sensitive.")
+    return (f"'{key}' is neither an alias nor a cell address in '{sheet.Label}'. "
+            f"Aliases: {', '.join(aliases) or 'none'}")
+
+
+def _handle_read_spreadsheet(object_name="", cells=None) -> ToolResult:
+    doc = _active_doc()
+    if not doc:
+        return _fail("No active document.")
+    sheet, err = _lookup(doc, object_name, "Spreadsheet::Sheet")
+    if err:
+        return err
+    keys = as_list(cells)
+    if keys:
+        addresses = []
+        for key in keys:
+            cell = resolve_cell(sheet, key)
+            if not cell:
+                return _fail(_unknown_key(sheet, key))
+            addresses.append(cell)
+    else:
+        addresses = list(sheet.getNonEmptyCells())
+    truncated = len(addresses) > _READ_CAP
+    addresses = addresses[:_READ_CAP]
+    rows = [{"cell": c, "alias": sheet.getAlias(c),
+             "contents": _contents(sheet, c), "value": _cell_value(sheet, c)}
+            for c in addresses]
+    if not rows:
+        output = f"Spreadsheet '{sheet.Label}' ({sheet.Name}) is empty."
+    else:
+        more = (f" (first {_READ_CAP}; pass cells=[...] for others)"
+                if truncated else "")
+        output = (f"Spreadsheet '{sheet.Label}' ({sheet.Name}), {len(rows)} cells{more}:\n"
+                  + "\n".join(format_cell_row(r) for r in rows))
+    return ToolResult(success=True, output=output,
+                      data={"name": sheet.Name, "label": sheet.Label,
+                            "cells": rows, "truncated": truncated})
+
+
+def _handle_edit_spreadsheet(object_name="", set=None, remove=None) -> ToolResult:
+    # `set` shadows the builtin here; it is the tool's public parameter name.
+    try:
+        updates = _as_dict(set, "set")
+    except ValueError as e:
+        return _fail(str(e))
+    removals = as_list(remove)
+    if not updates and not removals:
+        return _fail("Nothing to do: pass set={alias_or_cell: value} "
+                     "and/or remove=[alias_or_cell].")
+    both = [k for k in updates if k in removals]
+    if both:
+        return _fail(f"{', '.join(both)} is in both set and remove.")
+
+    def do(doc):
+        sheet, err = _lookup(doc, object_name, "Spreadsheet::Sheet")
+        if err:
+            return err
+        used = list(sheet.getNonEmptyCells())
+        aliases = [sheet.getAlias(c) for c in used if sheet.getAlias(c)]
+        value_col, label_col = layout_columns(
+            [c for c in used if sheet.getAlias(c)])
+        next_row = last_row(used) + 1
+
+        # Validate every entry before the first change (see edit_variable_set).
+        plan = []  # (key, cell, text, label_cell or None)
+        for key, value in updates.items():
+            try:
+                text = cell_text(value)
+            except ValueError as e:
+                raise ValueError(f"{key}: {e}")
+            cell = resolve_cell(sheet, key)
+            if cell:
+                plan.append((key, cell, text, None))
+                continue
+            if case_insensitive_match(key, aliases):
+                raise ValueError(_unknown_key(sheet, key))
+            if not is_valid_alias(key):
+                raise ValueError(
+                    f"'{key}' can't be an alias: use letters, digits and _, "
+                    "start with a letter, and avoid cell addresses like B7")
+            if next_row > MAX_ROW:
+                raise ValueError(f"'{sheet.Label}' has no free row left")
+            plan.append((key, f"{value_col}{next_row}", text,
+                         f"{label_col}{next_row}"))
+            next_row += 1
+        doomed = []
+        for key in removals:
+            cell = resolve_cell(sheet, key)
+            if not cell:
+                raise ValueError(_unknown_key(sheet, key))
+            alias = sheet.getAlias(cell)
+            own = [_contents(sheet, c) for c in used if c != cell]
+            own = [f for f in own if f.startswith("=")]
+            users = _referrers(sheet, [cell] + ([alias] if alias else []), own)
+            if users:
+                raise ValueError(f"'{key}' is still used by {', '.join(users)}"
+                                 " — remove those uses first")
+            doomed.append((key, cell, alias))
+
+        changes = []
+        for key, cell, text, label_cell in plan:
+            if label_cell:
+                sheet.set(label_cell, key)
+                sheet.set(cell, text)
+                sheet.setAlias(cell, key)
+                changes.append({"name": key, "cell": cell, "action": "added",
+                                "previous": None})
+            else:
+                changes.append({"name": key, "cell": cell, "action": "changed",
+                                "previous": _contents(sheet, cell) or "(empty)"})
+                sheet.set(cell, text)
+        for key, cell, alias in doomed:
+            changes.append({"name": key, "cell": cell, "action": "removed",
+                            "previous": _contents(sheet, cell), "value": None})
+            sheet.clear(cell)  # also drops the alias
+            col, row = split_address(cell)
+            label_cell = f"{label_col}{row}"
+            if alias and col == value_col and _contents(sheet, label_cell) == alias:
+                sheet.clear(label_cell)
+        doc.recompute()
+        for change in changes:
+            if change["action"] != "removed":
+                change["value"] = _cell_value(sheet, change["cell"])
+        return ToolResult(
+            success=True,
+            output=(f"Updated spreadsheet '{sheet.Label}': "
+                    + "; ".join(describe_change(c) for c in changes)),
+            data={"name": sheet.Name, "label": sheet.Label, "changes": changes},
+        )
+
+    return _with_undo("Edit Spreadsheet", do)
+
+
+READ_SPREADSHEET = ToolDefinition(
+    name="read_spreadsheet",
+    description=(
+        "Read spreadsheet cells: address, alias, contents (formulas included) "
+        "and computed value. cells takes aliases or addresses, e.g. "
+        "['width', 'B3']; omit it to read every non-empty cell."
+    ),
+    category="query",
+    parameters=[
+        ToolParam("object_name", "string", "Name or label of the spreadsheet"),
+        ToolParam("cells", "array", "Aliases or cell addresses; omit for all",
+                  required=False, items={"type": "string"}),
+    ],
+    handler=_handle_read_spreadsheet,
+)
+
+EDIT_SPREADSHEET = ToolDefinition(
+    name="edit_spreadsheet",
+    description=(
+        "Change, add or remove spreadsheet cells in one undoable step; changes "
+        "persist when the document is saved. set={alias_or_cell: value}: an "
+        "existing alias or address ('width', 'B3') is overwritten, a new name "
+        "becomes a new aliased row (name, value). Values: numbers, '50 mm', or "
+        "formulas like '=width*2'. remove=[alias_or_cell] clears cells that no "
+        "formula or expression uses. Use this, not modify_property, for "
+        "spreadsheet values. If any entry is invalid, nothing changes."
+    ),
+    category="modeling",
+    parameters=[
+        ToolParam("object_name", "string", "Name or label of the spreadsheet"),
+        ToolParam("set", "object",
+                  "Cells to change or add, e.g. {\"width\": 60, \"B3\": \"=width*2\"}",
+                  required=False),
+        ToolParam("remove", "array", "Aliases or cell addresses to clear",
+                  required=False, items={"type": "string"}),
+    ],
+    handler=_handle_edit_spreadsheet,
+)
+
 PARAMETER_TOOLS = [
     READ_VARIABLE_SET,
     EDIT_VARIABLE_SET,
+    READ_SPREADSHEET,
+    EDIT_SPREADSHEET,
 ]
