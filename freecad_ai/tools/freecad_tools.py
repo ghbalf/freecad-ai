@@ -3432,6 +3432,18 @@ def _handle_modify_property(
         if not obj:
             return ToolResult(success=False, output="", error=f"Object '{object_name}' not found")
 
+        if getattr(obj, "TypeId", "") == "Spreadsheet::Sheet":
+            from .parameter_tools import resolve_cell
+            if resolve_cell(obj, property_name):
+                return ToolResult(
+                    success=False, output="",
+                    error=(f"'{property_name}' is a cell of spreadsheet "
+                           f"'{obj.Label}'. modify_property would change only "
+                           "its computed value, and the change would be lost "
+                           f"on reload. Use edit_spreadsheet(object_name="
+                           f"'{obj.Name}', set={{'{property_name}': <value>}})."),
+                )
+
         if not hasattr(obj, property_name):
             return ToolResult(
                 success=False, output="",
@@ -3440,9 +3452,20 @@ def _handle_modify_property(
 
         current = getattr(obj, property_name)
         resolved = _resolve_relative_value(current, value)
+        relative = resolved != value
+
+        # Float/Integer/Bool properties reject strings like "60" (#121)
+        try:
+            type_id = obj.getTypeIdOfProperty(property_name)
+        except Exception:
+            type_id = ""
+        if type_id in ("App::PropertyFloat", "App::PropertyInteger",
+                       "App::PropertyBool"):
+            from .parameter_tools import coerce_for_property
+            resolved = coerce_for_property(type_id, resolved)
 
         # Report old→new for relative changes
-        if resolved != value:
+        if relative:
             msg = f"Set {object_name}.{property_name} = {resolved} (was {current}, applied {value})"
         else:
             msg = f"Set {object_name}.{property_name} = {resolved}"

@@ -249,3 +249,24 @@ results["data"] = {"success": r.success, "error": r.error,
         d = result["data"]
         assert d["success"], d["error"]
         assert (d["A2"], d["B2"], d["alias_cell"]) == ("20", "height", "A2")
+
+
+class TestModifyPropertyGuard:
+    def test_alias_write_refused_and_float_string_accepted(self, run_freecad_script):
+        result = run_freecad_script(_SHEET + """
+from freecad_ai.tools.freecad_tools import (
+    _handle_modify_property, _handle_create_variable_set)
+alias = _handle_modify_property(object_name="Params", property_name="width", value="7")
+_handle_create_variable_set(variables={"ratio": 0.5}, label="Vars")
+fl = _handle_modify_property(object_name="Vars", property_name="ratio", value="0.75")
+results["data"] = {"alias_ok": alias.success, "alias_err": alias.error,
+                   "contents": sheet.getContents("B1"),
+                   "float_ok": fl.success, "float_err": fl.error,
+                   "ratio": doc.getObjectsByLabel("Vars")[0].ratio}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert not d["alias_ok"] and "edit_spreadsheet" in d["alias_err"]
+        assert d["contents"] == "50"
+        assert d["float_ok"], d["float_err"]
+        assert d["ratio"] == 0.75

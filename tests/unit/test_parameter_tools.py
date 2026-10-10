@@ -238,3 +238,46 @@ class TestDefinitions:
         registry = create_default_registry(include_mcp=False)
         for tool in pt.PARAMETER_TOOLS:
             assert registry.get(tool.name) is tool
+
+
+class _Obj(types.SimpleNamespace):
+    def getTypeIdOfProperty(self, name):
+        return self._types[name]
+
+
+def _doc_with(obj):
+    return types.SimpleNamespace(
+        Objects=[obj], getObject=lambda n: obj if n == obj.Name else None)
+
+
+def _run_modify(monkeypatch, obj, prop, value):
+    from freecad_ai.tools import freecad_tools as ft
+    doc = _doc_with(obj)
+    monkeypatch.setattr(ft, "_with_undo", lambda label, do: do(doc))
+    return ft._handle_modify_property(object_name=obj.Name,
+                                      property_name=prop, value=value)
+
+
+class TestModifyProperty:
+    def test_refuses_spreadsheet_alias(self, monkeypatch):
+        sheet = _Obj(Name="Params", Label="Params", TypeId="Spreadsheet::Sheet",
+                     width=5, _types={},
+                     getCellFromAlias=lambda k: "B1" if k == "width" else None)
+        r = _run_modify(monkeypatch, sheet, "width", "7")
+        assert not r.success
+        assert "edit_spreadsheet" in r.error
+        assert sheet.width == 5
+
+    def test_float_property_accepts_string(self, monkeypatch):
+        vs = _Obj(Name="Vars", Label="Vars", TypeId="App::VarSet", ratio=0.5,
+                  _types={"ratio": "App::PropertyFloat"})
+        r = _run_modify(monkeypatch, vs, "ratio", "0.75")
+        assert r.success, r.error
+        assert vs.ratio == 0.75
+
+    def test_relative_change_on_integer_stays_integer(self, monkeypatch):
+        vs = _Obj(Name="Vars", Label="Vars", TypeId="App::VarSet", count=4,
+                  _types={"count": "App::PropertyInteger"})
+        r = _run_modify(monkeypatch, vs, "count", "*2")
+        assert r.success, r.error
+        assert vs.count == 8 and isinstance(vs.count, int)
