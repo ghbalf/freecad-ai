@@ -3156,24 +3156,21 @@ def _handle_create_variable_set(
                               error="No variables provided. Pass a dict like "
                                     "{\"length\": 50, \"width\": 30}.")
 
-        _PROP_TYPES = {
-            int: "App::PropertyInteger",
-            float: "App::PropertyFloat",
-            str: "App::PropertyString",
-            bool: "App::PropertyBool",
-        }
+        from .parameter_tools import new_variable
 
+        # A failed create must leave no half-built VarSet. Remove it
+        # explicitly: abortTransaction is a no-op when the document's
+        # UndoMode is 0 (the default for documents made outside the GUI).
         vs = doc.addObject("App::VarSet", label)
         var_names = []
         for name, value in variables.items():
-            prop_type = _PROP_TYPES.get(type(value), "App::PropertyFloat")
             try:
+                prop_type, converted = new_variable(vs, value)
                 vs.addProperty(prop_type, name, "Parameters", "")
-                setattr(vs, name, value)
+                setattr(vs, name, converted)
             except Exception as e:
-                return ToolResult(
-                    success=False, output="",
-                    error=f"Invalid variable name '{name}': {e}")
+                doc.removeObject(vs.Name)
+                raise ValueError(f"Invalid variable '{name}': {e}")
             var_names.append(name)
 
         doc.recompute()
@@ -3200,6 +3197,8 @@ CREATE_VARIABLE_SET = ToolDefinition(
     name="create_variable_set",
     description=(
         "Create a VarSet (App::VarSet) with named, typed variables for parametric modeling. "
+        "Values with units become unit properties ('50 mm' → Length, '30 deg' → Angle); "
+        "plain numbers become Integer/Float. "
         "Variables appear as editable properties in the Data panel. "
         "After creation, pass variable references as dimension values in create_sketch "
         "(e.g. width='Variables.length') and pad_sketch (e.g. length='Variables.height'). "

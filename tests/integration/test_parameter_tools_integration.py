@@ -94,3 +94,40 @@ results["data"] = {
         assert not d["builtin_ok"]
         assert "count" in d["props"] and "ratio" not in d["props"]
         assert "Label" in d["props"]
+
+
+class TestCreateVariableSetUnits:
+    def test_quantities_get_unit_types(self, run_freecad_script):
+        result = run_freecad_script("""
+from freecad_ai.tools.freecad_tools import _handle_create_variable_set
+r = _handle_create_variable_set(
+    variables={"width": "50 mm", "angle": "30 deg", "count": 3,
+               "ratio": 0.5, "material": "steel"},
+    label="Dims")
+vs = doc.getObject(r.data["name"]) if r.success else None
+results["data"] = {"success": r.success, "error": r.error,
+                   "types": {p: vs.getTypeIdOfProperty(p) for p in
+                             ("width", "angle", "count", "ratio", "material")} if vs else None,
+                   "width": vs.width.Value if vs else None}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert d["success"], d["error"]
+        assert d["types"] == {
+            "width": "App::PropertyLength", "angle": "App::PropertyAngle",
+            "count": "App::PropertyInteger", "ratio": "App::PropertyFloat",
+            "material": "App::PropertyString",
+        }
+        assert d["width"] == 50.0
+
+    def test_bad_variable_creates_nothing(self, run_freecad_script):
+        result = run_freecad_script("""
+from freecad_ai.tools.freecad_tools import _handle_create_variable_set
+r = _handle_create_variable_set(variables={"ok": 1, "bad": [1, 2]}, label="Dims")
+results["data"] = {"success": r.success, "error": r.error,
+                   "varsets": [o.Name for o in doc.Objects if o.TypeId == "App::VarSet"]}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert not d["success"] and "bad" in d["error"]
+        assert d["varsets"] == []
