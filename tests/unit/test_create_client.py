@@ -89,9 +89,10 @@ class TestApiKeyFallback:
         assert create_client(cfg).api_key == "sk-gateway"
 
     def test_perplexity_is_registered(self):
-        from freecad_ai.llm.providers import get_provider_names , get_api_style
+        from freecad_ai.llm.providers import get_provider_names, get_api_style
         assert "perplexity" in get_provider_names()
         assert get_api_style("perplexity") == "openai"
+
     def test_both_empty_yields_empty(self):
         cfg = _cfg()
         cfg.active_profile = "local"
