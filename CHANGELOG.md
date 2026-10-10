@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   object never desyncs chip, token, or snapshot (the label still
   appears in the description text).
 
+### Changed
+
+- **Compact above now defaults to 64,000 tokens on new installs** (was 20,000). Tool schemas and the system prompt alone take about 16,500 tokens per request, so the old default compacted after a handful of turns. Existing configurations keep their saved value; raise it on Behavior → Limits if you want the new default. Ollama users: make sure the server's context is at least as large (`OLLAMA_CONTEXT_LENGTH=65536`), see the README.
+
 ## [0.32.0-alpha] - 2026-10-04
 
 ### Added

@@ -587,7 +587,7 @@ class AppConfig:
     fallback_profiles: list = field(default_factory=list)
     mode: str = "plan"  # "plan" or "act"
     max_tokens: int = 4096
-    context_window: int = 20000  # tokens — compaction triggers above this
+    context_window: int = 64000  # tokens — compaction triggers above this
     temperature: float = 0.3
     model_params: dict = field(default_factory=dict)
     # LEGACY, unread since connection profiles: per-model parameter
