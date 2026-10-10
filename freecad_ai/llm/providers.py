@@ -161,6 +161,12 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "perplexity": {
+        "base_url": "https://api.perplexity.ai/router/v1",
+        "default_model": "perplexity/kimi-k3",
+        "api_style": "openai",
+        "supports_tools": True,
+    },
     "custom": {
         "base_url": "",
         "default_model": "",

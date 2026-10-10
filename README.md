@@ -21,7 +21,7 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 - **Context compacting** — automatically summarizes older messages when approaching context limits
 - **Fallback profiles** — when the chat model can't be reached (Ollama box off, vendor 503, revoked key), the turn is tried once on each profile you list, in order, and a note says which one answered
 - **Session resume** — save and load chat sessions to continue work later
-- **21 LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Cloudflare Workers AI, Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere, SambaNova, MiniMax, Llama, GitHub Models, HuggingFace, Zhipu, plus any OpenAI-compatible endpoint via Custom
+- **22 LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Cloudflare Workers AI, Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere, SambaNova, MiniMax, Llama, GitHub Models, HuggingFace, Zhipu, Perplexity, plus any OpenAI-compatible endpoint via Custom
 - **Context-aware** — automatically includes document state (objects, properties, selection) in prompts
 - **Error self-correction** — failed code is sent back to the LLM for automatic retry (up to 3 attempts)
 - **AGENTS.md support** — project-level instructions with include directives and variable substitution
@@ -175,6 +175,7 @@ To populate the stores once:
 | GitHub | Yes (PAT) | GitHub Models marketplace |
 | HuggingFace | Yes (`hf_...`) | Serverless inference API |
 | Zhipu | Yes | GLM models (z.ai international) |
+| Perplexity | Yes | Orchestrator API (OpenAI-compatible) |
 | Custom | Varies | Any OpenAI-compatible endpoint |
 
 ### Connection profiles
