@@ -2235,6 +2235,57 @@ DUPLICATE_OBJECT = ToolDefinition(
 )
 
 
+# ── delete_object ───────────────────────────────────────────
+
+def _handle_delete_object(object_name: str, force=False) -> ToolResult:
+    """Delete a document object; refuse while other objects still use it."""
+    force = force is True or str(force).strip().lower() == "true"
+
+    def do(doc):
+        obj = _get_object(doc, object_name)
+        if not obj:
+            hint = _suggest_similar(doc, object_name)
+            return ToolResult(success=False, output="",
+                              error=f"Object '{object_name}' not found.{hint}")
+        users = [o.Label for o in obj.InList]
+        if users and not force:
+            return ToolResult(
+                success=False, output="",
+                error=(f"'{obj.Label}' is used by {', '.join(users)} (a "
+                       "containing Body or Part counts too). Deleting it "
+                       "would break them: delete or rewire those first, or "
+                       "pass force=true to delete anyway."),
+            )
+        name, label, type_id = obj.Name, obj.Label, obj.TypeId
+        doc.removeObject(name)
+        msg = f"Deleted '{label}' ({name}, {type_id})"
+        if users:
+            msg += f". Still referring to it, check them: {', '.join(users)}"
+        return ToolResult(success=True, output=msg,
+                          data={"name": name, "label": label,
+                                "type": type_id, "users": users})
+
+    return _with_undo("Delete Object", do)
+
+
+DELETE_OBJECT = ToolDefinition(
+    name="delete_object",
+    description=(
+        "Delete a document object (feature, sketch, VarSet, spreadsheet, ...). "
+        "Refuses while other objects use it, naming them; pass force=true to "
+        "delete anyway. Deleting a Body or Part does not delete its contents. "
+        "Undo reverts it."
+    ),
+    category="modeling",
+    parameters=[
+        ToolParam("object_name", "string", "Name or label of the object"),
+        ToolParam("force", "boolean",
+                  "Delete even though other objects still use it",
+                  required=False, default=False),
+    ],
+    handler=_handle_delete_object,
+)
+
 # ── fillet_edges ────────────────────────────────────────────
 
 def _handle_fillet_edges(
@@ -5895,6 +5946,7 @@ ALL_TOOLS = [
     BOOLEAN_OPERATION,
     TRANSFORM_OBJECT,
     DUPLICATE_OBJECT,
+    DELETE_OBJECT,
     FILLET_EDGES,
     CHAMFER_EDGES,
     CREATE_INNER_RIDGE,

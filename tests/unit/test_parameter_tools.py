@@ -281,3 +281,52 @@ class TestModifyProperty:
         r = _run_modify(monkeypatch, vs, "count", "*2")
         assert r.success, r.error
         assert vs.count == 8 and isinstance(vs.count, int)
+
+
+def _run_delete(monkeypatch, objects, name, force=False):
+    from freecad_ai.tools import freecad_tools as ft
+    removed = []
+    doc = types.SimpleNamespace(
+        Objects=objects,
+        getObject=lambda n: next((o for o in objects if o.Name == n), None),
+        removeObject=removed.append)
+    monkeypatch.setattr(ft, "_with_undo", lambda label, do: do(doc))
+    return ft._handle_delete_object(object_name=name, force=force), removed
+
+
+class TestDeleteObject:
+    def _feature_in_body(self):
+        body = types.SimpleNamespace(Name="Body", Label="Body",
+                                     TypeId="PartDesign::Body", InList=[])
+        pad = types.SimpleNamespace(Name="Pad", Label="Pad",
+                                    TypeId="PartDesign::Pad", InList=[body])
+        return [body, pad]
+
+    def test_unused_object_is_deleted(self, monkeypatch):
+        box = types.SimpleNamespace(Name="Box", Label="Box",
+                                    TypeId="Part::Box", InList=[])
+        r, removed = _run_delete(monkeypatch, [box], "Box")
+        assert r.success, r.error
+        assert removed == ["Box"]
+
+    def test_refuses_feature_listed_by_its_body(self, monkeypatch):
+        r, removed = _run_delete(monkeypatch, self._feature_in_body(), "Pad")
+        assert not r.success
+        assert "Body" in r.error and "force" in r.error
+        assert removed == []
+
+    def test_force_deletes_and_reports_dependents(self, monkeypatch):
+        r, removed = _run_delete(monkeypatch, self._feature_in_body(), "Pad",
+                                 force="true")
+        assert r.success, r.error
+        assert removed == ["Pad"]
+        assert "Body" in r.output
+
+    def test_missing_object(self, monkeypatch):
+        r, removed = _run_delete(monkeypatch, [], "Nope")
+        assert not r.success and "not found" in r.error
+
+    def test_in_all_tools(self):
+        from freecad_ai.tools.freecad_tools import ALL_TOOLS, DELETE_OBJECT
+        assert DELETE_OBJECT in ALL_TOOLS
+        assert DELETE_OBJECT.category == "modeling"

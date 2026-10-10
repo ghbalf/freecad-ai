@@ -270,3 +270,24 @@ results["data"] = {"alias_ok": alias.success, "alias_err": alias.error,
         assert d["contents"] == "50"
         assert d["float_ok"], d["float_err"]
         assert d["ratio"] == 0.75
+
+
+class TestDeleteObject:
+    def test_refuses_used_object_then_force_deletes(self, run_freecad_script):
+        result = run_freecad_script(_SHEET + """
+from freecad_ai.tools.freecad_tools import _handle_delete_object
+box = doc.addObject("Part::Box", "Box")
+box.setExpression("Length", "Params.width")
+doc.recompute()
+refused = _handle_delete_object(object_name="Params")
+forced = _handle_delete_object(object_name="Params", force=True)
+gone = _handle_delete_object(object_name="Box")
+results["data"] = {"refused_ok": refused.success, "refused_err": refused.error,
+                   "forced_ok": forced.success, "gone_ok": gone.success,
+                   "names": [o.Name for o in doc.Objects]}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert not d["refused_ok"] and "Box" in d["refused_err"]
+        assert d["forced_ok"] and d["gone_ok"]
+        assert d["names"] == []
