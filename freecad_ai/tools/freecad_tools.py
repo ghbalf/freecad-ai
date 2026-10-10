@@ -2235,6 +2235,78 @@ DUPLICATE_OBJECT = ToolDefinition(
 )
 
 
+# ── delete_object ───────────────────────────────────────────
+
+def _handle_delete_object(object_name: str, force=False) -> ToolResult:
+    """Delete a document object; refuse while other objects still use it."""
+    force = force is True or str(force).strip().lower() == "true"
+
+    def do(doc):
+        obj = _get_object(doc, object_name)
+        if not obj:
+            hint = _suggest_similar(doc, object_name)
+            return ToolResult(success=False, output="",
+                              error=f"Object '{object_name}' not found.{hint}")
+        # A Body takes its features along, as in the GUI.
+        is_body = obj.TypeId == "PartDesign::Body"
+        doomed = [obj] + (list(obj.Group) if is_body else [])
+        doomed_names = {o.Name for o in doomed}
+        users = []
+        for o in doomed:
+            for other in o.InList:
+                if other.Name in doomed_names or other.Label in users:
+                    continue
+                if o.Name in (g.Name for g in getattr(other, "Group", [])):
+                    continue  # its Body, Part or folder holds it, doesn't use it
+                users.append(other.Label)
+        if users and not force:
+            return ToolResult(
+                success=False, output="",
+                error=(f"'{obj.Label}' is used by {', '.join(users)}. Deleting "
+                       "it would break them: delete or rewire those first, or "
+                       "pass force=true to delete anyway."),
+            )
+        name, label, type_id = obj.Name, obj.Label, obj.TypeId
+        if is_body:
+            obj.removeObjectsFromDocument()
+        else:
+            for parent in obj.InList:
+                if (parent.TypeId == "PartDesign::Body"
+                        and name in (g.Name for g in parent.Group)):
+                    parent.removeObject(obj)  # moves Tip / BaseFeature back
+                    break
+        doc.removeObject(name)
+        msg = f"Deleted '{label}' ({name}, {type_id})"
+        if is_body and len(doomed) > 1:
+            msg += f" and its {len(doomed) - 1} features"
+        if users:
+            msg += f". Still referring to it, check them: {', '.join(users)}"
+        return ToolResult(success=True, output=msg,
+                          data={"name": name, "label": label,
+                                "type": type_id, "users": users})
+
+    return _with_undo("Delete Object", do)
+
+
+DELETE_OBJECT = ToolDefinition(
+    name="delete_object",
+    description=(
+        "Delete a document object (feature, sketch, VarSet, spreadsheet, ...). "
+        "Refuses while other objects use it, naming them; pass force=true to "
+        "delete anyway. Deleting a Body deletes its features; deleting a Part "
+        "or group keeps its contents. "
+        "Undo reverts it."
+    ),
+    category="modeling",
+    parameters=[
+        ToolParam("object_name", "string", "Name or label of the object"),
+        ToolParam("force", "boolean",
+                  "Delete even though other objects still use it",
+                  required=False, default=False),
+    ],
+    handler=_handle_delete_object,
+)
+
 # ── fillet_edges ────────────────────────────────────────────
 
 def _handle_fillet_edges(
@@ -3156,24 +3228,21 @@ def _handle_create_variable_set(
                               error="No variables provided. Pass a dict like "
                                     "{\"length\": 50, \"width\": 30}.")
 
-        _PROP_TYPES = {
-            int: "App::PropertyInteger",
-            float: "App::PropertyFloat",
-            str: "App::PropertyString",
-            bool: "App::PropertyBool",
-        }
+        from .parameter_tools import new_variable
 
+        # A failed create must leave no half-built VarSet. Remove it
+        # explicitly: abortTransaction is a no-op when the document's
+        # UndoMode is 0 (the default for documents made outside the GUI).
         vs = doc.addObject("App::VarSet", label)
         var_names = []
         for name, value in variables.items():
-            prop_type = _PROP_TYPES.get(type(value), "App::PropertyFloat")
             try:
+                prop_type, converted = new_variable(vs, value)
                 vs.addProperty(prop_type, name, "Parameters", "")
-                setattr(vs, name, value)
+                setattr(vs, name, converted)
             except Exception as e:
-                return ToolResult(
-                    success=False, output="",
-                    error=f"Invalid variable name '{name}': {e}")
+                doc.removeObject(vs.Name)
+                raise ValueError(f"Invalid variable '{name}': {e}")
             var_names.append(name)
 
         doc.recompute()
@@ -3200,6 +3269,8 @@ CREATE_VARIABLE_SET = ToolDefinition(
     name="create_variable_set",
     description=(
         "Create a VarSet (App::VarSet) with named, typed variables for parametric modeling. "
+        "Values with units become unit properties ('50 mm' → Length, '30 deg' → Angle); "
+        "plain numbers become Integer/Float. "
         "Variables appear as editable properties in the Data panel. "
         "After creation, pass variable references as dimension values in create_sketch "
         "(e.g. width='Variables.length') and pad_sketch (e.g. length='Variables.height'). "
@@ -3235,8 +3306,8 @@ def _handle_create_spreadsheet(
         var_names = []
         for i, (name, value) in enumerate(variables.items()):
             row = i + 1
-            cell = f"A{row}"
-            sheet.set(f"B{row}", str(name))
+            cell = f"B{row}"
+            sheet.set(f"A{row}", str(name))
             sheet.set(cell, str(value))
             try:
                 sheet.setAlias(cell, name)
@@ -3274,7 +3345,7 @@ CREATE_SPREADSHEET = ToolDefinition(
         "Variables are stored as named cells that can be edited in the Spreadsheet workbench. "
         "After creation, pass variable references as dimension values in create_sketch "
         "(e.g. width='Variables.length') and pad_sketch (e.g. length='Variables.height'). "
-        "Supports formulas in cells (e.g. '=A1*2'). "
+        "Values may be formulas using other names (e.g. '=length*2'). "
         "Alternative: use create_variable_set for a cleaner property-based approach."
     ),
     category="modeling",
@@ -3433,6 +3504,18 @@ def _handle_modify_property(
         if not obj:
             return ToolResult(success=False, output="", error=f"Object '{object_name}' not found")
 
+        if getattr(obj, "TypeId", "") == "Spreadsheet::Sheet":
+            from .parameter_tools import resolve_cell
+            if resolve_cell(obj, property_name):
+                return ToolResult(
+                    success=False, output="",
+                    error=(f"'{property_name}' is a cell of spreadsheet "
+                           f"'{obj.Label}'. modify_property would change only "
+                           "its computed value, and the change would be lost "
+                           f"on reload. Use edit_spreadsheet(object_name="
+                           f"'{obj.Name}', set={{'{property_name}': <value>}})."),
+                )
+
         if not hasattr(obj, property_name):
             return ToolResult(
                 success=False, output="",
@@ -3441,9 +3524,20 @@ def _handle_modify_property(
 
         current = getattr(obj, property_name)
         resolved = _resolve_relative_value(current, value)
+        relative = resolved != value
+
+        # Float/Integer/Bool properties reject strings like "60" (#121)
+        try:
+            type_id = obj.getTypeIdOfProperty(property_name)
+        except Exception:
+            type_id = ""
+        if type_id in ("App::PropertyFloat", "App::PropertyInteger",
+                       "App::PropertyBool"):
+            from .parameter_tools import coerce_for_property
+            resolved = coerce_for_property(type_id, resolved)
 
         # Report old→new for relative changes
-        if resolved != value:
+        if relative:
             msg = f"Set {object_name}.{property_name} = {resolved} (was {current}, applied {value})"
         else:
             msg = f"Set {object_name}.{property_name} = {resolved}"
@@ -5873,6 +5967,7 @@ ALL_TOOLS = [
     BOOLEAN_OPERATION,
     TRANSFORM_OBJECT,
     DUPLICATE_OBJECT,
+    DELETE_OBJECT,
     FILLET_EDGES,
     CHAMFER_EDGES,
     CREATE_INNER_RIDGE,

@@ -269,6 +269,11 @@ Tool calling is enabled by default. Disable it by setting `enable_tools: false` 
 | `create_spreadsheet` | Create a Spreadsheet with named variables for parametric modeling |
 | `set_expression` | Bind object properties to expressions (parametric relationships) |
 | `modify_property` | Change any object property (supports relative: +10%, *1.5) |
+| `read_variable_set` | Read a VarSet's variables with types, units and expressions |
+| `edit_variable_set` | Change, add or remove VarSet variables (unit-aware) |
+| `read_spreadsheet` | Read spreadsheet cells: alias, contents, computed value |
+| `edit_spreadsheet` | Change, add or remove spreadsheet cells by alias or address |
+| `delete_object` | Delete an object (a Body with its features); refuses while other objects still use it |
 | `export_model` | Export to STL, STEP, or IGES |
 | `execute_code` | Fallback: run arbitrary Python |
 | `undo` | Undo last N operations, or undo until a named transaction |

@@ -20,6 +20,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `@` tokens use the object's immutable internal name, so renaming an
   object never desyncs chip, token, or snapshot (the label still
   appears in the description text).
+- **Maintain VarSets and Spreadsheets, delete objects** (#121).
+  `read_variable_set` / `edit_variable_set` and `read_spreadsheet` /
+  `edit_spreadsheet` read and change parameters after creation: set
+  changes or adds, remove deletes, and one bad entry changes nothing.
+  Spreadsheet keys take an alias or a cell address. Removing anything an
+  expression or formula still uses (other sheets, `$B$1`, ranges like
+  `B1:B3` included) is refused and names the user. `delete_object`
+  refuses while dependents exist unless `force=true`; the Body, Part or
+  folder holding an object doesn't count. Deleting a Body deletes its
+  features, as in the GUI, and deleting a feature moves the Body's Tip back.
+
+### Fixed
+
+- **`modify_property` on a spreadsheet alias reported success, then lost
+  the change on reload** (#121) — it now refuses and points to
+  `edit_spreadsheet`, which writes the cell contents. It also converts
+  `"60"` for Float/Integer/Bool properties instead of failing.
+- **`create_variable_set` ignored units** (#121) — `"50 mm"` now becomes
+  a Length, `"30 deg"` an Angle, and a failed create no longer leaves a
+  half-built VarSet. `create_spreadsheet` writes the name before the value.
 
 ## [0.32.0-alpha] - 2026-10-04
 
