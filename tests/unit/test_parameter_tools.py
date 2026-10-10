@@ -173,6 +173,37 @@ class TestReferencePattern:
         assert not p.search("=widths")
 
 
+class TestFormulaUses:
+    def test_alias_bare_and_qualified(self):
+        assert pt.formula_uses("=width*2", "width")
+        assert pt.formula_uses("=Params.width*2", "width", ("Params",))
+        assert not pt.formula_uses("=Params.width*2", "width")
+
+    @pytest.mark.parametrize("formula", ["=B1*2", "=$B$1*2", "=B$1+1", "=$B1"])
+    def test_cell_absolute_or_relative(self, formula):
+        assert pt.formula_uses(formula, "B1")
+
+    def test_cell_no_false_hits(self):
+        assert not pt.formula_uses("=B10*2", "B1")
+        assert not pt.formula_uses("=AB1*2", "B1")
+        assert not pt.formula_uses("=Params.B1", "B1")  # another sheet's B1
+
+    def test_qualified_cell(self):
+        assert pt.formula_uses("=Params.$B$1", "B1", ("Params",))
+        assert pt.formula_uses("=<<My Params>>.B1", "B1", ("My Params",))
+
+    @pytest.mark.parametrize("formula,cell,hit", [
+        ("=sum(B1:B3)", "B2", True),
+        ("=sum($B$1:$B$3)", "B3", True),
+        ("=sum(B3:B1)", "B2", True),   # reversed corners
+        ("=sum(A1:C9)", "B5", True),
+        ("=sum(B1:B3)", "B4", False),
+        ("=sum(B1:B3)", "C2", False),
+    ])
+    def test_ranges(self, formula, cell, hit):
+        assert bool(pt.formula_uses(formula, cell)) is hit
+
+
 class TestCellText:
     @pytest.mark.parametrize("value,text", [(50, "50"), (2.5, "2.5"),
                                             (True, "1"), (False, "0"),
@@ -295,32 +326,12 @@ def _run_delete(monkeypatch, objects, name, force=False):
 
 
 class TestDeleteObject:
-    def _feature_in_body(self):
-        body = types.SimpleNamespace(Name="Body", Label="Body",
-                                     TypeId="PartDesign::Body", InList=[])
-        pad = types.SimpleNamespace(Name="Pad", Label="Pad",
-                                    TypeId="PartDesign::Pad", InList=[body])
-        return [body, pad]
-
     def test_unused_object_is_deleted(self, monkeypatch):
         box = types.SimpleNamespace(Name="Box", Label="Box",
                                     TypeId="Part::Box", InList=[])
         r, removed = _run_delete(monkeypatch, [box], "Box")
         assert r.success, r.error
         assert removed == ["Box"]
-
-    def test_refuses_feature_listed_by_its_body(self, monkeypatch):
-        r, removed = _run_delete(monkeypatch, self._feature_in_body(), "Pad")
-        assert not r.success
-        assert "Body" in r.error and "force" in r.error
-        assert removed == []
-
-    def test_force_deletes_and_reports_dependents(self, monkeypatch):
-        r, removed = _run_delete(monkeypatch, self._feature_in_body(), "Pad",
-                                 force="true")
-        assert r.success, r.error
-        assert removed == ["Pad"]
-        assert "Body" in r.output
 
     def test_missing_object(self, monkeypatch):
         r, removed = _run_delete(monkeypatch, [], "Nope")
@@ -330,3 +341,9 @@ class TestDeleteObject:
         from freecad_ai.tools.freecad_tools import ALL_TOOLS, DELETE_OBJECT
         assert DELETE_OBJECT in ALL_TOOLS
         assert DELETE_OBJECT.category == "modeling"
+
+
+def test_create_spreadsheet_formula_example_uses_an_alias():
+    """A1 holds the first name label since #121, so '=A1*2' is a text error."""
+    from freecad_ai.tools.freecad_tools import CREATE_SPREADSHEET
+    assert "=A1" not in CREATE_SPREADSHEET.description

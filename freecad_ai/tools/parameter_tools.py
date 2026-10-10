@@ -161,14 +161,44 @@ def reference_pattern(key, owners=()):
     'Params.width', '<<My Params>>.width'. Without, it matches bare uses
     inside the owning object ('=width * 2' in a cell, 'len * 2' in a
     VarSet, where FreeCAD stores same-object references unqualified).
+    A cell address also matches its absolute forms ($B$1, B$1, $B1).
     """
+    if is_cell_address(key):
+        col, row = split_address(key)
+        target = r"\$?%s\$?%d" % (col, row)
+    else:
+        target = re.escape(key)
     if owners:
         names = [re.escape(o) for o in owners]
         names += ["<<%s>>" % re.escape(o) for o in owners]
         prefix = r"(?<![\w.])(?:%s)\." % "|".join(names)
     else:
         prefix = r"(?<![\w.>])"
-    return re.compile(prefix + re.escape(key) + r"(?!\w)")
+    return re.compile(prefix + target + r"(?!\w)")
+
+
+_RANGE_RE = re.compile(
+    r"(?<![\w.>])\$?([A-Z]{1,2})\$?([0-9]+):\$?([A-Z]{1,2})\$?([0-9]+)(?!\w)")
+
+
+def formula_uses(formula, key, owners=()):
+    """True when `formula` uses `key` — an alias or a cell address.
+
+    Bare (no owners) also checks same-sheet ranges: '=sum(B1:B3)' uses B2.
+    FreeCAD doesn't parse ranges qualified with another sheet's name.
+    """
+    if reference_pattern(key, owners).search(formula):
+        return True
+    if owners or not is_cell_address(key):
+        return False
+    col, row = split_address(key)
+    col = column_index(col)
+    for m in _RANGE_RE.finditer(formula):
+        c1, c2 = sorted((column_index(m[1]), column_index(m[3])))
+        r1, r2 = sorted((int(m[2]), int(m[4])))
+        if c1 <= col <= c2 and r1 <= row <= r2:
+            return True
+    return False
 
 
 def cell_text(value):
@@ -247,20 +277,30 @@ def _as_dict(value, what):
     return value
 
 
+def _formulas(obj):
+    """obj's expressions, plus its cell formulas if it is a spreadsheet
+    (those are not in a sheet's ExpressionEngine)."""
+    exprs = [e for _, e in getattr(obj, "ExpressionEngine", [])]
+    if obj.TypeId == "Spreadsheet::Sheet":
+        exprs += [f for f in map(obj.getContents, obj.getNonEmptyCells())
+                  if f.startswith("=")]
+    return exprs
+
+
 def _referrers(obj, keys, own_expressions):
     """Labels of what still uses obj.<key> for any of `keys`.
 
-    Other objects reference it qualified (in their ExpressionEngine);
-    the object itself references it bare (own_expressions).
+    Other objects reference it qualified (expressions, other sheets'
+    formulas); the object itself references it bare (own_expressions).
     """
-    qualified = [reference_pattern(k, (obj.Name, obj.Label)) for k in keys]
-    bare = [reference_pattern(k) for k in keys]
+    owners = (obj.Name, obj.Label)
     users = []
     for other in obj.InList:
-        exprs = [e for _, e in getattr(other, "ExpressionEngine", [])]
-        if any(p.search(e) for p in qualified for e in exprs):
+        if other.Label in users:
+            continue  # InList repeats an object once per link
+        if any(formula_uses(e, k, owners) for k in keys for e in _formulas(other)):
             users.append(other.Label)
-    if any(p.search(e) for p in bare for e in own_expressions):
+    if any(formula_uses(e, k) for k in keys for e in own_expressions):
         users.append(f"{obj.Label} (its own expressions)")
     return users
 
@@ -273,6 +313,22 @@ def _unit_type_of(text):
     except Exception:
         return None
     return "" if kind in ("", "1") else kind
+
+
+def _check_unit(obj, prop, value):
+    """Refuse text whose unit doesn't fit a unit property ('30 deg' for a
+    Length) before anything changes; a bare number takes the property's unit."""
+    current = getattr(obj, prop)
+    if not isinstance(value, str) or not hasattr(current, "Unit"):
+        return
+    import FreeCAD as App
+    try:
+        unit = App.Units.Quantity(value).Unit
+    except Exception:
+        raise ValueError(f"{value!r} is not a quantity")
+    if unit != App.Units.Unit() and unit != current.Unit:
+        raise ValueError(f"{value!r} doesn't fit a "
+                         f"{_short_type(obj.getTypeIdOfProperty(prop))}")
 
 
 def new_variable(vs, value):
@@ -357,6 +413,7 @@ def _handle_edit_variable_set(object_name="", set=None, remove=None) -> ToolResu
                             f"bound to the expression '{exprs[name]}' — "
                             "change it with set_expression instead")
                     type_id = vs.getTypeIdOfProperty(name)
+                    _check_unit(vs, name, value)
                     plan.append((name, "changed", type_id,
                                  coerce_for_property(type_id, value)))
                 elif name in _VARSET_BUILTIN or not is_valid_name(name):
@@ -379,11 +436,14 @@ def _handle_edit_variable_set(object_name="", set=None, remove=None) -> ToolResu
         changes = []
         for name, action, type_id, value in plan:
             previous = None
-            if action == "added":
-                vs.addProperty(type_id, name, "Parameters", "")
-            else:
-                previous = str(getattr(vs, name))
-            setattr(vs, name, value)
+            try:
+                if action == "added":
+                    vs.addProperty(type_id, name, "Parameters", "")
+                else:
+                    previous = str(getattr(vs, name))
+                setattr(vs, name, value)
+            except Exception as e:  # name the entry; the transaction aborts
+                raise ValueError(f"{name}: {e}")
             changes.append({"name": name, "action": action,
                             "type": _short_type(type_id),
                             "previous": previous, "value": str(getattr(vs, name))})
@@ -545,6 +605,9 @@ def _handle_edit_spreadsheet(object_name="", set=None, remove=None) -> ToolResul
                 raise ValueError(
                     f"'{key}' can't be an alias: use letters, digits and _, "
                     "start with a letter, and avoid cell addresses like B7")
+            if key in sheet.PropertiesList or _unit_type_of(key) is not None:
+                raise ValueError(f"'{key}' can't be an alias: FreeCAD reserves "
+                                 "it (a property or unit name)")
             if next_row > MAX_ROW:
                 raise ValueError(f"'{sheet.Label}' has no free row left")
             plan.append((key, f"{value_col}{next_row}", text,
@@ -556,7 +619,7 @@ def _handle_edit_spreadsheet(object_name="", set=None, remove=None) -> ToolResul
             if not cell:
                 raise ValueError(_unknown_key(sheet, key))
             alias = sheet.getAlias(cell)
-            own = [_contents(sheet, c) for c in used if c != cell]
+            own = [sheet.getContents(c) for c in used if c != cell]
             own = [f for f in own if f.startswith("=")]
             users = _referrers(sheet, [cell] + ([alias] if alias else []), own)
             if users:
@@ -566,16 +629,19 @@ def _handle_edit_spreadsheet(object_name="", set=None, remove=None) -> ToolResul
 
         changes = []
         for key, cell, text, label_cell in plan:
-            if label_cell:
-                sheet.set(label_cell, key)
-                sheet.set(cell, text)
-                sheet.setAlias(cell, key)
-                changes.append({"name": key, "cell": cell, "action": "added",
-                                "previous": None})
-            else:
-                changes.append({"name": key, "cell": cell, "action": "changed",
-                                "previous": _contents(sheet, cell) or "(empty)"})
-                sheet.set(cell, text)
+            try:
+                if label_cell:
+                    sheet.set(label_cell, key)
+                    sheet.set(cell, text)
+                    sheet.setAlias(cell, key)
+                    changes.append({"name": key, "cell": cell, "action": "added",
+                                    "previous": None})
+                else:
+                    changes.append({"name": key, "cell": cell, "action": "changed",
+                                    "previous": _contents(sheet, cell) or "(empty)"})
+                    sheet.set(cell, text)
+            except Exception as e:  # name the entry; the transaction aborts
+                raise ValueError(f"{key}: {e}")
         for key, cell, alias in doomed:
             changes.append({"name": key, "cell": cell, "action": "removed",
                             "previous": _contents(sheet, cell), "value": None})

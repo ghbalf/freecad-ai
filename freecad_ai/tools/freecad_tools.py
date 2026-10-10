@@ -2247,18 +2247,38 @@ def _handle_delete_object(object_name: str, force=False) -> ToolResult:
             hint = _suggest_similar(doc, object_name)
             return ToolResult(success=False, output="",
                               error=f"Object '{object_name}' not found.{hint}")
-        users = [o.Label for o in obj.InList]
+        # A Body takes its features along, as in the GUI.
+        is_body = obj.TypeId == "PartDesign::Body"
+        doomed = [obj] + (list(obj.Group) if is_body else [])
+        doomed_names = {o.Name for o in doomed}
+        users = []
+        for o in doomed:
+            for other in o.InList:
+                if other.Name in doomed_names or other.Label in users:
+                    continue
+                if o.Name in (g.Name for g in getattr(other, "Group", [])):
+                    continue  # its Body, Part or folder holds it, doesn't use it
+                users.append(other.Label)
         if users and not force:
             return ToolResult(
                 success=False, output="",
-                error=(f"'{obj.Label}' is used by {', '.join(users)} (a "
-                       "containing Body or Part counts too). Deleting it "
-                       "would break them: delete or rewire those first, or "
+                error=(f"'{obj.Label}' is used by {', '.join(users)}. Deleting "
+                       "it would break them: delete or rewire those first, or "
                        "pass force=true to delete anyway."),
             )
         name, label, type_id = obj.Name, obj.Label, obj.TypeId
+        if is_body:
+            obj.removeObjectsFromDocument()
+        else:
+            for parent in obj.InList:
+                if (parent.TypeId == "PartDesign::Body"
+                        and name in (g.Name for g in parent.Group)):
+                    parent.removeObject(obj)  # moves Tip / BaseFeature back
+                    break
         doc.removeObject(name)
         msg = f"Deleted '{label}' ({name}, {type_id})"
+        if is_body and len(doomed) > 1:
+            msg += f" and its {len(doomed) - 1} features"
         if users:
             msg += f". Still referring to it, check them: {', '.join(users)}"
         return ToolResult(success=True, output=msg,
@@ -2273,7 +2293,8 @@ DELETE_OBJECT = ToolDefinition(
     description=(
         "Delete a document object (feature, sketch, VarSet, spreadsheet, ...). "
         "Refuses while other objects use it, naming them; pass force=true to "
-        "delete anyway. Deleting a Body or Part does not delete its contents. "
+        "delete anyway. Deleting a Body deletes its features; deleting a Part "
+        "or group keeps its contents. "
         "Undo reverts it."
     ),
     category="modeling",
@@ -3324,7 +3345,7 @@ CREATE_SPREADSHEET = ToolDefinition(
         "Variables are stored as named cells that can be edited in the Spreadsheet workbench. "
         "After creation, pass variable references as dimension values in create_sketch "
         "(e.g. width='Variables.length') and pad_sketch (e.g. length='Variables.height'). "
-        "Supports formulas in cells (e.g. '=A1*2'). "
+        "Values may be formulas using other names (e.g. '=length*2'). "
         "Alternative: use create_variable_set for a cleaner property-based approach."
     ),
     category="modeling",

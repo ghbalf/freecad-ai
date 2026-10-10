@@ -273,7 +273,7 @@ Tool calling is enabled by default. Disable it by setting `enable_tools: false` 
 | `edit_variable_set` | Change, add or remove VarSet variables (unit-aware) |
 | `read_spreadsheet` | Read spreadsheet cells: alias, contents, computed value |
 | `edit_spreadsheet` | Change, add or remove spreadsheet cells by alias or address |
-| `delete_object` | Delete an object; refuses while other objects still use it |
+| `delete_object` | Delete an object (a Body with its features); refuses while other objects still use it |
 | `export_model` | Export to STL, STEP, or IGES |
 | `execute_code` | Fallback: run arbitrary Python |
 | `undo` | Undo last N operations, or undo until a named transaction |

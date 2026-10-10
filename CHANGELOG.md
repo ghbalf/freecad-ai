@@ -25,8 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `edit_spreadsheet` read and change parameters after creation: set
   changes or adds, remove deletes, and one bad entry changes nothing.
   Spreadsheet keys take an alias or a cell address. Removing anything an
-  expression still uses is refused and names the user. `delete_object`
-  refuses while dependents exist unless `force=true`.
+  expression or formula still uses (other sheets, `$B$1`, ranges like
+  `B1:B3` included) is refused and names the user. `delete_object`
+  refuses while dependents exist unless `force=true`; the Body, Part or
+  folder holding an object doesn't count. Deleting a Body deletes its
+  features, as in the GUI, and deleting a feature moves the Body's Tip back.
 
 ### Fixed
 

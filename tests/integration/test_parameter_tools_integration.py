@@ -60,6 +60,33 @@ results["data"] = {"success": r.success, "error": r.error, "count": vs.count,
         assert "ratio" in d["error"]
         assert d["count"] == 3 and not d["has_extra"]
 
+    def test_sheet_formula_counts_as_user(self, run_freecad_script):
+        result = run_freecad_script(_VARSET + """
+other = doc.addObject("Spreadsheet::Sheet", "Other")
+other.set("A1", "=Vars.count*2")
+doc.recompute()
+r = _handle_edit_variable_set(object_name="Vars", remove=["count"])
+results["data"] = {"success": r.success, "error": r.error,
+                   "still": "count" in vs.PropertiesList}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert not d["success"] and "Other" in d["error"]
+        assert d["still"]
+
+    def test_wrong_unit_is_refused_by_name_before_any_change(self, run_freecad_script):
+        result = run_freecad_script(_VARSET + """
+_handle_edit_variable_set(object_name="Vars", set={"len": "10 mm"})
+r = _handle_edit_variable_set(object_name="Vars",
+                              set={"count": 8, "added": "5 mm", "len": "30 deg"})
+results["data"] = {"success": r.success, "error": r.error, "count": vs.count,
+                   "added": "added" in vs.PropertiesList}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert not d["success"] and "len" in d["error"]
+        assert d["count"] == 3 and not d["added"]
+
     def test_expression_bound_variable_is_refused(self, run_freecad_script):
         result = run_freecad_script(_VARSET + """
 vs.setExpression("ratio", "count / 10")
@@ -234,6 +261,37 @@ results["data"] = {"used_ok": used.success, "used_err": used.error,
         assert d["depth_alias"] is None
         assert d["cells"] == ["A1", "B1"]  # value and label of depth both cleared
 
+    def test_remove_refuses_formula_users(self, run_freecad_script):
+        """Review: other sheets' formulas, $-references and ranges are users."""
+        result = run_freecad_script(_SHEET + """
+_handle_edit_spreadsheet(object_name="Params",
+                         set={"a": 1, "b": 2, "c": 3, "D1": "=$B$2*2",
+                              "D2": "=sum(B3:B4)"})
+other = doc.addObject("Spreadsheet::Sheet", "Other")
+other.set("A1", "=Params.width*2")
+doc.recompute()
+results["data"] = {k: (lambda r: (r.success, r.error))(
+                       _handle_edit_spreadsheet(object_name="Params", remove=[k]))
+                   for k in ("width", "a", "b")}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert d["width"][0] is False and "Other" in d["width"][1]
+        assert d["a"][0] is False and "Params" in d["a"][1]   # =$B$2*2
+        assert d["b"][0] is False and "Params" in d["b"][1]   # =sum(B3:B4)
+
+    def test_new_alias_freecad_rejects_changes_nothing(self, run_freecad_script):
+        result = run_freecad_script(_SHEET + """
+r = _handle_edit_spreadsheet(object_name="Params", set={"width": 99, "Label": 5})
+results["data"] = {"success": r.success, "error": r.error,
+                   "width": sheet.getContents("B1"),
+                   "cells": list(sheet.getNonEmptyCells())}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert not d["success"] and "Label" in d["error"]
+        assert d["width"] == "50" and d["cells"] == ["A1", "B1"]
+
     def test_old_value_first_sheet_keeps_its_layout(self, run_freecad_script):
         result = run_freecad_script("""
 from freecad_ai.tools.parameter_tools import _handle_edit_spreadsheet
@@ -291,3 +349,56 @@ results["data"] = {"refused_ok": refused.success, "refused_err": refused.error,
         assert not d["refused_ok"] and "Box" in d["refused_err"]
         assert d["forced_ok"] and d["gone_ok"]
         assert d["names"] == []
+
+    def test_feature_in_body_deletes_without_force_and_moves_tip(self, run_freecad_script):
+        """Review: a containing Body is not a dependent; deleting its Tip
+        must leave the Body with a valid Tip, not an empty shape."""
+        result = run_freecad_script("""
+from freecad_ai.tools.freecad_tools import _handle_delete_object
+body = doc.addObject("PartDesign::Body", "Body")
+bx = doc.addObject("PartDesign::AdditiveBox", "Box"); body.addObject(bx)
+cy = doc.addObject("PartDesign::AdditiveCylinder", "Cyl"); body.addObject(cy)
+doc.recompute()
+used = _handle_delete_object(object_name="Box")
+tip = _handle_delete_object(object_name="Cyl")
+doc.recompute()
+results["data"] = {"used_ok": used.success, "used_err": used.error,
+                   "tip_ok": tip.success, "tip_err": tip.error,
+                   "tip": body.Tip.Name if body.Tip else None,
+                   "null": body.Shape.isNull()}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert not d["used_ok"] and "Cyl" in d["used_err"]
+        assert "Body" not in d["used_err"]
+        assert d["tip_ok"], d["tip_err"]
+        assert d["tip"] == "Box" and not d["null"]
+
+    def test_body_takes_its_features_along(self, run_freecad_script):
+        result = run_freecad_script("""
+from freecad_ai.tools.freecad_tools import _handle_delete_object
+body = doc.addObject("PartDesign::Body", "Body")
+bx = doc.addObject("PartDesign::AdditiveBox", "Box"); body.addObject(bx)
+doc.recompute()
+r = _handle_delete_object(object_name="Body")
+results["data"] = {"ok": r.success, "err": r.error,
+                   "names": [o.Name for o in doc.Objects]}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert d["ok"], d["err"]
+        assert d["names"] == []
+
+    def test_object_in_folder_is_not_a_dependent(self, run_freecad_script):
+        result = run_freecad_script("""
+from freecad_ai.tools.freecad_tools import _handle_delete_object
+folder = doc.addObject("App::DocumentObjectGroup", "Folder")
+loose = doc.addObject("Part::Box", "Loose"); folder.addObject(loose)
+r = _handle_delete_object(object_name="Loose")
+results["data"] = {"ok": r.success, "err": r.error,
+                   "names": [o.Name for o in doc.Objects]}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert d["ok"], d["err"]
+        assert d["names"] == ["Folder"]
