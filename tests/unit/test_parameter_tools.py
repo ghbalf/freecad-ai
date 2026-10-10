@@ -123,6 +123,56 @@ class TestNewPropertyType:
         with pytest.raises(ValueError):
             pt.new_property_type([1, 2], _units({}))
 
+    @pytest.mark.parametrize("text", ["in", "h", "kg", "pi"])
+    def test_bare_unit_symbol_is_text(self, text):
+        """#126: 'in' parses as 25.4 mm, but nobody typing 'in' means a length."""
+        u = _units({"in": "Length", "h": "TimeSpan", "kg": "Mass", "pi": ""})
+        assert pt.new_property_type(text, u) == "App::PropertyString"
+
+    @pytest.mark.parametrize("text", ["-2 mm", ".5 mm", "+3 mm", " 4 mm"])
+    def test_signed_and_fractional_quantities(self, text):
+        assert pt.new_property_type(text, _units({text: "Length"})) == "App::PropertyLength"
+
+    def test_compound_unit_is_refused(self):
+        """#126: '5 kg*mm' has no named unit; it used to become a bare 5.0."""
+        u = _units({"5 kg*mm": pt.COMPOUND_UNIT})
+        with pytest.raises(ValueError, match="kg\\*mm"):
+            pt.new_property_type("5 kg*mm", u)
+
+
+class TestCheckVariableName:
+    @pytest.mark.parametrize("name", ["width", "b7", "_x", "len2"])
+    def test_accepts(self, name):
+        pt.check_variable_name(name, _units({}))
+
+    @pytest.mark.parametrize("name", ["Label", "ExpressionEngine", "2x", "a-b", ""])
+    def test_rejects_invalid_or_builtin(self, name):
+        with pytest.raises(ValueError, match="not a valid variable name"):
+            pt.check_variable_name(name, _units({}))
+
+    @pytest.mark.parametrize("name", ["mm", "in", "pi"])
+    def test_rejects_unit_and_constant_names(self, name):
+        """#126: FreeCAD can't parse Vars.mm or Vars.pi, so such a variable
+        could never be used."""
+        u = _units({"mm": "Length", "in": "Length", "pi": ""})
+        with pytest.raises(ValueError, match="unit or constant"):
+            pt.check_variable_name(name, u)
+
+
+class TestAsDict:
+    @pytest.mark.parametrize("value", [
+        {"width": 71}, '{"width": 71}', "{'width': 71}"])
+    def test_dict_json_or_python_syntax(self, value):
+        assert pt._as_dict(value, "set") == {"width": 71}
+
+    @pytest.mark.parametrize("value", ["[1, 2]", "width=71", "{'a': }", 5])
+    def test_rejects_non_dicts(self, value):
+        with pytest.raises(ValueError, match="must be an object"):
+            pt._as_dict(value, "set")
+
+    def test_empty_is_empty(self):
+        assert pt._as_dict(None, "set") == {} and pt._as_dict("", "set") == {}
+
 
 class TestCoerceForProperty:
     def test_float_from_string(self):

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **VarSet and spreadsheet edge cases from the #121 review (#126).**
+  - A new variable with a compound unit (`"5 kg*mm"`) used to be stored
+    as a bare `5.0`, silently dropping the unit. It is now refused with
+    an explanation.
+  - Text that is only a unit symbol (`"in"`, `"h"`) used to become a
+    quantity (`25.4 mm`). It is now stored as text.
+  - `edit_variable_set` and `create_variable_set` refuse variable names
+    that are units or constants (`mm`, `in`, `pi`). FreeCAD can't parse
+    `Vars.mm` in an expression, so such a variable could never be used.
+  - Removing an existing unit-named variable is no longer blocked by an
+    expression like `10 mm` on the same VarSet.
+  - `edit_spreadsheet` reports a formula FreeCAD can't evaluate as an
+    error and changes nothing. This covers an unparsable formula
+    (`"=width*"`), which FreeCAD stores as text, and a bad reference,
+    which evaluates to `ERR: …`. Both used to be reported as success.
+  - `set` arguments written as a Python-style dict (`{'width': 60}`) are
+    now accepted, as JSON already was.
+
 ## [0.33.0-alpha] - 2026-10-10
 
 ### Added

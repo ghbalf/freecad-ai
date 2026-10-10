@@ -6,6 +6,7 @@ either form — unambiguous because FreeCAD rejects aliases that are valid
 addresses (B7, AB12) while accepting look-alikes (b7, XFD1).
 """
 
+import ast
 import json
 import re
 
@@ -110,23 +111,44 @@ _PLAIN_TYPES = {
 }
 
 
+# Unit type of a quantity whose unit has no name ('5 kg*mm').
+COMPOUND_UNIT = "compound"
+# A quantity starts with a number; bare 'in' or 'h' parse as one too.
+_QUANTITY_START = re.compile(r"^\s*[-+]?\.?\d")
+
+
 def new_property_type(value, unit_type_of):
     """Property type for a new VarSet variable holding `value`.
 
     unit_type_of(text) returns FreeCAD's unit type name ('Length'), '' for
-    a dimensionless number, or None when the text is not a quantity.
+    a dimensionless number, COMPOUND_UNIT, or None when the text is not a
+    quantity.
     """
     if type(value) in _PLAIN_TYPES:
         return _PLAIN_TYPES[type(value)]
     if not isinstance(value, str):
         raise ValueError(
             f"unsupported value {value!r}: use a number, text or true/false")
-    unit = unit_type_of(value)
+    unit = unit_type_of(value) if _QUANTITY_START.match(value) else None
     if unit is None:
         return "App::PropertyString"
+    if unit == COMPOUND_UNIT:
+        raise ValueError(
+            f"{value!r} has a compound unit no VarSet property can hold: "
+            "store the plain number and put the unit in the name (torque_kgmm)")
     if unit == "":
         return "App::PropertyFloat"
     return f"App::Property{unit}"
+
+
+def check_variable_name(name, unit_type_of):
+    """Refuse a new variable name no expression could use."""
+    if name in _VARSET_BUILTIN or not is_valid_name(name):
+        raise ValueError("not a valid variable name (letters, digits and _, "
+                         "not a built-in property)")
+    if unit_type_of(name) is not None:
+        raise ValueError(f"'{name}' is a unit or constant in FreeCAD "
+                         "expressions, so no expression could use it")
 
 
 def coerce_for_property(type_id, value):
@@ -264,14 +286,18 @@ def _lookup(doc, object_name, type_id):
 
 
 def _as_dict(value, what):
-    """A dict from a dict or its JSON string (LLMs sometimes stringify)."""
+    """A dict from a dict or its JSON or Python-literal string (LLMs
+    sometimes stringify, sometimes with single quotes)."""
     if value in (None, ""):
         return {}
     if isinstance(value, str):
         try:
             value = json.loads(value)
         except ValueError:
-            value = None
+            try:
+                value = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                value = None
     if not isinstance(value, dict):
         raise ValueError(f"'{what}' must be an object like {{\"width\": 60}}")
     return value
@@ -300,19 +326,25 @@ def _referrers(obj, keys, own_expressions):
             continue  # InList repeats an object once per link
         if any(formula_uses(e, k, owners) for k in keys for e in _formulas(other)):
             users.append(other.Label)
-    if any(formula_uses(e, k) for k in keys for e in own_expressions):
+    # A unit-named key ('mm') can't be used bare; '10 mm' is a quantity.
+    bare = [k for k in keys if _unit_type_of(k) is None]
+    if any(formula_uses(e, k) for k in bare for e in own_expressions):
         users.append(f"{obj.Label} (its own expressions)")
     return users
 
 
 def _unit_type_of(text):
-    """FreeCAD unit type of `text`, '' if dimensionless, None if not a quantity."""
+    """FreeCAD unit type of `text`: '' if dimensionless, COMPOUND_UNIT if
+    the unit has no name, None if not a quantity."""
     import FreeCAD as App
     try:
-        kind = App.Units.Quantity(text).Unit.Type
+        unit = App.Units.Quantity(text).Unit
     except Exception:
         return None
-    return "" if kind in ("", "1") else kind
+    if unit == App.Units.Unit():
+        return ""
+    # Type is '' for an unnamed unit (and, on 1.0.x, for dimensionless).
+    return unit.Type or COMPOUND_UNIT
 
 
 def _check_unit(obj, prop, value):
@@ -416,10 +448,8 @@ def _handle_edit_variable_set(object_name="", set=None, remove=None) -> ToolResu
                     _check_unit(vs, name, value)
                     plan.append((name, "changed", type_id,
                                  coerce_for_property(type_id, value)))
-                elif name in _VARSET_BUILTIN or not is_valid_name(name):
-                    raise ValueError("not a valid variable name (letters, "
-                                     "digits and _, not a built-in property)")
                 else:
+                    check_variable_name(name, _unit_type_of)
                     plan.append((name, "added", *new_variable(vs, value)))
             except (TypeError, ValueError) as e:
                 raise ValueError(f"{name}: {e}")
@@ -514,6 +544,20 @@ def _cell_value(sheet, cell):
         return str(sheet.get(cell))
     except ValueError:  # empty cell
         return None
+
+
+def _check_formulas(sheet, plan):
+    """Raise for a written formula FreeCAD couldn't evaluate. set() doesn't
+    raise: an unparsable one is stored as text, a bad reference evaluates
+    to 'ERR: ...'."""
+    for key, cell, text, _ in plan:
+        if not text.startswith("="):
+            continue
+        if sheet.getContents(cell).startswith("'"):
+            raise ValueError(f"{key}: FreeCAD can't parse the formula {text!r}")
+        value = _cell_value(sheet, cell) or ""
+        if value.startswith("ERR"):
+            raise ValueError(f"{key}: {text!r} gives {value}")
 
 
 def _alias_cells(sheet):
@@ -627,6 +671,8 @@ def _handle_edit_spreadsheet(object_name="", set=None, remove=None) -> ToolResul
                                  " — remove those uses first")
             doomed.append((key, cell, alias))
 
+        written = {c: sheet.getContents(c) for _, cell, _, label_cell in plan
+                   for c in (cell, label_cell) if c}
         changes = []
         for key, cell, text, label_cell in plan:
             try:
@@ -642,6 +688,18 @@ def _handle_edit_spreadsheet(object_name="", set=None, remove=None) -> ToolResul
                     sheet.set(cell, text)
             except Exception as e:  # name the entry; the transaction aborts
                 raise ValueError(f"{key}: {e}")
+        doc.recompute()
+        try:
+            _check_formulas(sheet, plan)
+        except ValueError:
+            # Put the cells back by hand: abortTransaction is a no-op when
+            # the document's UndoMode is 0 (documents made outside the GUI).
+            for cell, contents in written.items():
+                if contents:
+                    sheet.set(cell, contents)
+                else:
+                    sheet.clear(cell)  # also drops an alias added here
+            raise
         for key, cell, alias in doomed:
             changes.append({"name": key, "cell": cell, "action": "removed",
                             "previous": _contents(sheet, cell), "value": None})
