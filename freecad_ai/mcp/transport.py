@@ -21,6 +21,7 @@ from socketserver import ThreadingMixIn
 from typing import Any, Callable
 
 from . import protocol
+from ..utils.proc import hidden_process_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +242,9 @@ class StdioClientTransport:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
+            # An MCP server speaks over the pipes above; on Windows a console
+            # window would be both useless and visible.
+            **hidden_process_kwargs(),
         )
         self._running = True
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)

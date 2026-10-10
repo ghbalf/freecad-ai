@@ -24,6 +24,8 @@ import tempfile
 import traceback
 from dataclasses import dataclass
 
+from ..utils.proc import hidden_process_kwargs
+
 logger = logging.getLogger(__name__)
 
 # Written to fd 2 by the harness to bracket the user's code. FreeCAD's C++
@@ -565,6 +567,7 @@ def _sandbox_test(code: str, timeout: int = 15, document_path: str | None = None
             timeout=timeout,
             capture_output=True,
             env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+            **hidden_process_kwargs(),
         )
 
         if proc.returncode != 0 and proc.returncode > 0:

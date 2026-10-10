@@ -28,6 +28,7 @@ from typing import Generator
 logger = logging.getLogger(__name__)
 
 from .providers import get_api_style
+from ..utils.proc import hidden_process_kwargs
 
 # Anthropic API version header
 ANTHROPIC_API_VERSION = "2023-06-01"
@@ -319,6 +320,9 @@ class LLMClient:
                 result = subprocess.run(
                     command, shell=True, capture_output=True, text=True,
                     timeout=10,
+                    # shell=True runs cmd.exe on Windows, which would otherwise
+                    # open a console window for every key resolution.
+                    **hidden_process_kwargs(),
                 )
                 if result.returncode != 0:
                     logger.error("Token command failed (rc=%d): %s",
