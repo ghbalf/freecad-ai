@@ -160,6 +160,66 @@ results["data"] = {"success": r.success, "error": r.error,
         assert d["varsets"] == []
 
 
+class TestNewVariableFollowups:
+    """#126: compound units, unit-symbol text and unit-named variables."""
+
+    def test_compound_unit_is_refused_not_stored_as_a_bare_number(self, run_freecad_script):
+        result = run_freecad_script(_VARSET + """
+r = _handle_edit_variable_set(object_name="Vars", set={"torque": "5 kg*mm"})
+results["data"] = {"success": r.success, "error": r.error,
+                   "has": "torque" in vs.PropertiesList}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert not d["success"] and "torque" in d["error"]
+        assert not d["has"]
+
+    def test_unit_symbol_text_is_a_string(self, run_freecad_script):
+        result = run_freecad_script(_VARSET + """
+r = _handle_edit_variable_set(object_name="Vars", set={"size": "in", "start": "h"})
+results["data"] = {"success": r.success, "error": r.error,
+                   "types": [vs.getTypeIdOfProperty(n) for n in ("size", "start")]
+                            if r.success else None,
+                   "size": vs.size if r.success else None}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert d["success"], d["error"]
+        assert d["types"] == ["App::PropertyString"] * 2 and d["size"] == "in"
+
+    @pytest.mark.parametrize("tool", ["edit", "create"])
+    def test_unit_named_variable_is_refused(self, run_freecad_script, tool):
+        call = ('_handle_edit_variable_set(object_name="Vars", set={"mm": 7})'
+                if tool == "edit" else
+                '_handle_create_variable_set(variables={"mm": 7}, label="Dims")')
+        result = run_freecad_script(_VARSET + f"""
+r = {call}
+results["data"] = {{"success": r.success, "error": r.error,
+                   "has": any("mm" in o.PropertiesList for o in doc.Objects
+                              if o.TypeId == "App::VarSet")}}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert not d["success"] and "unit or constant" in d["error"]
+        assert not d["has"]
+
+    def test_unit_named_variable_removes_despite_own_quantity_expression(self, run_freecad_script):
+        # Made outside the tools (GUI, older versions); '10 mm' is not a use of it.
+        result = run_freecad_script(_VARSET + """
+vs.addProperty("App::PropertyFloat", "mm", "Parameters", "")
+vs.addProperty("App::PropertyLength", "ten", "Parameters", "")
+vs.setExpression("ten", "10 mm")
+doc.recompute()
+r = _handle_edit_variable_set(object_name="Vars", remove=["mm"])
+results["data"] = {"success": r.success, "error": r.error,
+                   "has": "mm" in vs.PropertiesList}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert d["success"], d["error"]
+        assert not d["has"]
+
+
 _SHEET = """
 from freecad_ai.tools.freecad_tools import _handle_create_spreadsheet
 from freecad_ai.tools.parameter_tools import (
@@ -290,6 +350,35 @@ results["data"] = {"success": r.success, "error": r.error,
         assert result["ok"], result.get("error")
         d = result["data"]
         assert not d["success"] and "Label" in d["error"]
+        assert d["width"] == "50" and d["cells"] == ["A1", "B1"]
+
+    @pytest.mark.parametrize("formula", ["=width*", "=nosuch*2"])
+    def test_broken_formula_is_an_error_and_changes_nothing(self, run_freecad_script, formula):
+        """#126: a parse error is stored as text, a missing reference as
+        'ERR: ...'; neither raises in FreeCAD, so both used to report success."""
+        result = run_freecad_script(_SHEET + f"""
+r = _handle_edit_spreadsheet(object_name="Params", set={{"width": 60, "depth": "{formula}"}})
+results["data"] = {{"success": r.success, "error": r.error,
+                   "width": sheet.getContents("B1"),
+                   "cells": list(sheet.getNonEmptyCells())}}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert not d["success"] and "depth" in d["error"]
+        assert d["width"] == "50" and d["cells"] == ["A1", "B1"]
+
+    def test_remove_refuses_alias_a_new_formula_uses(self, run_freecad_script):
+        """#126: the use check only saw the formulas already in the sheet."""
+        result = run_freecad_script(_SHEET + """
+r = _handle_edit_spreadsheet(object_name="Params",
+                             set={"depth": "=width*2"}, remove=["width"])
+results["data"] = {"success": r.success, "error": r.error,
+                   "width": sheet.getContents("B1"),
+                   "cells": list(sheet.getNonEmptyCells())}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert not d["success"] and "width" in d["error"]
         assert d["width"] == "50" and d["cells"] == ["A1", "B1"]
 
     def test_old_value_first_sheet_keeps_its_layout(self, run_freecad_script):

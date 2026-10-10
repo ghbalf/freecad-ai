@@ -3228,7 +3228,8 @@ def _handle_create_variable_set(
                               error="No variables provided. Pass a dict like "
                                     "{\"length\": 50, \"width\": 30}.")
 
-        from .parameter_tools import new_variable
+        from .parameter_tools import (
+            _unit_type_of, check_variable_name, new_variable)
 
         # A failed create must leave no half-built VarSet. Remove it
         # explicitly: abortTransaction is a no-op when the document's
@@ -3237,6 +3238,7 @@ def _handle_create_variable_set(
         var_names = []
         for name, value in variables.items():
             try:
+                check_variable_name(name, _unit_type_of)
                 prop_type, converted = new_variable(vs, value)
                 vs.addProperty(prop_type, name, "Parameters", "")
                 setattr(vs, name, converted)
