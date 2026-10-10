@@ -18,6 +18,8 @@ import subprocess
 import time
 from dataclasses import dataclass
 
+from ..utils.proc import hidden_process_group_kwargs
+
 KEEP_RUNS = 20
 OUTPUT_CAP = 20_000
 POLL_S = 0.5
@@ -107,12 +109,11 @@ def run_headless(code, *, freecad_bin, run_dir, document_path, timeout,
             code, document_path=document_path,
             result_path=os.path.join(run_dir, "result.json"), mode="headless"))
 
-    if os.name == "posix":
-        # Own process group: an AppImage runs the real binary as a grandchild,
-        # which killing the direct child alone would leave running.
-        group = {"start_new_session": True}
-    else:
-        group = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    # Own process group on POSIX: an AppImage runs the real binary as a
+    # grandchild, which killing the direct child alone would leave running.
+    # On Windows the same helper adds CREATE_NO_WINDOW so the child stops
+    # opening a console.
+    group = hidden_process_group_kwargs()
 
     start = clock()
     stopped = None

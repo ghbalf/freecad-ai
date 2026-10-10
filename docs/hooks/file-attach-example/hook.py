@@ -54,6 +54,8 @@ import shutil
 import subprocess
 import tempfile
 
+from freecad_ai.utils.proc import hidden_process_kwargs
+
 logger = logging.getLogger("freecad_ai.hooks.file_attach")
 
 # Map of extension → list of converter strategies (tried in order)
@@ -64,6 +66,7 @@ def _convert_with_pdftotext(path):
     result = subprocess.run(
         ["pdftotext", "-layout", path, "-"],
         capture_output=True, text=True, timeout=30,
+        **hidden_process_kwargs(),
     )
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout
@@ -75,6 +78,7 @@ def _convert_with_pandoc(path):
     result = subprocess.run(
         ["pandoc", "-t", "plain", "--wrap=none", path],
         capture_output=True, text=True, timeout=30,
+        **hidden_process_kwargs(),
     )
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout
@@ -89,6 +93,7 @@ def _convert_xlsx_with_ssconvert(path):
         result = subprocess.run(
             ["ssconvert", path, tmp_path],
             capture_output=True, text=True, timeout=30,
+            **hidden_process_kwargs(),
         )
         if result.returncode == 0 and os.path.exists(tmp_path):
             with open(tmp_path, "r", encoding="utf-8", errors="replace") as f:
@@ -105,6 +110,7 @@ def _convert_with_libreoffice(path):
         result = subprocess.run(
             ["soffice", "--headless", "--convert-to", "txt:Text", "--outdir", tmpdir, path],
             capture_output=True, text=True, timeout=60,
+            **hidden_process_kwargs(),
         )
         if result.returncode == 0:
             txt_name = os.path.splitext(os.path.basename(path))[0] + ".txt"
