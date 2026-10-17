@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **API Route provider preset.** Select `api-route` in Settings and enter your
+  API key to use the OpenAI-compatible endpoint `https://global.api-route.com/v1`
+  with `gpt-6.1-sol` as the default model, including native tool calls in Act mode.
+
 - **DemonRoute is now a provider preset (#128).** It's a prepaid gateway
   to open-weight models at `https://api.demonroute.com/v1`, using
   OpenAI-style requests. The default model is

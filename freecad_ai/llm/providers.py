@@ -47,6 +47,12 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "api-route": {
+        "base_url": "https://global.api-route.com/v1",
+        "default_model": "gpt-6.1-sol",
+        "api_style": "openai",
+        "supports_tools": True,
+    },
     "moonshot": {
         "base_url": "https://api.moonshot.ai/v1",
         "default_model": "kimi-k2.5",
