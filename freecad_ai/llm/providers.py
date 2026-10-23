@@ -47,6 +47,12 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "cheaperinference": {
+        "base_url": "https://api.cheaperinference.com/v1",
+        "default_model": "gpt-5.4-mini",
+        "api_style": "openai",
+        "supports_tools": True,
+    },
     "moonshot": {
         "base_url": "https://api.moonshot.ai/v1",
         "default_model": "kimi-k2.5",

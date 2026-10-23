@@ -21,7 +21,7 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 - **Context compacting** — automatically summarizes older messages when approaching context limits
 - **Fallback profiles** — when the chat model can't be reached (Ollama box off, vendor 503, revoked key), the turn is tried once on each profile you list, in order, and a note says which one answered
 - **Session resume** — save and load chat sessions to continue work later
-- **24 LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Requesty, Cloudflare Workers AI, Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere, SambaNova, MiniMax, Llama, GitHub Models, HuggingFace, Zhipu, Perplexity, DemonRoute, plus any OpenAI-compatible endpoint via Custom
+- **25 LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Requesty, Cheaper Inference, Cloudflare Workers AI, Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere, SambaNova, MiniMax, Llama, GitHub Models, HuggingFace, Zhipu, Perplexity, DemonRoute, plus any OpenAI-compatible endpoint via Custom
 - **Context-aware** — automatically includes document state (objects, properties, selection) in prompts
 - **Error self-correction** — failed code is sent back to the LLM for automatic retry (up to 3 attempts)
 - **AGENTS.md support** — project-level instructions with include directives and variable substitution
@@ -160,6 +160,7 @@ To populate the stores once:
 | Gemini | Yes | Google AI via OpenAI-compatible endpoint |
 | OpenRouter | Yes | Multi-provider gateway |
 | Requesty | Yes | Multi-provider gateway, EU endpoint `https://router.eu.requesty.ai/v1` |
+| Cheaper Inference | Yes | Multi-provider gateway, base URL `https://api.cheaperinference.com/v1` |
 | Cloudflare Workers AI | Yes (Workers AI token) | Per-account endpoint — replace `{ACCOUNT_ID}` in the Base URL with your Cloudflare account ID before use |
 | Moonshot | Yes | Kimi models (default params pre-configured) |
 | DeepSeek | Yes | DeepSeek-V3 |

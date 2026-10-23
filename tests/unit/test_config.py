@@ -215,6 +215,18 @@ class TestProviderPresets:
         assert PROVIDERS["requesty"]["supports_tools"] is True
         assert "requesty" not in _LEGACY_PARAM_PROVIDERS
 
+    def test_cheaperinference_preset(self):
+        """OpenAI-compatible gateway. Not in _LEGACY_PARAM_PROVIDERS: that
+        tuple is the frozen pre-#99 index order, and no stored index can
+        name a provider added after it."""
+        from freecad_ai.config import _LEGACY_PARAM_PROVIDERS
+        from freecad_ai.llm.providers import PROVIDERS
+        assert (PROVIDER_PRESETS["cheaperinference"]["base_url"]
+                == "https://api.cheaperinference.com/v1")
+        assert PROVIDERS["cheaperinference"]["api_style"] == "openai"
+        assert PROVIDERS["cheaperinference"]["supports_tools"] is True
+        assert "cheaperinference" not in _LEGACY_PARAM_PROVIDERS
+
     def test_github_preset_recommends_reranker(self):
         """Issue #10: GitHub Models has a small per-request input cap.
 

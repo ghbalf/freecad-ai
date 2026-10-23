@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   who disclosed the affiliation; no revenue share, referral or tracking
   is involved.
 
+- **Cheaper Inference provider preset.** An OpenAI-compatible gateway, listed
+  next to OpenRouter and Requesty in the Settings dialog. Base URL
+  `https://api.cheaperinference.com/v1`, default model `gpt-5.4-mini`. One API
+  key gives access to models from several labs. Keys come from
+  https://cheaperinference.com/signup.
+
 ### Fixed
 
 - **Newer OpenAI models no longer get `max_tokens` (#131).** Only names

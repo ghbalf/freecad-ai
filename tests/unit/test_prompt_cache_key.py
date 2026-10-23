@@ -81,7 +81,8 @@ class TestWhichVendorsHearAboutIt:
 
     @pytest.mark.parametrize("provider",
                              ["custom", "ollama", "deepseek", "openrouter",
-                              "requesty", "groq", "cloudflare"])
+                              "requesty", "cheaperinference", "groq",
+                              "cloudflare"])
     def test_everyone_else_gets_the_body_they_got_before(self, provider):
         """Silently 400-ing someone's chat to save them money is a bad
         trade; these endpoints are only OpenAI-*compatible*."""
