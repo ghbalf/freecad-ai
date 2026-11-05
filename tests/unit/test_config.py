@@ -215,6 +215,18 @@ class TestProviderPresets:
         assert PROVIDERS["requesty"]["supports_tools"] is True
         assert "requesty" not in _LEGACY_PARAM_PROVIDERS
 
+    def test_atlascloud_preset(self):
+        """OpenAI-compatible gateway. Not in _LEGACY_PARAM_PROVIDERS: that
+        tuple is the frozen pre-#99 index order, and no stored index can
+        name a provider added after it."""
+        from freecad_ai.config import _LEGACY_PARAM_PROVIDERS
+        from freecad_ai.llm.providers import PROVIDERS
+        assert (PROVIDER_PRESETS["atlascloud"]["base_url"]
+                == "https://api.atlascloud.ai/v1")
+        assert PROVIDERS["atlascloud"]["api_style"] == "openai"
+        assert PROVIDERS["atlascloud"]["supports_tools"] is True
+        assert "atlascloud" not in _LEGACY_PARAM_PROVIDERS
+
     def test_github_preset_recommends_reranker(self):
         """Issue #10: GitHub Models has a small per-request input cap.
 

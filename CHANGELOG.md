@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Atlas Cloud provider preset.** An OpenAI-compatible gateway, listed next
+  to Requesty in the Settings dialog. Base URL
+  `https://api.atlascloud.ai/v1`, default model
+  `deepseek-ai/deepseek-v4-flash`. Keys come from
+  https://console.atlascloud.ai/api-keys. Contributed by an Atlas Cloud
+  employee, who disclosed the affiliation; no revenue share, referral or
+  tracking is involved.
+
 - **DemonRoute is now a provider preset (#128).** It's a prepaid gateway
   to open-weight models at `https://api.demonroute.com/v1`, using
   OpenAI-style requests. The default model is
