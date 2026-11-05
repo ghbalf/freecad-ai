@@ -47,6 +47,12 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "atlascloud": {
+        "base_url": "https://api.atlascloud.ai/v1",
+        "default_model": "deepseek-ai/deepseek-v4-flash",
+        "api_style": "openai",
+        "supports_tools": True,
+    },
     "moonshot": {
         "base_url": "https://api.moonshot.ai/v1",
         "default_model": "kimi-k2.5",
