@@ -6,6 +6,7 @@ HTTPServerTransport — serves MCP over HTTP: Streamable HTTP and HTTP+SSE.
 """
 
 import hmac
+import http.client
 import json
 import logging
 import subprocess
@@ -599,6 +600,12 @@ class StreamableHTTPClientTransport:
                 return protocol.make_error(
                     req_id, protocol.INTERNAL_ERROR,
                     "MCP HTTP response was not valid JSON")
+        except (OSError, http.client.HTTPException, UnicodeError) as exc:
+            # urlopen() returning headers does not mean the response arrived:
+            # reading JSON or iterating SSE can still time out, truncate, or
+            # fail UTF-8 decoding. Surface the same request-scoped error as a
+            # connection failure, without replaying a possibly executed tool.
+            return protocol.make_error(req_id, protocol.INTERNAL_ERROR, str(exc))
         finally:
             resp.close()
 
