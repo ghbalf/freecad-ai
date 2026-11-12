@@ -47,6 +47,12 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "opper": {
+        "base_url": "https://api.opper.ai/v3/compat",
+        "default_model": "claude-sonnet-5-5",
+        "api_style": "openai",
+        "supports_tools": True,
+    },
     "moonshot": {
         "base_url": "https://api.moonshot.ai/v1",
         "default_model": "kimi-k2.5",
