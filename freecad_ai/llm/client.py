@@ -20,6 +20,7 @@ except ImportError:
     _HAS_SSL = False
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
@@ -494,6 +495,9 @@ class LLMClient:
         resolved_key = self._resolve_api_key()
         if resolved_key:
             headers["Authorization"] = f"Bearer {resolved_key}"
+        if urllib.parse.urlparse(self.base_url).hostname == "api.perplexity.ai":
+            # Identify FreeCAD AI as the integration to Perplexity.
+            headers["X-Pplx-Integration"] = "freecad-ai"
         return headers
 
     def _openai_body(self, messages: list[dict], system: str, stream: bool,

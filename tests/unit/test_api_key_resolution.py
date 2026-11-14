@@ -108,6 +108,28 @@ class TestResolveApiKey:
         client = _make_client("sk-abc123")
         assert client._openai_headers()["User-Agent"] == "FreeCAD-AI"
 
+    def test_openai_headers_perplexity_integration(self):
+        """Requests to api.perplexity.ai identify the integration."""
+        client = LLMClient(
+            provider_name="perplexity",
+            base_url="https://api.perplexity.ai/router/v1",
+            api_key="pplx-abc",
+            model="test",
+        )
+        headers = client._openai_headers()
+        assert headers["X-Pplx-Integration"] == "freecad-ai"
+
+    def test_openai_headers_no_integration_for_other_hosts(self):
+        """Other hosts, including lookalikes, get no Perplexity header."""
+        for url in ("http://localhost",
+                    "https://api.perplexity.ai.example.com/v1",
+                    "https://example.com/api.perplexity.ai"):
+            client = LLMClient(
+                provider_name="custom", base_url=url,
+                api_key="sk-abc123", model="test",
+            )
+            assert "X-Pplx-Integration" not in client._openai_headers()
+
     def test_anthropic_headers_set_user_agent(self):
         """Anthropic requests send the same explicit User-Agent (PR #33
         consistency): a proxied Anthropic-compatible endpoint has the same
