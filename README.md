@@ -178,7 +178,7 @@ To populate the stores once:
 | Zhipu | Yes | GLM models (z.ai international) |
 | Perplexity | Yes | Orchestrator API (OpenAI-compatible) |
 | DemonRoute | Yes | Open-weight model gateway (OpenAI-compatible), prepaid. Prompts are forwarded to third-party upstream hosts (mainly Featherless, per the operator) with their own retention policies; see [DemonRoute's privacy page](https://demonroute.com/privacy) |
-| Runcrate | Yes (`rc_live_...`) | Open-weight models (DeepSeek, GLM, Qwen, Kimi and others) via an OpenAI-compatible API, prepaid. Keys from https://www.runcrate.ai/dashboard/api-keys, model ids at https://www.runcrate.ai/inference/pricing |
+| Runcrate | Yes (`rc_live_...`) | Open-weight models (DeepSeek, GLM, Qwen, Kimi and others) via an OpenAI-compatible API, prepaid. Keys from https://www.runcrate.ai/dashboard/api-keys, model ids at https://www.runcrate.ai/inference/pricing. Prompts are processed by third-party model providers under their own terms; see [Runcrate's privacy policy](https://www.runcrate.ai/privacy) |
 | Custom | Varies | Any OpenAI-compatible endpoint |
 
 ### Connection profiles
