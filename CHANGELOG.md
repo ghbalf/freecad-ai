@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Runcrate provider preset.** An OpenAI-compatible API for open-weight
+  models at `https://api.runcrate.ai/v1`, listed after DemonRoute in the
+  Settings dialog. The default model is `deepseek-ai/DeepSeek-V4.1-Flash`.
+  Keys come from https://www.runcrate.ai/dashboard/api-keys. Proposed by
+  someone who works on Runcrate, who disclosed the affiliation; no revenue
+  share, referral or tracking is involved. Tool calling on the default
+  model was tested live through the add-on's own `LLMClient`.
+
 - **DemonRoute is now a provider preset (#128).** It's a prepaid gateway
   to open-weight models at `https://api.demonroute.com/v1`, using
   OpenAI-style requests. The default model is

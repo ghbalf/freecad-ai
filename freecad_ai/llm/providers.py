@@ -180,6 +180,12 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "runcrate": {
+        "base_url": "https://api.runcrate.ai/v1",
+        "default_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "api_style": "openai",
+        "supports_tools": True,
+    },
     "custom": {
         "base_url": "",
         "default_model": "",

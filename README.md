@@ -21,7 +21,7 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 - **Context compacting** — automatically summarizes older messages when approaching context limits
 - **Fallback profiles** — when the chat model can't be reached (Ollama box off, vendor 503, revoked key), the turn is tried once on each profile you list, in order, and a note says which one answered
 - **Session resume** — save and load chat sessions to continue work later
-- **24 LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Requesty, Cloudflare Workers AI, Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere, SambaNova, MiniMax, Llama, GitHub Models, HuggingFace, Zhipu, Perplexity, DemonRoute, plus any OpenAI-compatible endpoint via Custom
+- **25 LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Requesty, Cloudflare Workers AI, Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere, SambaNova, MiniMax, Llama, GitHub Models, HuggingFace, Zhipu, Perplexity, DemonRoute, Runcrate, plus any OpenAI-compatible endpoint via Custom
 - **Context-aware** — automatically includes document state (objects, properties, selection) in prompts
 - **Error self-correction** — failed code is sent back to the LLM for automatic retry (up to 3 attempts)
 - **AGENTS.md support** — project-level instructions with include directives and variable substitution
@@ -178,6 +178,7 @@ To populate the stores once:
 | Zhipu | Yes | GLM models (z.ai international) |
 | Perplexity | Yes | Orchestrator API (OpenAI-compatible) |
 | DemonRoute | Yes | Open-weight model gateway (OpenAI-compatible), prepaid. Prompts are forwarded to third-party upstream hosts (mainly Featherless, per the operator) with their own retention policies; see [DemonRoute's privacy page](https://demonroute.com/privacy) |
+| Runcrate | Yes (`rc_live_...`) | Open-weight models (DeepSeek, GLM, Qwen, Kimi and others) via an OpenAI-compatible API, prepaid. Keys from https://www.runcrate.ai/dashboard/api-keys, model ids at https://www.runcrate.ai/inference/pricing. Prompts are processed by third-party model providers under their own terms; see [Runcrate's privacy policy](https://www.runcrate.ai/privacy) |
 | Custom | Varies | Any OpenAI-compatible endpoint |
 
 ### Connection profiles

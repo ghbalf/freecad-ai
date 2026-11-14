@@ -98,6 +98,14 @@ class TestApiKeyFallback:
         assert "demonroute" in get_provider_names()
         assert get_api_style("demonroute") == "openai"
 
+    def test_runcrate_is_registered(self):
+        from freecad_ai.llm.providers import (
+            PROVIDERS, get_api_style, get_provider_names, supports_tools)
+        assert "runcrate" in get_provider_names()
+        assert get_api_style("runcrate") == "openai"
+        assert supports_tools("runcrate") is True
+        assert PROVIDERS["runcrate"]["base_url"] == "https://api.runcrate.ai/v1"
+
     def test_both_empty_yields_empty(self):
         cfg = _cfg()
         cfg.active_profile = "local"
