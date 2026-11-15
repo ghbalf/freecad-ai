@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.34.0-alpha] - 2026-11-15
+
 ### Added
 
 - **Runcrate provider preset.** An OpenAI-compatible API for open-weight
