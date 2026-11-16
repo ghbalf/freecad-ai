@@ -642,6 +642,13 @@ class AppConfig:
     # default) leaves the server unauthenticated, same as before this field
     # existed. MCP_AUTH_TOKEN overrides.
     mcp_server_auth_token: str = ""
+    # Start the MCP server when the workbench loads (#139). Off: before this
+    # flag the server only ever started from the toolbar button.
+    mcp_server_autostart: bool = False
+    # Commands shown in Settings → "Connect an external agent" (#139). None
+    # means the key is absent: load_config seeds the defaults once. After
+    # that the list is the user's; only "Reset to defaults" overwrites it.
+    mcp_agent_recipes: list | None = None
     # tools/list freshness hints (2026-07-28 CacheableResult). Both fields are
     # REQUIRED on the wire, so "do not cache" is ttl 0, not an empty value.
     # Defaults duplicated from freecad_ai.mcp.protocol: config.py must not
@@ -962,6 +969,9 @@ def load_config() -> AppConfig:
     # reads those params is built. rerank_params itself is legacy.)
     if config_loaded_ok:
         _migrate_param_store(cfg)
+        from .agent_recipes import seed_recipes
+        if seed_recipes(cfg):
+            save_config(cfg)
     return cfg
 
 

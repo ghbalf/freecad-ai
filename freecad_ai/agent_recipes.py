@@ -8,7 +8,9 @@ key once and backs "Reset to defaults". Append-only, like the provider list.
 Stdlib only, and no ``freecad_ai.mcp`` import: ``config`` reads this module.
 """
 
+import copy
 import json
+import os
 import shlex
 import string
 
@@ -108,3 +110,39 @@ def generic_snippets(url: str, token: str | None) -> dict:
         "header": _auth_header(token) if token else "",
         "json": json.dumps({"mcpServers": {"freecad": server}}, indent=2),
     }
+
+
+def _defaults() -> list[dict]:
+    return copy.deepcopy(list(DEFAULT_AGENT_RECIPES))
+
+
+def seed_recipes(cfg) -> bool:
+    """Fill an absent key (None) with the defaults, once. ``[]`` stays empty."""
+    if cfg.mcp_agent_recipes is not None:
+        return False
+    cfg.mcp_agent_recipes = _defaults()
+    return True
+
+
+def reset_recipes(current: list, config_dir: str, now) -> tuple[list, str | None]:
+    """The defaults, after backing ``current`` up when it differs from them.
+
+    The backup goes to ``<config_dir>/mcp_agent_recipes.<YYYYMMDD-HHMMSS>.json``
+    (``-1``, ``-2`` … on a same-second clash; never overwritten). An OSError
+    from writing it propagates, so a caller cannot replace what it failed to
+    save. Neither mutates ``current`` nor saves the config.
+    """
+    if current == list(DEFAULT_AGENT_RECIPES):
+        return _defaults(), None
+    stem = os.path.join(
+        config_dir, f"mcp_agent_recipes.{now.strftime('%Y%m%d-%H%M%S')}")
+    data = json.dumps(current, indent=2)
+    n = 0
+    while True:
+        path = f"{stem}{f'-{n}' if n else ''}.json"
+        try:
+            with open(path, "x") as f:  # "x": fail rather than overwrite
+                f.write(data)
+            return _defaults(), path
+        except FileExistsError:
+            n += 1
