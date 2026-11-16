@@ -30,7 +30,22 @@ PROTOCOL_VERSION = protocol.DEFAULT_PROTOCOL_VERSION
 _INTRO = (
     "Tools for inspecting and modifying geometry in a running FreeCAD "
     "session. Every call acts on the document that is open right now.")
-SERVER_INSTRUCTIONS = _INTRO + "\n\n" + TOOL_GUIDANCE
+
+
+def _agent_order(guidance: str) -> str:
+    """The **Important** rules first, then the rest in its own order.
+
+    Claude Code cuts instructions at about 4 KB (#144), so the most general
+    rules must lead; the tool list and the enclosure pattern absorb a cap.
+    Only the order changes, never the blocks: the chat prompt keeps its
+    bytes (#47) and both still share one source.
+    """
+    blocks = guidance.split("\n\n")
+    rules = [b for b in blocks if b.startswith("**Important")]
+    return "\n\n".join(rules + [b for b in blocks if b not in rules])
+
+
+SERVER_INSTRUCTIONS = _INTRO + "\n\n" + _agent_order(TOOL_GUIDANCE)
 # The name the rest of the tree already imports.
 DISCOVER_INSTRUCTIONS = SERVER_INSTRUCTIONS
 

@@ -54,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   umask: mode 664 on a typical Linux desktop, which every local user can
   read. An existing file is tightened the next time settings are saved.
   On Windows the mode has no effect (#140).
+- **External agents now get the key tool rules even when they cap the
+  server instructions.** Claude Code cuts them at about 4 KB, which lost
+  the "first-class tools over raw code" rule and the enclosure pattern
+  from our 5.3 KB text. The MCP server now sends the four **Important**
+  rules first, then the tool list and the enclosure pattern; nothing is
+  dropped, and the chat prompt is unchanged (#144).
 
 ## [0.34.0-alpha] - 2026-11-15
 

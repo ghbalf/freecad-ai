@@ -435,7 +435,9 @@ class TestServerDiscover:
         from freecad_ai.core.tool_guidance import TOOL_GUIDANCE
         result = _server()._handle(_modern("server/discover"))["result"]
         assert "FreeCAD" in result["instructions"]
-        assert TOOL_GUIDANCE in result["instructions"]
+        # Every block, not one substring: the server reorders them (#144).
+        for block in TOOL_GUIDANCE.split("\n\n"):
+            assert block in result["instructions"]
 
 
 def _registry_with(*names):
