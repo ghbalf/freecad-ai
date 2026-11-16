@@ -305,6 +305,21 @@ def _legacy(method, msg_id=1, **params):
     return {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}
 
 
+class TestInitializeInstructions:
+    """External agents get our FreeCAD tool rules at the handshake (#139).
+    This deliberately changes the legacy initialize bytes."""
+
+    @pytest.mark.parametrize("version", protocol.LEGACY_VERSIONS)
+    def test_legacy_initialize_carries_instructions(self, version):
+        resp = _server()._handle(
+            _legacy("initialize", protocolVersion=version))
+        assert resp["result"]["instructions"] == server_mod.SERVER_INSTRUCTIONS
+
+    def test_initialize_without_version_carries_instructions(self):
+        resp = _server()._handle(_legacy("initialize", capabilities={}))
+        assert resp["result"]["instructions"] == server_mod.SERVER_INSTRUCTIONS
+
+
 class TestInitializeEcho:
     def test_a_client_naming_no_version_gets_the_historical_default(self):
         resp = _server()._handle(_legacy("initialize", capabilities={}))
@@ -417,8 +432,10 @@ class TestServerDiscover:
         assert result["cacheScope"] == "public"
 
     def test_it_carries_instructions(self):
+        from freecad_ai.core.tool_guidance import TOOL_GUIDANCE
         result = _server()._handle(_modern("server/discover"))["result"]
         assert "FreeCAD" in result["instructions"]
+        assert TOOL_GUIDANCE in result["instructions"]
 
 
 def _registry_with(*names):
