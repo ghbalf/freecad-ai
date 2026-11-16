@@ -17,6 +17,8 @@ import logging
 import os
 import threading
 
+from ..utils.secret_source import resolve_secret
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
@@ -89,6 +91,9 @@ def resolve_auth_token(cfg=None):
     """Return the bearer token every request must present, or ``None`` to
     leave the server unauthenticated: the historical default (#59).
 
+    Either source may be ``file:/path`` or ``cmd:command`` (a keyring
+    lookup, say), as provider API keys may (#141).
+
     Env beats config, matching MCP_HOST / MCP_PORT / MCP_ALLOWED_HOSTS. An
     empty string from either source means "no token configured", not "an
     empty token is required": the transport must never be handed a token it
@@ -102,7 +107,10 @@ def resolve_auth_token(cfg=None):
     token = os.environ.get("MCP_AUTH_TOKEN")
     if not token and cfg is not None:
         token = getattr(cfg, "mcp_server_auth_token", "")
-    token = token or None
+    # A file:/cmd: source (#141) is read now, on the calling thread; a
+    # failure raises SecretSourceError, a ValueError, which both start paths
+    # already report. It never falls back to an unauthenticated server.
+    token = resolve_secret(token) if token and token.strip() else None
     if token is not None:
         try:
             token.encode("ascii")
