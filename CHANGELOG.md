@@ -20,8 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   fields as you edit them. Only the Claude Code command was tested by
   the maintainer; the others are copied from each tool's docs and say so.
 - **The agent commands live in `config.json` (`mcp_agent_recipes`).**
-  They are seeded once, on the first load, and never overwritten by a
-  release, so you can fix an entry when an agent CLI changes its syntax.
+  They are added once and never overwritten by a release, so you can fix
+  an entry when an agent CLI changes its syntax. Edit the file while
+  FreeCAD is closed; it writes its in-memory copy back on the next save.
   An empty list stays empty. "Reset to defaults" restores the shipped
   entries after writing the old list to
   `mcp_agent_recipes.<YYYYMMDD-HHMMSS>.json` in the config directory; if

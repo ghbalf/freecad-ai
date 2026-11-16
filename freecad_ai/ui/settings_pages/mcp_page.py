@@ -232,7 +232,8 @@ class McpPage(SettingsPage):
             "SettingsDialog",
             "Values follow the fields above and take effect the next time "
             "the MCP server starts. Edit the command list in config.json "
-            "(mcp_agent_recipes)."))
+            "(mcp_agent_recipes) while FreeCAD is closed: FreeCAD writes "
+            "its own copy back on the next save."))
         hint.setWordWrap(True)
         form.addRow("", hint)
 

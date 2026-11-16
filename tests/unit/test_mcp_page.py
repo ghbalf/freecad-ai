@@ -190,3 +190,10 @@ def test_command_shows_its_start(page):
     page.load(_agent_cfg())
     page.mcp_server_auth_token_edit.setText("x" * 80)
     assert page.agent_command_edit.cursorPosition() == 0
+
+
+def test_hint_says_edit_config_while_freecad_is_closed(page):
+    """The config is cached in memory and written back on any save, so an
+    edit made with FreeCAD open is silently lost (final review #2)."""
+    texts = " ".join(l.text() for l in page.findChildren(QtWidgets.QLabel))
+    assert "while FreeCAD is closed" in texts
