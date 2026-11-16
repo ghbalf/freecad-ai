@@ -47,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   by its own test; clients that ignore unknown or optional fields see no
   difference.
 
+### Fixed
+
+- **`config.json` is now private to its owner (mode 600).** It can hold
+  API keys and the MCP bearer token, but it was written with the default
+  umask: mode 664 on a typical Linux desktop, which every local user can
+  read. An existing file is tightened the next time settings are saved.
+  On Windows the mode has no effect (#140).
+
 ## [0.34.0-alpha] - 2026-11-15
 
 ### Added

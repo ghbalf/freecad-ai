@@ -997,7 +997,13 @@ def save_config(config: AppConfig):
     data = config.to_dict()
     tmp = CONFIG_FILE + ".tmp"
     try:
-        with open(tmp, "w") as f:
+        # 0600: the file can hold API keys and the MCP token, and the umask
+        # alone left it readable by every local user (#140). fchmod covers a
+        # stale .tmp from a crash, which O_CREAT would reopen with its old mode.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2)
             f.flush()
             os.fsync(f.fileno())

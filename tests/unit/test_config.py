@@ -253,6 +253,24 @@ class TestSaveLoad:
         assert loaded.provider.name == "ollama"
         assert loaded.max_tokens == 2048
 
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+    def test_config_file_is_private_to_its_owner(self, tmp_config_dir):
+        """config.json can hold API keys and the MCP token; a umask of 002
+        used to leave it 664, readable by every local user (#140)."""
+        old = os.umask(0o002)
+        try:
+            save_config(AppConfig())
+        finally:
+            os.umask(old)
+        assert os.stat(config_mod.CONFIG_FILE).st_mode & 0o777 == 0o600
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+    def test_saving_tightens_an_existing_world_readable_file(self, tmp_config_dir):
+        save_config(AppConfig())
+        os.chmod(config_mod.CONFIG_FILE, 0o664)
+        save_config(AppConfig())
+        assert os.stat(config_mod.CONFIG_FILE).st_mode & 0o777 == 0o600
+
     def test_load_returns_defaults_when_no_file(self, tmp_config_dir):
         c = load_config()
         assert c.mode == "plan"
