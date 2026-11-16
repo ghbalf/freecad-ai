@@ -55,7 +55,18 @@ def dialable_url(host: str, port: int) -> str:
 
 
 def _placeholders(text: str) -> set:
-    return {f for _, f, _, _ in string.Formatter().parse(text) if f is not None}
+    """Field names in ``text``. A format spec or conversion ("{url:d}",
+    "{url!x}") is reported as its own pseudo-name: parse() accepts them,
+    but .format() raises on them at render time."""
+    names = set()
+    for _, field, spec, conv in string.Formatter().parse(text):
+        if field is None:
+            continue
+        if spec or conv:
+            names.add(f"{field}:{spec}" if spec else f"{field}!{conv}")
+        else:
+            names.add(field)
+    return names
 
 
 def _problem(entry) -> str | None:

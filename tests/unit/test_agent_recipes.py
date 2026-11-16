@@ -2,6 +2,7 @@
 
 import json
 import shlex
+import pytest
 
 from freecad_ai.agent_recipes import (
     DEFAULT_AGENT_RECIPES, dialable_url, generic_snippets, render_command,
@@ -68,3 +69,20 @@ def test_generic_json_with_token():
     assert snip["header"] == "Authorization: Bearer tok"
     server = json.loads(snip["json"])["mcpServers"]["freecad"]
     assert server["headers"]["Authorization"] == "Bearer tok"
+
+
+@pytest.mark.parametrize("template", [
+    "x {url!x}", "x {url:d}", "x {url:{0}}", "x {url:>{header_args}}",
+    "x {url!s}",
+])
+def test_format_spec_or_conversion_is_rejected(template):
+    """parse() reports these as the field 'url', but .format raises at
+    render time, which took the whole MCP page down (final review #1)."""
+    entry = dict(DEFAULT_AGENT_RECIPES[0], template=template)
+    kept, warnings = valid_recipes([entry])
+    assert kept == [] and len(warnings) == 1
+
+
+def test_format_spec_in_header_arg_is_rejected():
+    entry = dict(DEFAULT_AGENT_RECIPES[0], header_arg=" -H {header:>9}")
+    assert valid_recipes([entry])[0] == []
