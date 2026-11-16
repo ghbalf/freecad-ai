@@ -58,10 +58,18 @@ def initgui(monkeypatch):
     monkeypatch.setitem(sys.modules, "FreeCADGui", gui)
     monkeypatch.setitem(sys.modules, "FreeCAD", app)
 
+    # Capture the deferred autostart instead of arming a real QTimer, which
+    # would fire inside some later test's processEvents().
+    import freecad_ai.ui.compat as compat
+    scheduled = []
+    monkeypatch.setattr(compat.QtCore, "QTimer", types.SimpleNamespace(
+        singleShot=lambda ms, fn: scheduled.append(fn)))
+
     source = (PROJECT_ROOT / "InitGui.py").read_text()
     namespace = {}
     exec(compile(source, "InitGui.py", "exec"), namespace)
     namespace["_REGISTERED_COMMANDS"] = registered
+    namespace["_SCHEDULED"] = scheduled
     return namespace
 
 
@@ -338,3 +346,24 @@ def test_autostart_hook_runs_under_freecad_exec(initgui, ticks, monkeypatch):
     scheduled[0]()
     assert len(calls) == 1
     assert ticks["FreeCADAI_ToggleMCPServer"] is True
+
+
+def test_initgui_fixture_arms_no_real_timer(initgui):
+    """Exec'ing InitGui.py must not leave a real QTimer behind: it fired
+    the autostart hook inside a later test's processEvents() (#139)."""
+    assert len(initgui["_SCHEDULED"]) == 1
+
+
+def test_autostart_hook_never_raises_into_the_event_loop(
+        initgui, monkeypatch):
+    import freecad_ai.config as config_mod
+
+    def _broken():
+        raise RuntimeError("config exploded")
+
+    monkeypatch.setattr(config_mod, "get_config", _broken)
+    warned = []
+    monkeypatch.setattr(sys.modules["FreeCAD"].Console, "PrintWarning",
+                        lambda m: warned.append(m))
+    initgui["_SCHEDULED"][0]()          # must not raise
+    assert "config exploded" in "".join(warned)

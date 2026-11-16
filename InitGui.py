@@ -372,16 +372,22 @@ Gui.addWorkbench(FreeCADAIWorkbench())
 try:
     # Self-contained on purpose: FreeCAD execs this file inline, so a
     # function body cannot see the module's own names (classes, aliases).
+    # It runs as a Qt slot, so it never raises: an exception there would be
+    # a stderr traceback instead of the promised Report-view line.
     def _autostart_mcp():
         import FreeCAD as _App
-        from freecad_ai.config import get_config
-        from freecad_ai.mcp.gui_server import autostart_mcp_server
-        from freecad_ai.ui.command_state import set_command_checked
-        if autostart_mcp_server(
-                get_config(),
-                log=lambda m: _App.Console.PrintMessage(m + "\n"),
-                warn=lambda m: _App.Console.PrintWarning(m + "\n")):
-            set_command_checked("FreeCADAI_ToggleMCPServer", True)
+        try:
+            from freecad_ai.config import get_config
+            from freecad_ai.mcp.gui_server import autostart_mcp_server
+            from freecad_ai.ui.command_state import set_command_checked
+            if autostart_mcp_server(
+                    get_config(),
+                    log=lambda m: _App.Console.PrintMessage(m + "\n"),
+                    warn=lambda m: _App.Console.PrintWarning(m + "\n")):
+                set_command_checked("FreeCADAI_ToggleMCPServer", True)
+        except Exception as e:
+            _App.Console.PrintWarning(
+                "FreeCAD AI: MCP server autostart failed: %s\n" % e)
 
     from freecad_ai.ui.compat import QtCore as _QtCore
     _QtCore.QTimer.singleShot(0, _autostart_mcp)
