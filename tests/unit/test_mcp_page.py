@@ -197,3 +197,99 @@ def test_hint_says_edit_config_while_freecad_is_closed(page):
     edit made with FreeCAD open is silently lost (final review #2)."""
     texts = " ".join(l.text() for l in page.findChildren(QtWidgets.QLabel))
     assert "while FreeCAD is closed" in texts
+
+
+# --- token from a file or command (#141) ------------------------------------
+
+posix = pytest.mark.skipif(os.name != "posix", reason="POSIX shell")
+
+
+def _agent_widget_texts(page):
+    return [page.agent_url_edit.text(), page.agent_header_edit.text(),
+            page.agent_json_edit.toPlainText(), page.agent_command_edit.text()]
+
+
+@pytest.fixture
+def run_counter(monkeypatch):
+    """Counts commands a cmd: source runs, still running them."""
+    import subprocess
+    calls, real = [], subprocess.run
+
+    def counting(*a, **k):
+        calls.append(a)
+        return real(*a, **k)
+    monkeypatch.setattr(subprocess, "run", counting)
+    return calls
+
+
+@posix
+def test_cmd_token_shows_placeholder(page):
+    page.load(_cfg())
+    page.mcp_server_auth_token_edit.setText("cmd:printf tok")
+    assert page.agent_header_edit.text() == \
+        "Authorization: Bearer <token from cmd:>"
+    assert not any("tok" in t.replace("<token from cmd:>", "")
+                   .replace("token", "") for t in _agent_widget_texts(page))
+
+
+def test_typing_a_cmd_token_runs_nothing(page, run_counter):
+    page.load(_cfg())
+    for prefix in ("c", "cmd:", "cmd:secret-tool lookup x y"):
+        page.mcp_server_auth_token_edit.setText(prefix)
+    assert run_counter == []
+
+
+@posix
+def test_copy_resolves_the_token(page, qapp):
+    page.load(_agent_cfg())
+    page.agent_combo.setCurrentIndex(page.agent_combo.findText("Claude Code"))
+    page.mcp_server_auth_token_edit.setText("cmd:printf s3cret")
+    page._copy_agent_text("command")
+    copied = qapp.clipboard().text()
+    assert "s3cret" in copied and "<token from" not in copied
+
+
+def test_copy_failure_warns_and_copies_nothing(page, qapp, monkeypatch, tmp_path):
+    from freecad_ai.ui.settings_pages import mcp_page
+    warned = []
+    monkeypatch.setattr(mcp_page.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a))
+    qapp.clipboard().setText("before")
+    page.load(_cfg())
+    page.mcp_server_auth_token_edit.setText(f"file:{tmp_path / 'missing'}")
+    page._copy_agent_text("header")
+    assert len(warned) == 1
+    assert qapp.clipboard().text() == "before"
+
+
+def test_literal_token_copy_unchanged(page, qapp):
+    page.load(_cfg())
+    page._copy_agent_text("header")
+    assert qapp.clipboard().text() == "Authorization: Bearer tok"
+    page._copy_agent_text("url")
+    assert qapp.clipboard().text() == "http://127.0.0.1:30000/mcp"
+
+
+def test_generate_asks_before_replacing_a_source(page, monkeypatch):
+    from freecad_ai.ui.settings_pages import mcp_page
+    page.load(_cfg())
+    page.mcp_server_auth_token_edit.setText("cmd:x")
+    monkeypatch.setattr(mcp_page.QMessageBox, "question",
+                        lambda *a, **k: mcp_page.QMessageBox.No)
+    page._generate_mcp_auth_token()
+    assert page.mcp_server_auth_token_edit.text() == "cmd:x"
+    monkeypatch.setattr(mcp_page.QMessageBox, "question",
+                        lambda *a, **k: mcp_page.QMessageBox.Yes)
+    page._generate_mcp_auth_token()
+    token = page.mcp_server_auth_token_edit.text()
+    assert token and ":" not in token
+
+
+def test_generate_on_literal_does_not_ask(page, monkeypatch):
+    from freecad_ai.ui.settings_pages import mcp_page
+    asked = []
+    monkeypatch.setattr(mcp_page.QMessageBox, "question",
+                        lambda *a, **k: asked.append(a))
+    page.load(_cfg())
+    page._generate_mcp_auth_token()
+    assert asked == [] and page.mcp_server_auth_token_edit.text() != "tok"
