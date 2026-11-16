@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Use FreeCAD AI from an external agent (#139).** Claude Code, Gemini
+  CLI, Qwen Code or any other MCP client can drive FreeCAD through the
+  built-in MCP server, signed in to that agent's own subscription, free
+  tier or local model. AI Settings → MCP Servers has a new box, "Connect
+  an external agent". It shows the endpoint URL, the
+  `Authorization: Bearer …` header (only when a token is set) and a
+  generic JSON config block, each with a Copy button. A dropdown gives a
+  ready-made command per agent. Values follow the host, port and token
+  fields as you edit them. Only the Claude Code command was tested by
+  the maintainer; the others are copied from each tool's docs and say so.
+- **The agent commands live in `config.json` (`mcp_agent_recipes`).**
+  They are added once and never overwritten by a release, so you can fix
+  an entry when an agent CLI changes its syntax. Edit the file while
+  FreeCAD is closed; it writes its in-memory copy back on the next save.
+  An empty list stays empty. "Reset to defaults" restores the shipped
+  entries after writing the old list to
+  `mcp_agent_recipes.<YYYYMMDD-HHMMSS>.json` in the config directory; if
+  that backup can't be written, nothing changes. When a default command
+  changes in a later release, this CHANGELOG will say so; click Reset to
+  pick it up.
+- **Start the MCP server when FreeCAD starts.** A new checkbox under
+  Built-in MCP Server, off by default. A failed start (port taken, a
+  token with non-ASCII characters) goes to the Report view as a warning,
+  never a dialog. The toolbar button reflects the running server.
+- **FreeCAD tool guidance as MCP server instructions.** Every client now
+  receives, in its `initialize` result, the same tool-strategy rules our
+  own chat gives the model: which tool for what, keep the parametric
+  history, first-class tools before `execute_code`, `create_body` before
+  sketch workflows. Both share one source, so they can't drift apart.
+
+### Changed
+
+- **The legacy-era `initialize` result now carries `instructions`.** All
+  three legacy protocol revisions (2025-03-26, 2025-06-18, 2025-11-25)
+  define the field. This is a deliberate change to those bytes, covered
+  by its own test; clients that ignore unknown or optional fields see no
+  difference.
+
 ## [0.34.0-alpha] - 2026-11-15
 
 ### Added

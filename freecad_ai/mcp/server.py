@@ -10,6 +10,7 @@ import os
 
 from .. import __version__
 from ..tools.registry import ToolRegistry
+from ..core.tool_guidance import TOOL_GUIDANCE
 from . import protocol
 from .transport import StdioServerTransport
 
@@ -22,11 +23,16 @@ SERVER_INFO = {"name": "FreeCAD AI", "version": __version__}
 # in the revision table.
 PROTOCOL_VERSION = protocol.DEFAULT_PROTOCOL_VERSION
 
-# Shown to a model before it picks a tool. Short on purpose: it is prepended
-# to a context window that the tool schemas already fill.
-DISCOVER_INSTRUCTIONS = (
+# Shown to a model before it picks a tool, at the legacy initialize and at
+# server/discover. The intro, then the same tool rules our chat prompt
+# carries (#139): an external agent such as Claude Code otherwise gets none
+# of the modelling know-how. About 1.3k tokens, paid once per agent session.
+_INTRO = (
     "Tools for inspecting and modifying geometry in a running FreeCAD "
     "session. Every call acts on the document that is open right now.")
+SERVER_INSTRUCTIONS = _INTRO + "\n\n" + TOOL_GUIDANCE
+# The name the rest of the tree already imports.
+DISCOVER_INSTRUCTIONS = SERVER_INSTRUCTIONS
 
 
 def _coerce_ttl(value, fallback):
@@ -167,6 +173,10 @@ class MCPServer:
                 "protocolVersion": speak,
                 "capabilities": {"tools": {}},
                 "serverInfo": SERVER_INFO,
+                # Every legacy revision we speak defines this optional field.
+                # Adding it deliberately changes the legacy initialize bytes
+                # (#139), unlike the #64 rule that the era split must not.
+                "instructions": SERVER_INSTRUCTIONS,
             })
 
         if method == "notifications/initialized":
@@ -223,7 +233,7 @@ class MCPServer:
         return protocol.make_response(msg_id, protocol.modern_result({
             "supportedVersions": list(protocol.MODERN_VERSIONS),
             "capabilities": {"tools": {}},
-            "instructions": DISCOVER_INSTRUCTIONS,
+            "instructions": SERVER_INSTRUCTIONS,
         }, SERVER_INFO, ttl_ms=ttl, cache_scope=scope))
 
     def _unknown_method(self, msg_id, method: str) -> dict | None:

@@ -58,10 +58,18 @@ def initgui(monkeypatch):
     monkeypatch.setitem(sys.modules, "FreeCADGui", gui)
     monkeypatch.setitem(sys.modules, "FreeCAD", app)
 
+    # Capture the deferred autostart instead of arming a real QTimer, which
+    # would fire inside some later test's processEvents().
+    import freecad_ai.ui.compat as compat
+    scheduled = []
+    monkeypatch.setattr(compat.QtCore, "QTimer", types.SimpleNamespace(
+        singleShot=lambda ms, fn: scheduled.append(fn)))
+
     source = (PROJECT_ROOT / "InitGui.py").read_text()
     namespace = {}
     exec(compile(source, "InitGui.py", "exec"), namespace)
     namespace["_REGISTERED_COMMANDS"] = registered
+    namespace["_SCHEDULED"] = scheduled
     return namespace
 
 
@@ -177,6 +185,33 @@ def test_toggle_reports_a_rejected_allowed_hosts_list(initgui, ticks,
     assert ticks["FreeCADAI_ToggleMCPServer"] is False
 
 
+def test_toggle_still_reports_failure(initgui, ticks, monkeypatch):
+    """The start path moved into gui_server.start_from_config (#139); a
+    bind failure must still be reported and leave the button unticked."""
+    for var in ("MCP_HOST", "MCP_PORT", "MCP_ALLOWED_HOSTS", "MCP_AUTH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    import freecad_ai.mcp.gui_server as gui_server
+
+    def _taken(self, *args, **kwargs):
+        raise OSError("in use")
+
+    monkeypatch.setattr(gui_server.ServerController, "start", _taken)
+    monkeypatch.setattr(gui_server.ServerController, "is_running",
+                        lambda self: False)
+    # Fails before the refactor exists, so the test proves the new seam.
+    assert hasattr(gui_server, "start_from_config")
+
+    command = initgui["ToggleMCPServerCommand"]()
+    reported = []
+    monkeypatch.setattr(type(command), "_report_failure",
+                        lambda self, host, port, exc: reported.append(exc))
+
+    command.Activated()
+
+    assert [str(e) for e in reported] == ["in use"]
+    assert ticks["FreeCADAI_ToggleMCPServer"] is False
+
+
 # ---------------------------------------------------------------------------
 # Restore from Backup (#49) — menu only, by decision
 # ---------------------------------------------------------------------------
@@ -285,3 +320,50 @@ def test_leaving_the_workbench_keeps_the_panel_when_the_flag_is_on(
     initgui["FreeCADAIWorkbench"].Deactivated(None)
 
     assert dock.calls == []
+
+
+def test_autostart_hook_runs_under_freecad_exec(initgui, ticks, monkeypatch):
+    """FreeCAD execs InitGui.py with separate globals and locals, so a
+    function defined there cannot see the file's own top-level names. The
+    deferred autostart hook must work under exactly that scoping (#139)."""
+    import freecad_ai.ui.compat as compat
+    import freecad_ai.mcp.gui_server as gui_server
+    import freecad_ai.config as config_mod
+
+    scheduled = []
+    fake_qtcore = types.SimpleNamespace(QTimer=types.SimpleNamespace(
+        singleShot=lambda ms, fn: scheduled.append(fn)))
+    monkeypatch.setattr(compat, "QtCore", fake_qtcore)
+    monkeypatch.setattr(config_mod, "get_config",
+                        lambda: types.SimpleNamespace(mcp_server_autostart=True))
+    calls = []
+    monkeypatch.setattr(gui_server, "autostart_mcp_server",
+                        lambda cfg, **kw: calls.append(cfg) or "http://x/mcp")
+
+    source = (PROJECT_ROOT / "InitGui.py").read_text()
+    exec(compile(source, "InitGui.py", "exec"), {}, {})
+    assert len(scheduled) == 1
+    scheduled[0]()
+    assert len(calls) == 1
+    assert ticks["FreeCADAI_ToggleMCPServer"] is True
+
+
+def test_initgui_fixture_arms_no_real_timer(initgui):
+    """Exec'ing InitGui.py must not leave a real QTimer behind: it fired
+    the autostart hook inside a later test's processEvents() (#139)."""
+    assert len(initgui["_SCHEDULED"]) == 1
+
+
+def test_autostart_hook_never_raises_into_the_event_loop(
+        initgui, monkeypatch):
+    import freecad_ai.config as config_mod
+
+    def _broken():
+        raise RuntimeError("config exploded")
+
+    monkeypatch.setattr(config_mod, "get_config", _broken)
+    warned = []
+    monkeypatch.setattr(sys.modules["FreeCAD"].Console, "PrintWarning",
+                        lambda m: warned.append(m))
+    initgui["_SCHEDULED"][0]()          # must not raise
+    assert "config exploded" in "".join(warned)
