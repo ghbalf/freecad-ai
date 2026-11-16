@@ -499,3 +499,9 @@ def test_autostart_reports_a_failing_source(monkeypatch, tmp_path):
                                 warn=lines.append) is None
     assert controller.starts == []
     assert len(lines) == 1 and str(missing) in lines[0]
+
+
+def test_blank_env_token_does_not_bypass_the_config_token(monkeypatch):
+    """A stray-space MCP_AUTH_TOKEN must not open a server that has a token."""
+    monkeypatch.setenv("MCP_AUTH_TOKEN", " ")
+    assert resolve_auth_token(_token_cfg("realtok")) == "realtok"

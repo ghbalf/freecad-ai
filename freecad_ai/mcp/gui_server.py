@@ -104,13 +104,15 @@ def resolve_auth_token(cfg=None):
     so a token that cannot be compared must fail loudly here, at start-up,
     rather than on every request the server ever receives.
     """
-    token = os.environ.get("MCP_AUTH_TOKEN")
+    # Stripped before the precedence test: a stray-space env value must fall
+    # through to the configured token, never turn authentication off.
+    token = (os.environ.get("MCP_AUTH_TOKEN") or "").strip()
     if not token and cfg is not None:
-        token = getattr(cfg, "mcp_server_auth_token", "")
+        token = (getattr(cfg, "mcp_server_auth_token", "") or "").strip()
     # A file:/cmd: source (#141) is read now, on the calling thread; a
     # failure raises SecretSourceError, a ValueError, which both start paths
     # already report. It never falls back to an unauthenticated server.
-    token = resolve_secret(token) if token and token.strip() else None
+    token = resolve_secret(token) if token else None
     if token is not None:
         try:
             token.encode("ascii")
