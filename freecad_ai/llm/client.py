@@ -18,7 +18,6 @@ try:
     _HAS_SSL = True
 except ImportError:
     _HAS_SSL = False
-import subprocess
 import time
 import urllib.request
 import urllib.error
@@ -28,7 +27,7 @@ from typing import Generator
 logger = logging.getLogger(__name__)
 
 from .providers import get_api_style
-from ..utils.proc import hidden_process_kwargs
+from ..utils.secret_source import SecretSourceError, resolve_secret
 
 # Anthropic API version header
 ANTHROPIC_API_VERSION = "2023-06-01"
@@ -295,51 +294,17 @@ class LLMClient:
         - ``file:/path/to/token`` — reads token from file (re-read each call)
         - ``cmd:some command``    — runs command, uses stdout as token
         - anything else           — used as-is (literal key)
+
+        A failing source is logged and yields "" (the request then fails
+        with the provider's own auth error), as before #141.
         """
-        key = self.api_key
-        if not key:
+        if not self.api_key:
             return ""
-
-        if key.startswith("file:"):
-            # Expand both ~ (all OSes) and env vars like %APPDATA% / $HOME
-            # so Windows users can write "file:%APPDATA%\\freecad-ai\\key".
-            path = os.path.expandvars(os.path.expanduser(key[5:].strip()))
-            try:
-                with open(path) as f:
-                    token = f.read().strip()
-                if not token:
-                    logger.warning("Token file '%s' is empty", path)
-                return token
-            except OSError as e:
-                logger.error("Failed to read token file '%s': %s", path, e)
-                return ""
-
-        if key.startswith("cmd:"):
-            command = key[4:].strip()
-            try:
-                result = subprocess.run(
-                    command, shell=True, capture_output=True, text=True,
-                    timeout=10,
-                    # shell=True runs cmd.exe on Windows, which would otherwise
-                    # open a console window for every key resolution.
-                    **hidden_process_kwargs(),
-                )
-                if result.returncode != 0:
-                    logger.error("Token command failed (rc=%d): %s",
-                                 result.returncode, result.stderr.strip())
-                    return ""
-                token = result.stdout.strip()
-                if not token:
-                    logger.warning("Token command produced empty output")
-                return token
-            except subprocess.TimeoutExpired:
-                logger.error("Token command timed out after 10s: %s", command)
-                return ""
-            except OSError as e:
-                logger.error("Failed to run token command: %s", e)
-                return ""
-
-        return key
+        try:
+            return resolve_secret(self.api_key)
+        except SecretSourceError as e:
+            logger.error("API key: %s", e)
+            return ""
 
     # ── Public API ──────────────────────────────────────────────
 
