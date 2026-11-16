@@ -48,7 +48,9 @@ from freecad_ai.ui.settings_dialog import SettingsDialog  # noqa: E402
 # over the one scrollable dialog, so a group whose box straddles a tile
 # boundary lands in both neighbouring shots. Retaken 2026-09-28 for #104's
 # fallback group, which pushed Behavior wholly into the second shot and
-# Skills wholly into the third.
+# Skills wholly into the third. Retaken 2026-11-16 for #139: the external
+# agent box made the dialog four tiles tall; -3 is scrolled to Skills, -4
+# to the bottom.
 WIKI_IMAGE = {
     "LLM Provider": ("settings-dialog.png",),
     "Utility models": ("settings-dialog.png",),
@@ -62,9 +64,9 @@ WIKI_IMAGE = {
     "Skills": ("settings-dialog-3.png",),
     "Hooks": ("settings-dialog-3.png",),
     "Editor": ("settings-dialog-3.png",),
-    "MCP Servers": ("settings-dialog-3.png",),
-    "Built-in MCP Server": ("settings-dialog-3.png",),
-    "Connect an external agent": ("settings-dialog-3.png",),
+    "MCP Servers": ("settings-dialog-3.png", "settings-dialog-4.png"),
+    "Built-in MCP Server": ("settings-dialog-3.png", "settings-dialog-4.png"),
+    "Connect an external agent": ("settings-dialog-4.png",),
 }
 
 # Checkbox labels are spelled out because they are what a reader compares

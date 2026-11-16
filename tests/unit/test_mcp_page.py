@@ -183,3 +183,10 @@ def test_reset_replaces_list_and_marks_dirty(page, monkeypatch, tmp_path):
     assert page.is_dirty()
     assert len(list(tmp_path.iterdir())) == 1
     assert page.agent_combo.count() == len(DEFAULT_AGENT_RECIPES)
+
+
+def test_command_shows_its_start(page):
+    """A long command must show 'claude mcp add …', not its tail."""
+    page.load(_agent_cfg())
+    page.mcp_server_auth_token_edit.setText("x" * 80)
+    assert page.agent_command_edit.cursorPosition() == 0

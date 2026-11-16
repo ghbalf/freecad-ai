@@ -273,6 +273,7 @@ class McpPage(SettingsPage):
         recipe = self._agent_valid[i]
         self.agent_command_edit.setText(
             render_command(recipe, snippets["url"], token))
+        self.agent_command_edit.setCursorPosition(0)    # show the agent's name
         docs = recipe["docs_url"]
         link = f'<a href="{docs}">{docs}</a>'
         if recipe["tested"]:
