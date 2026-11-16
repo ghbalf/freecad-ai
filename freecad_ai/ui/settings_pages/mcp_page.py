@@ -9,6 +9,8 @@ from ...agent_recipes import (
     dialable_url, generic_snippets, render_command, reset_recipes,
     valid_recipes)
 from ...i18n import translate
+from ...utils.secret_source import (
+    SecretSourceError, resolve_secret, secret_source_kind)
 from .base import SettingsPage
 
 logger = logging.getLogger(__name__)
@@ -123,6 +125,12 @@ class McpPage(SettingsPage):
         self.mcp_server_auth_token_edit = QLineEdit()
         self.mcp_server_auth_token_edit.setPlaceholderText(
             translate("SettingsDialog", "none — authentication disabled"))
+        self.mcp_server_auth_token_edit.setToolTip(translate(
+            "SettingsDialog",
+            "The token itself, file:/path to read it from a file, or "
+            "cmd:command to run, e.g. a keyring lookup "
+            "(cmd:secret-tool lookup service freecad-ai-mcp). "
+            "Read when the server starts."))
         auth_token_row_layout.addWidget(self.mcp_server_auth_token_edit)
         generate_token_btn = QPushButton(translate("SettingsDialog", "Generate"))
         generate_token_btn.clicked.connect(self._generate_mcp_auth_token)
@@ -171,15 +179,14 @@ class McpPage(SettingsPage):
                      self.mcp_server_auth_token_edit):
             edit.textChanged.connect(lambda _=None: self._refresh_agent_box())
 
-    def _copy_row(self, widget, text_of):
-        """``widget`` with a Copy button that copies ``text_of()``."""
+    def _copy_row(self, widget, key):
+        """``widget`` with a Copy button that copies agent text ``key``."""
         row = QWidget()
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.addWidget(widget)
         btn = QPushButton(translate("SettingsDialog", "Copy"))
-        btn.clicked.connect(
-            lambda: QtWidgets.QApplication.clipboard().setText(text_of()))
+        btn.clicked.connect(lambda: self._copy_agent_text(key))
         row_layout.addWidget(btn)
         return row
 
@@ -191,20 +198,20 @@ class McpPage(SettingsPage):
         self.agent_url_edit = QLineEdit()
         self.agent_url_edit.setReadOnly(True)
         form.addRow(translate("SettingsDialog", "URL:"), self._copy_row(
-            self.agent_url_edit, self.agent_url_edit.text))
+            self.agent_url_edit, "url"))
 
         self.agent_header_edit = QLineEdit()
         self.agent_header_edit.setReadOnly(True)
         self.agent_header_edit.setPlaceholderText(
             translate("SettingsDialog", "none — no bearer token set"))
         form.addRow(translate("SettingsDialog", "Header:"), self._copy_row(
-            self.agent_header_edit, self.agent_header_edit.text))
+            self.agent_header_edit, "header"))
 
         self.agent_json_edit = QPlainTextEdit()
         self.agent_json_edit.setReadOnly(True)
         self.agent_json_edit.setMaximumHeight(110)
         form.addRow(translate("SettingsDialog", "JSON config:"), self._copy_row(
-            self.agent_json_edit, self.agent_json_edit.toPlainText))
+            self.agent_json_edit, "json"))
 
         combo_row = QWidget()
         combo_layout = QHBoxLayout(combo_row)
@@ -221,7 +228,7 @@ class McpPage(SettingsPage):
         self.agent_command_edit = QLineEdit()
         self.agent_command_edit.setReadOnly(True)
         form.addRow(translate("SettingsDialog", "Command:"), self._copy_row(
-            self.agent_command_edit, self.agent_command_edit.text))
+            self.agent_command_edit, "command"))
 
         self.agent_note_label = QLabel()
         self.agent_note_label.setWordWrap(True)
@@ -258,22 +265,56 @@ class McpPage(SettingsPage):
         self.agent_combo.blockSignals(False)
         self._refresh_agent_box()
 
-    def _refresh_agent_box(self):
+    def _token_shown(self):
+        """The token as the box displays it.
+
+        A file:/cmd: source becomes a placeholder: typing must never run a
+        command (a keyring prompt per keystroke), and the box must never
+        show the secret the source exists to hide (#141).
+        """
+        field = self.mcp_server_auth_token_edit.text().strip()
+        kind = secret_source_kind(field)
+        return f"<token from {kind}:>" if kind else (field or None)
+
+    def _agent_texts(self, token):
+        """url/header/json/command for ``token``; command "" without a recipe."""
         host, port = self._parse_server_address(
             self.mcp_server_host_edit.text(), self.mcp_server_port_edit.text())
-        token = self.mcp_server_auth_token_edit.text().strip() or None
-        snippets = generic_snippets(dialable_url(host, port), token)
-        self.agent_url_edit.setText(snippets["url"])
-        self.agent_header_edit.setText(snippets["header"])
-        self.agent_json_edit.setPlainText(snippets["json"])
+        texts = dict(generic_snippets(dialable_url(host, port), token))
+        i = self.agent_combo.currentIndex()
+        texts["command"] = (
+            render_command(self._agent_valid[i], texts["url"], token)
+            if 0 <= i < len(self._agent_valid) else "")
+        return texts
+
+    def _copy_agent_text(self, key):
+        """Copy one agent text, reading a file:/cmd: token only if it shows."""
+        shown = self._token_shown()
+        text = self._agent_texts(shown)[key]
+        if secret_source_kind(self.mcp_server_auth_token_edit.text()) \
+                and shown in text:
+            try:
+                token = resolve_secret(self.mcp_server_auth_token_edit.text())
+            except SecretSourceError as e:
+                QMessageBox.warning(
+                    self, translate("SettingsDialog", "Token not copied"),
+                    str(e))
+                return
+            text = self._agent_texts(token)[key]
+        QtWidgets.QApplication.clipboard().setText(text)
+
+    def _refresh_agent_box(self):
+        texts = self._agent_texts(self._token_shown())
+        self.agent_url_edit.setText(texts["url"])
+        self.agent_header_edit.setText(texts["header"])
+        self.agent_json_edit.setPlainText(texts["json"])
         i = self.agent_combo.currentIndex()
         if not 0 <= i < len(self._agent_valid):
             self.agent_command_edit.setText("")
             self.agent_note_label.setText("")
             return
         recipe = self._agent_valid[i]
-        self.agent_command_edit.setText(
-            render_command(recipe, snippets["url"], token))
+        self.agent_command_edit.setText(texts["command"])
         self.agent_command_edit.setCursorPosition(0)    # show the agent's name
         docs = recipe["docs_url"]
         link = f'<a href="{docs}">{docs}</a>'
@@ -405,6 +446,16 @@ class McpPage(SettingsPage):
         place for the user to read it back from, whereas this field is that
         place: it stays whatever the user last set until they change it.
         """
+        if secret_source_kind(self.mcp_server_auth_token_edit.text()):
+            answer = QMessageBox.question(
+                self, translate("SettingsDialog", "Replace token source?"),
+                translate(
+                    "SettingsDialog",
+                    "The token is read from a file or command. Replace that "
+                    "with a new token stored in config.json?"),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
         self.mcp_server_auth_token_edit.setText(secrets.token_urlsafe(32))
 
     def _add_mcp_server(self):

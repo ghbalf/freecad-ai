@@ -455,3 +455,53 @@ def test_autostart_failure_goes_to_the_warning_channel(monkeypatch):
                          _RecordingController(fail=OSError("in use")),
                          log=infos.append, warn=warnings.append)
     assert infos == [] and len(warnings) == 1
+
+
+# --- token from a file or command (#141) ------------------------------------
+
+def _token_cfg(value):
+    return type("Cfg", (), {"mcp_server_auth_token": value})()
+
+
+def test_config_file_token_is_resolved(monkeypatch, tmp_path):
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    (tmp_path / "tok").write_text("from-file\n")
+    assert resolve_auth_token(_token_cfg(f"file:{tmp_path / 'tok'}")) == "from-file"
+
+
+@pytest.mark.skipif(__import__("os").name != "posix", reason="POSIX shell")
+def test_env_cmd_token_is_resolved(monkeypatch):
+    monkeypatch.setenv("MCP_AUTH_TOKEN", "cmd:printf envtok")
+    assert resolve_auth_token(_token_cfg("from-config")) == "envtok"
+
+
+def test_failing_source_raises_value_error(monkeypatch, tmp_path):
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    with pytest.raises(ValueError):
+        resolve_auth_token(_token_cfg(f"file:{tmp_path / 'missing'}"))
+
+
+def test_resolved_non_ascii_token_is_rejected(monkeypatch, tmp_path):
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    (tmp_path / "tok").write_text("tökén", encoding="utf-8")
+    with pytest.raises(ValueError, match="ASCII"):
+        resolve_auth_token(_token_cfg(f"file:{tmp_path / 'tok'}"))
+
+
+def test_autostart_reports_a_failing_source(monkeypatch, tmp_path):
+    """Never starts without the token the user configured a source for."""
+    from freecad_ai.mcp.gui_server import autostart_mcp_server
+    cfg = _autostart_cfg(monkeypatch)
+    missing = tmp_path / "missing"
+    cfg.mcp_server_auth_token = f"file:{missing}"
+    controller, lines = _RecordingController(), []
+    assert autostart_mcp_server(cfg, controller, log=lambda m: None,
+                                warn=lines.append) is None
+    assert controller.starts == []
+    assert len(lines) == 1 and str(missing) in lines[0]
+
+
+def test_blank_env_token_does_not_bypass_the_config_token(monkeypatch):
+    """A stray-space MCP_AUTH_TOKEN must not open a server that has a token."""
+    monkeypatch.setenv("MCP_AUTH_TOKEN", " ")
+    assert resolve_auth_token(_token_cfg("realtok")) == "realtok"

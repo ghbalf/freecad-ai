@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The MCP server token can come from a keyring or a file.** Like
+  provider API keys, the Settings field and `MCP_AUTH_TOKEN` now accept
+  `file:/path` and `cmd:command`, for example
+  `cmd:secret-tool lookup service freecad-ai-mcp`, so the token need
+  not sit in `config.json`. It is read when the server starts. If the
+  source fails, times out or is empty, the server does not start and the
+  Report view says why; it never runs without the token. A locked keyring
+  can hold FreeCAD for up to 10 seconds at autostart while its unlock
+  prompt is open. The "Connect an external agent" box still copies the
+  real token into the agent's config (#141; agent-side helpers: #146).
+
 - **Use FreeCAD AI from an external agent (#139).** Claude Code, Gemini
   CLI, Qwen Code or any other MCP client can drive FreeCAD through the
   built-in MCP server, signed in to that agent's own subscription, free
