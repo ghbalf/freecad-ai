@@ -969,9 +969,16 @@ def load_config() -> AppConfig:
     # reads those params is built. rerank_params itself is legacy.)
     if config_loaded_ok:
         _migrate_param_store(cfg)
+        # Seed the agent recipes (#139) in memory, and persist them only
+        # into a config.json that already exists, so the user finds the key
+        # there to edit. A fresh install gets no file just from loading,
+        # and a failed write must never break startup.
         from .agent_recipes import seed_recipes
-        if seed_recipes(cfg):
-            save_config(cfg)
+        if seed_recipes(cfg) and os.path.exists(CONFIG_FILE):
+            try:
+                save_config(cfg)
+            except OSError as e:
+                logger.warning("Could not save seeded agent recipes: %s", e)
     return cfg
 
 

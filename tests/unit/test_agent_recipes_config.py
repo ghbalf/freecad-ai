@@ -43,6 +43,22 @@ class TestSeedOnce:
         config_mod.load_config().mcp_agent_recipes[0]["name"] = "changed"
         assert DEFAULT_AGENT_RECIPES[0]["name"] == "Claude Code"
 
+    def test_no_config_file_seeds_in_memory_only(self, staged):
+        # A fresh install must not get a config.json just from loading.
+        assert config_mod.load_config().mcp_agent_recipes == list(
+            DEFAULT_AGENT_RECIPES)
+        assert not staged.exists()
+
+    def test_seed_save_failure_does_not_break_load(self, staged, monkeypatch):
+        staged.write_text('{"mode": "act"}')
+
+        def _disk_full(cfg):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(config_mod, "save_config", _disk_full)
+        cfg = config_mod.load_config()
+        assert cfg.mcp_agent_recipes == list(DEFAULT_AGENT_RECIPES)
+
     def test_empty_list_is_not_reseeded(self, staged):
         staged.write_text('{"mcp_agent_recipes": []}')
         assert config_mod.load_config().mcp_agent_recipes == []
