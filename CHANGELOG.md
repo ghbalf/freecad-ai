@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **The MCP server token can come from a keyring or a file.** Like
   provider API keys, the Settings field and `MCP_AUTH_TOKEN` now accept
   `file:/path` and `cmd:command`, for example
-  `cmd:secret-tool lookup service freecad-ai key mcp`, so the token need
+  `cmd:secret-tool lookup service freecad-ai-mcp`, so the token need
   not sit in `config.json`. It is read when the server starts. If the
   source fails, times out or is empty, the server does not start and the
   Report view says why; it never runs without the token. A locked keyring

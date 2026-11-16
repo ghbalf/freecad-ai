@@ -129,7 +129,7 @@ class McpPage(SettingsPage):
             "SettingsDialog",
             "The token itself, file:/path to read it from a file, or "
             "cmd:command to run, e.g. a keyring lookup "
-            "(cmd:secret-tool lookup service freecad-ai key mcp). "
+            "(cmd:secret-tool lookup service freecad-ai-mcp). "
             "Read when the server starts."))
         auth_token_row_layout.addWidget(self.mcp_server_auth_token_edit)
         generate_token_btn = QPushButton(translate("SettingsDialog", "Generate"))
