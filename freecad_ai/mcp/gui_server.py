@@ -230,3 +230,47 @@ def get_server_controller():
     if _controller is None:
         _controller = ServerController()
     return _controller
+
+
+def start_from_config(cfg, controller=None):
+    """Resolve address, allowlist and token from ``cfg``, then start.
+
+    Returns ``(url, token_required)``. Raises OSError (bind) or ValueError
+    (a "*" allowlist entry, a non-ASCII token) -- the toolbar toggle and
+    autostart share this one path, and each decides how to report.
+    """
+    controller = controller or get_server_controller()
+    host, port = resolve_server_address(cfg)
+    allowed_hosts = resolve_allowed_hosts(cfg)
+    auth_token = resolve_auth_token(cfg)
+    url = controller.start(host, port, allowed_hosts=allowed_hosts,
+                           auth_token=auth_token)
+    return url, bool(auth_token)
+
+
+def autostart_mcp_server(cfg, controller=None, log=None, warn=None):
+    """Start the server at workbench load when ``mcp_server_autostart`` is on.
+
+    Never raises and never shows a dialog: a failure at FreeCAD startup is
+    one Report-view line, sent to ``warn`` (default: ``log``). Returns the
+    URL, or None when nothing started.
+    """
+    log = log or logger.info
+    warn = warn or log
+    if not getattr(cfg, "mcp_server_autostart", False):
+        return None
+    controller = controller or get_server_controller()
+    if controller.is_running():
+        return None
+    try:
+        url, _ = start_from_config(cfg, controller)
+    except (OSError, ValueError) as exc:
+        try:
+            host, port = resolve_server_address(cfg)
+        except Exception:
+            host, port = "?", "?"
+        warn("FreeCAD AI: MCP server autostart on %s:%s failed: %s"
+            % (host, port, exc))
+        return None
+    log("FreeCAD AI: MCP server started with FreeCAD, listening on %s" % url)
+    return url

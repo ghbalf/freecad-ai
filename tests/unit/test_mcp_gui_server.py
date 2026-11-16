@@ -375,3 +375,83 @@ def test_the_advertised_url_is_the_streamable_endpoint():
 
 def test_get_server_controller_returns_one_shared_instance():
     assert get_server_controller() is get_server_controller()
+
+
+# --- autostart (#139) --------------------------------------------------------
+
+class _RecordingController:
+    """Records start calls; ``fail`` makes start raise like a taken port."""
+
+    def __init__(self, running=False, fail=None):
+        self.running, self.fail, self.starts = running, fail, []
+
+    def is_running(self):
+        return self.running
+
+    def start(self, host, port, allowed_hosts=None, auth_token=None):
+        self.starts.append((host, port))
+        if self.fail:
+            raise self.fail
+        return "http://%s:%d/mcp" % (host, port)
+
+
+def _autostart_cfg(monkeypatch, on=True):
+    from freecad_ai.config import AppConfig
+    for var in ("MCP_HOST", "MCP_PORT", "MCP_ALLOWED_HOSTS", "MCP_AUTH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    cfg = AppConfig()
+    cfg.mcp_server_autostart = on
+    cfg.mcp_server_port = 3456
+    return cfg
+
+
+def test_autostart_off_does_nothing(monkeypatch):
+    from freecad_ai.mcp.gui_server import autostart_mcp_server
+    controller = _RecordingController()
+    assert autostart_mcp_server(_autostart_cfg(monkeypatch, on=False),
+                                controller, log=lambda m: None) is None
+    assert controller.starts == []
+
+
+def test_autostart_on_starts(monkeypatch):
+    from freecad_ai.mcp.gui_server import autostart_mcp_server
+    controller, lines = _RecordingController(), []
+    url = autostart_mcp_server(_autostart_cfg(monkeypatch), controller,
+                               log=lines.append)
+    assert url == "http://127.0.0.1:3456/mcp"
+    assert any(url in line for line in lines)
+
+
+def test_autostart_bind_failure_logs_not_raises(monkeypatch):
+    from freecad_ai.mcp.gui_server import autostart_mcp_server
+    controller, lines = _RecordingController(fail=OSError("in use")), []
+    assert autostart_mcp_server(_autostart_cfg(monkeypatch), controller,
+                                log=lines.append) is None
+    assert any("in use" in line and "3456" in line for line in lines)
+
+
+def test_autostart_rejected_allowlist_logs_not_raises(monkeypatch):
+    from freecad_ai.mcp.gui_server import autostart_mcp_server
+    cfg = _autostart_cfg(monkeypatch)
+    monkeypatch.setenv("MCP_ALLOWED_HOSTS", "*")
+    controller, lines = _RecordingController(), []
+    assert autostart_mcp_server(cfg, controller, log=lines.append) is None
+    assert controller.starts == []
+    assert lines
+
+
+def test_autostart_skips_running_server(monkeypatch):
+    from freecad_ai.mcp.gui_server import autostart_mcp_server
+    controller = _RecordingController(running=True)
+    assert autostart_mcp_server(_autostart_cfg(monkeypatch), controller,
+                                log=lambda m: None) is None
+    assert controller.starts == []
+
+
+def test_autostart_failure_goes_to_the_warning_channel(monkeypatch):
+    from freecad_ai.mcp.gui_server import autostart_mcp_server
+    infos, warnings = [], []
+    autostart_mcp_server(_autostart_cfg(monkeypatch),
+                         _RecordingController(fail=OSError("in use")),
+                         log=infos.append, warn=warnings.append)
+    assert infos == [] and len(warnings) == 1

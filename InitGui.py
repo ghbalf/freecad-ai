@@ -249,8 +249,7 @@ class ToggleMCPServerCommand:
 
     def Activated(self, index=0):
         from freecad_ai.mcp.gui_server import (
-            get_server_controller, resolve_allowed_hosts,
-            resolve_auth_token, resolve_server_address)
+            get_server_controller, resolve_server_address, start_from_config)
         controller = get_server_controller()
 
         if controller.is_running():
@@ -267,10 +266,7 @@ class ToggleMCPServerCommand:
             # "*" entry, and MCP_ALLOWED_HOSTS can carry one even though the
             # Settings dialog strips it. Unhandled, that leaves the button
             # mid-state behind a console traceback nothing surfaces.
-            allowed_hosts = resolve_allowed_hosts(cfg)
-            auth_token = resolve_auth_token(cfg)
-            url = controller.start(host, port, allowed_hosts=allowed_hosts,
-                                   auth_token=auth_token)
+            url, auth_token = start_from_config(cfg, controller)
         except (OSError, ValueError) as exc:
             self._report_failure(host, port, exc)
             self._sync_action()  # a failed start must leave the button unticked
@@ -369,3 +365,25 @@ Gui.addCommand("FreeCADAI_ToggleKeepDock", ToggleKeepDockCommand())
 Gui.addCommand("FreeCADAI_ToggleMCPServer", ToggleMCPServerCommand())
 Gui.addCommand("FreeCADAI_RestoreBackup", RestoreBackupCommand())
 Gui.addWorkbench(FreeCADAIWorkbench())
+
+# "Start the MCP server with FreeCAD" (#139, off by default). Deferred to the
+# event loop so a slow bind never delays startup; any failure is one Report
+# view line, never a dialog. The toolbar tick follows the real server state.
+try:
+    # Self-contained on purpose: FreeCAD execs this file inline, so a
+    # function body cannot see the module's own names (classes, aliases).
+    def _autostart_mcp():
+        import FreeCAD as _App
+        from freecad_ai.config import get_config
+        from freecad_ai.mcp.gui_server import autostart_mcp_server
+        from freecad_ai.ui.command_state import set_command_checked
+        if autostart_mcp_server(
+                get_config(),
+                log=lambda m: _App.Console.PrintMessage(m + "\n"),
+                warn=lambda m: _App.Console.PrintWarning(m + "\n")):
+            set_command_checked("FreeCADAI_ToggleMCPServer", True)
+
+    from freecad_ai.ui.compat import QtCore as _QtCore
+    _QtCore.QTimer.singleShot(0, _autostart_mcp)
+except Exception:
+    pass
