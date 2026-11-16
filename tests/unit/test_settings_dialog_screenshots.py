@@ -64,6 +64,7 @@ WIKI_IMAGE = {
     "Editor": ("settings-dialog-3.png",),
     "MCP Servers": ("settings-dialog-3.png",),
     "Built-in MCP Server": ("settings-dialog-3.png",),
+    "Connect an external agent": ("settings-dialog-3.png",),
 }
 
 # Checkbox labels are spelled out because they are what a reader compares
@@ -114,7 +115,12 @@ RECORDED = {
     "MCP Servers": {
         "checkboxes": (), "combos": 0, "spins": 0, "fields": 0, "buttons": 3},
     "Built-in MCP Server": {
-        "checkboxes": (), "combos": 0, "spins": 0, "fields": 4, "buttons": 2},
+        # The autostart checkbox joined in #139.
+        "checkboxes": ("Start the MCP server when FreeCAD starts",),
+        "combos": 0, "spins": 0, "fields": 4, "buttons": 2},
+    "Connect an external agent": {
+        # #139: URL / header / command fields, four Copy buttons + Reset.
+        "checkboxes": (), "combos": 1, "spins": 0, "fields": 3, "buttons": 5},
     "Editor": {
         "checkboxes": (
             "Open hooks and user tools in the OS-default editor (instead of "

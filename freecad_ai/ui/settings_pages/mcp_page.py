@@ -1,10 +1,17 @@
 """MCP page: servers the workbench connects to, and its own MCP server."""
 
+import logging
 import secrets
+from datetime import datetime
 
 from ..compat import QtWidgets, QtGui
+from ...agent_recipes import (
+    dialable_url, generic_snippets, render_command, reset_recipes,
+    valid_recipes)
 from ...i18n import translate
 from .base import SettingsPage
+
+logger = logging.getLogger(__name__)
 
 QDialog = QtWidgets.QDialog
 QWidget = QtWidgets.QWidget
@@ -23,6 +30,14 @@ QTableWidget = QtWidgets.QTableWidget
 QTableWidgetItem = QtWidgets.QTableWidgetItem
 
 QListWidget = QtWidgets.QListWidget
+QPlainTextEdit = QtWidgets.QPlainTextEdit
+QMessageBox = QtWidgets.QMessageBox
+
+
+def _config_dir():
+    """Read at call time: tests sandbox the config dir."""
+    from ... import config
+    return config.CONFIG_DIR
 
 
 class McpPage(SettingsPage):
@@ -31,6 +46,8 @@ class McpPage(SettingsPage):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._mcp_configs = []
+        self._agent_recipes = []        # raw config value, saved as-is
+        self._agent_valid = []          # the entries the combo shows
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -120,6 +137,10 @@ class McpPage(SettingsPage):
 
         server_group_layout.addLayout(server_form)
 
+        self.mcp_server_autostart_check = QCheckBox(translate(
+            "SettingsDialog", "Start the MCP server when FreeCAD starts"))
+        server_group_layout.addWidget(self.mcp_server_autostart_check)
+
         # Unconditional, not shown only for non-loopback values: the loopback
         # default is already reachable by every local process, so hiding the
         # warning there would imply the default is authenticated. It is not,
@@ -144,6 +165,153 @@ class McpPage(SettingsPage):
         server_group.setLayout(server_group_layout)
         layout.addWidget(server_group)
 
+        layout.addWidget(self._build_agent_group())
+
+        for edit in (self.mcp_server_host_edit, self.mcp_server_port_edit,
+                     self.mcp_server_auth_token_edit):
+            edit.textChanged.connect(lambda _=None: self._refresh_agent_box())
+
+    def _copy_row(self, widget, text_of):
+        """``widget`` with a Copy button that copies ``text_of()``."""
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(widget)
+        btn = QPushButton(translate("SettingsDialog", "Copy"))
+        btn.clicked.connect(
+            lambda: QtWidgets.QApplication.clipboard().setText(text_of()))
+        row_layout.addWidget(btn)
+        return row
+
+    def _build_agent_group(self):
+        """Commands for connecting an outside agent to this server (#139)."""
+        group = QGroupBox(translate("SettingsDialog", "Connect an external agent"))
+        form = QFormLayout()
+
+        self.agent_url_edit = QLineEdit()
+        self.agent_url_edit.setReadOnly(True)
+        form.addRow(translate("SettingsDialog", "URL:"), self._copy_row(
+            self.agent_url_edit, self.agent_url_edit.text))
+
+        self.agent_header_edit = QLineEdit()
+        self.agent_header_edit.setReadOnly(True)
+        self.agent_header_edit.setPlaceholderText(
+            translate("SettingsDialog", "none — no bearer token set"))
+        form.addRow(translate("SettingsDialog", "Header:"), self._copy_row(
+            self.agent_header_edit, self.agent_header_edit.text))
+
+        self.agent_json_edit = QPlainTextEdit()
+        self.agent_json_edit.setReadOnly(True)
+        self.agent_json_edit.setMaximumHeight(110)
+        form.addRow(translate("SettingsDialog", "JSON config:"), self._copy_row(
+            self.agent_json_edit, self.agent_json_edit.toPlainText))
+
+        combo_row = QWidget()
+        combo_layout = QHBoxLayout(combo_row)
+        combo_layout.setContentsMargins(0, 0, 0, 0)
+        self.agent_combo = QComboBox()
+        self.agent_combo.currentIndexChanged.connect(
+            lambda _=0: self._refresh_agent_box())
+        combo_layout.addWidget(self.agent_combo, 1)
+        reset_btn = QPushButton(translate("SettingsDialog", "Reset to defaults"))
+        reset_btn.clicked.connect(self._reset_agent_recipes)
+        combo_layout.addWidget(reset_btn)
+        form.addRow(translate("SettingsDialog", "Agent:"), combo_row)
+
+        self.agent_command_edit = QLineEdit()
+        self.agent_command_edit.setReadOnly(True)
+        form.addRow(translate("SettingsDialog", "Command:"), self._copy_row(
+            self.agent_command_edit, self.agent_command_edit.text))
+
+        self.agent_note_label = QLabel()
+        self.agent_note_label.setWordWrap(True)
+        self.agent_note_label.setOpenExternalLinks(True)
+        form.addRow("", self.agent_note_label)
+
+        hint = QLabel(translate(
+            "SettingsDialog",
+            "Values follow the fields above and take effect the next time "
+            "the MCP server starts. Edit the command list in config.json "
+            "(mcp_agent_recipes)."))
+        hint.setWordWrap(True)
+        form.addRow("", hint)
+
+        group.setLayout(form)
+        return group
+
+    def _set_agent_recipes(self, recipes):
+        """Keep the raw list; show only the usable entries."""
+        self._agent_recipes = recipes
+        # None = key not seeded (config failed to load): nothing to warn about.
+        self._agent_valid, warnings = valid_recipes(
+            [] if recipes is None else recipes)
+        for w in warnings:
+            logger.warning("FreeCAD AI: %s", w)
+        current = self.agent_combo.currentText()
+        self.agent_combo.blockSignals(True)
+        self.agent_combo.clear()
+        for r in self._agent_valid:
+            self.agent_combo.addItem(r["name"])
+        idx = self.agent_combo.findText(current)
+        self.agent_combo.setCurrentIndex(max(idx, 0) if self._agent_valid else -1)
+        self.agent_combo.blockSignals(False)
+        self._refresh_agent_box()
+
+    def _refresh_agent_box(self):
+        host, port = self._parse_server_address(
+            self.mcp_server_host_edit.text(), self.mcp_server_port_edit.text())
+        token = self.mcp_server_auth_token_edit.text().strip() or None
+        snippets = generic_snippets(dialable_url(host, port), token)
+        self.agent_url_edit.setText(snippets["url"])
+        self.agent_header_edit.setText(snippets["header"])
+        self.agent_json_edit.setPlainText(snippets["json"])
+        i = self.agent_combo.currentIndex()
+        if not 0 <= i < len(self._agent_valid):
+            self.agent_command_edit.setText("")
+            self.agent_note_label.setText("")
+            return
+        recipe = self._agent_valid[i]
+        self.agent_command_edit.setText(
+            render_command(recipe, snippets["url"], token))
+        docs = recipe["docs_url"]
+        link = f'<a href="{docs}">{docs}</a>'
+        if recipe["tested"]:
+            self.agent_note_label.setText(link)
+        else:
+            self.agent_note_label.setText(translate(
+                "SettingsDialog",
+                "From that tool's docs, not tested by the maintainer.")
+                + " " + link)
+
+    def _reset_agent_recipes(self):
+        answer = QMessageBox.question(
+            self, translate("SettingsDialog", "Reset agent commands"),
+            translate(
+                "SettingsDialog",
+                "Replace the agent command list with the defaults?\n\n"
+                "The current list is first saved to a backup file in the "
+                "config directory. The change is saved when you press OK "
+                "in this dialog."))
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            defaults, backup = reset_recipes(
+                self._agent_recipes, _config_dir(), datetime.now())
+        except OSError as e:
+            QMessageBox.warning(
+                self, translate("SettingsDialog", "Reset agent commands"),
+                translate("SettingsDialog",
+                          "Could not write the backup, nothing was changed:")
+                + f"\n{e}")
+            return
+        self._set_agent_recipes(defaults)
+        if backup:
+            logger.info("FreeCAD AI: previous agent commands saved to %s", backup)
+            QMessageBox.information(
+                self, translate("SettingsDialog", "Reset agent commands"),
+                translate("SettingsDialog", "Previous list saved to:")
+                + f"\n{backup}")
+
     def _show(self, cfg, label):
         self.mcp_list.clear()
         self._mcp_configs = [dict(e) for e in cfg.mcp_servers]
@@ -154,6 +322,8 @@ class McpPage(SettingsPage):
         self.mcp_server_allowed_hosts_edit.setText(
             ", ".join(cfg.mcp_server_allowed_hosts or []))
         self.mcp_server_auth_token_edit.setText(cfg.mcp_server_auth_token or "")
+        self.mcp_server_autostart_check.setChecked(bool(cfg.mcp_server_autostart))
+        self._set_agent_recipes(cfg.mcp_agent_recipes)
 
     def _values(self):
         # Parsed, so re-typing the same host is not a change.
@@ -167,6 +337,8 @@ class McpPage(SettingsPage):
                 self.mcp_server_allowed_hosts_edit.text()),
             "mcp_server_auth_token":
                 self.mcp_server_auth_token_edit.text().strip(),
+            "mcp_server_autostart": self.mcp_server_autostart_check.isChecked(),
+            "mcp_agent_recipes": self._agent_recipes,
         }
 
     @staticmethod
