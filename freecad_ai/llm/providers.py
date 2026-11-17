@@ -49,7 +49,7 @@ PROVIDERS = {
     },
     "opper": {
         "base_url": "https://api.opper.ai/v3/compat",
-        "default_model": "claude-sonnet-5-5",
+        "default_model": "anthropic/claude-sonnet-5-5",
         "api_style": "openai",
         "supports_tools": True,
     },
