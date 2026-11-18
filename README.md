@@ -179,6 +179,7 @@ To populate the stores once:
 | Perplexity | Yes | Orchestrator API (OpenAI-compatible) |
 | DemonRoute | Yes | Open-weight model gateway (OpenAI-compatible), prepaid. Prompts are forwarded to third-party upstream hosts (mainly Featherless, per the operator) with their own retention policies; see [DemonRoute's privacy page](https://demonroute.com/privacy) |
 | Runcrate | Yes (`rc_live_...`) | Open-weight models (DeepSeek, GLM, Qwen, Kimi and others) via an OpenAI-compatible API, prepaid. Keys from https://www.runcrate.ai/dashboard/api-keys, model ids at https://www.runcrate.ai/inference/pricing. Prompts are processed by third-party model providers under their own terms; see [Runcrate's privacy policy](https://www.runcrate.ai/privacy) |
+| Synap | Yes | Open-weight models via an OpenAI-compatible API (synap402.com), prepaid, free tier available. Model catalog and live prices at https://synap402.com/v1/models. Does not retain prompt or completion text for API requests or train on it; see [Synap's privacy policy](https://synap402.com/privacy.html) |
 | Custom | Varies | Any OpenAI-compatible endpoint |
 
 ### Connection profiles

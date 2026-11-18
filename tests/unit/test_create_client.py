@@ -106,6 +106,14 @@ class TestApiKeyFallback:
         assert supports_tools("runcrate") is True
         assert PROVIDERS["runcrate"]["base_url"] == "https://api.runcrate.ai/v1"
 
+    def test_synap_is_registered(self):
+        from freecad_ai.llm.providers import (
+            PROVIDERS, get_api_style, get_provider_names, supports_tools)
+        assert "synap" in get_provider_names()
+        assert get_api_style("synap") == "openai"
+        assert supports_tools("synap") is True
+        assert PROVIDERS["synap"]["base_url"] == "https://synap402.com/v1"
+
     def test_both_empty_yields_empty(self):
         cfg = _cfg()
         cfg.active_profile = "local"

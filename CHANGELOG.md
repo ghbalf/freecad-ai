@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Synap provider preset.** An OpenAI-compatible API for open-weight
+  models at `https://synap402.com/v1`, listed after DemonRoute and
+  Runcrate in the Settings dialog. The default model is `synap-v1`
+  (an auto-routing alias). Keys and a free tier come from
+  https://synap402.com/account. Model catalog and live prices are public
+  at https://synap402.com/v1/models. Proposed by someone who works on
+  Synap/Linkrra, who disclosed the affiliation; no revenue share, referral
+  or tracking is involved. Tool calling was not re-tested against the
+  add-on's own `LLMClient` in this PR; the underlying models (Qwen3 family
+  and others) support OpenAI-style tool calls per Synap's own API docs.
+
 - **The MCP server token can come from a keyring or a file.** Like
   provider API keys, the Settings field and `MCP_AUTH_TOKEN` now accept
   `file:/path` and `cmd:command`, for example
