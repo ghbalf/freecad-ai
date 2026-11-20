@@ -43,8 +43,45 @@ class SettingsDialog(QDialog):
         width = self.sizeHint().width() + self.style().pixelMetric(
             QtWidgets.QStyle.PM_ScrollBarExtent)
         self.setMinimumWidth(width)
-        self.resize(width, 700)
+        w, h = self._saved_size() or (width, 700)
+        avail = self.screen().availableGeometry()
+        # Never below the layout's width (#78), never beyond the screen
+        # (saved on a big monitor, reopened on a laptop).
+        self.resize(max(width, min(w, avail.width())),
+                    max(self.minimumHeight(), min(h, avail.height())))
+        # Only a size the user changed is written back: an untouched
+        # dialog changes no config field, size included.
+        self._opened_size = (self.width(), self.height())
         self._load_from_config()
+
+    @staticmethod
+    def _saved_size():
+        """The remembered (w, h), or None for a missing or hand-mangled value."""
+        size = get_config().settings_dialog_size
+        if (isinstance(size, list) and len(size) == 2
+                and all(isinstance(v, int) and not isinstance(v, bool) and v > 0
+                        for v in size)):
+            return tuple(size)
+        return None
+
+    def _remember_size(self) -> bool:
+        """Put a user-changed size into the config. True if it changed."""
+        size = [self.width(), self.height()]
+        cfg = get_config()
+        if tuple(size) == self._opened_size or cfg.settings_dialog_size == size:
+            return False
+        cfg.settings_dialog_size = size
+        return True
+
+    def done(self, result):
+        """Remember the size on every close: OK, Cancel, Esc or the X.
+
+        OK has already folded it into its own save, so this writes only
+        when nothing else did.
+        """
+        if self._remember_size():
+            save_current_config()
+        super().done(result)
 
     def _build_ui(self):
         outer_layout = QVBoxLayout(self)
@@ -192,6 +229,7 @@ class SettingsDialog(QDialog):
         for page in (self.behavior_page, self.tools_page, self.mcp_page,
                      self.provider_page):
             page.apply_to(cfg)
+        self._remember_size()  # one write for OK, not a second in done()
         save_current_config()
         # The chat panel (and anything else showing config-derived state)
         # refreshes from this, whichever window saved (#99).

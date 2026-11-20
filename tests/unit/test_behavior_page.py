@@ -42,7 +42,7 @@ def _group_of(widget):
 
 def test_group_boxes_in_order(page):
     titles = [g.title() for g in page.findChildren(QtWidgets.QGroupBox)]
-    assert titles == ["Limits", "Behavior", "System Prompt"]
+    assert titles == ["Limits", "Behavior", "Saved Files", "System Prompt"]
 
 
 def test_the_limits_live_in_limits(page):
@@ -161,3 +161,55 @@ def test_max_output_tokens_tooltip_mentions_the_row(page):
     tip = page.max_tokens_spin.toolTip()
     assert "max_tokens row" in tip
     assert "determined by the model" not in tip
+
+
+# --- Saved files / retention (forum promise: the knobs were JSON-only) -----
+
+_RETENTION = {
+    "max_saved_conversations": "conversations_keep_spin",
+    "max_session_logs": "session_logs_keep_spin",
+    "max_backups": "backups_keep_spin",
+    "max_retention_age_days": "retention_days_spin",
+}
+
+
+def test_the_retention_settings_live_in_saved_files(page):
+    for attr in _RETENTION.values():
+        assert _group_of(getattr(page, attr)) == "Saved Files"
+
+
+def test_retention_shows_the_config(page):
+    cfg = AppConfig(max_saved_conversations=50, max_session_logs=20,
+                    max_backups=10, max_retention_age_days=90)
+    page.load(cfg)
+    for key, attr in _RETENTION.items():
+        assert getattr(page, attr).value() == getattr(cfg, key)
+
+
+def test_zero_reads_as_keep_all(page):
+    """0 disables the rule (config.prune_oldest_files); the box must say so."""
+    page.load(AppConfig())
+    for attr in _RETENTION.values():
+        spin = getattr(page, attr)
+        assert spin.value() == 0
+        assert spin.minimum() == 0
+        assert spin.specialValueText()  # shown instead of a bare "0"
+
+
+def test_retention_edits_write_only_what_changed(page):
+    page.load(AppConfig())
+    page.backups_keep_spin.setValue(5)
+    page.retention_days_spin.setValue(30)
+    target = AppConfig(max_saved_conversations=7)
+    page.apply_to(target)
+    assert target.max_backups == 5
+    assert target.max_retention_age_days == 30
+    assert target.max_saved_conversations == 7  # untouched
+    assert target.max_session_logs == 0
+
+
+def test_retention_ranges_hold_realistic_values(page):
+    page.load(AppConfig(max_saved_conversations=10000,
+                        max_retention_age_days=3650))
+    assert page.conversations_keep_spin.value() == 10000
+    assert page.retention_days_spin.value() == 3650

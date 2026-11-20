@@ -50,7 +50,9 @@ from freecad_ai.ui.settings_dialog import SettingsDialog  # noqa: E402
 # fallback group, which pushed Behavior wholly into the second shot and
 # Skills wholly into the third. Retaken 2026-11-16 for #139: the external
 # agent box made the dialog four tiles tall; -3 is scrolled to Skills, -4
-# to the bottom.
+# to the bottom. Retaken 2026-11-20 (-2 and -3 only) for the Saved Files
+# group: -2 is scrolled to Limits, -3 to Tool Reranking, so no group falls
+# in the gap the 212 px push would otherwise open between them.
 WIKI_IMAGE = {
     "LLM Provider": ("settings-dialog.png",),
     "Utility models": ("settings-dialog.png",),
@@ -58,14 +60,15 @@ WIKI_IMAGE = {
     "Model Parameters": ("settings-dialog.png",),
     "Limits": ("settings-dialog.png", "settings-dialog-2.png"),
     "Behavior": ("settings-dialog-2.png",),
+    "Saved Files": ("settings-dialog-2.png",),
     "System Prompt": ("settings-dialog-2.png",),
-    "Tool Reranking": ("settings-dialog-2.png",),
-    "User Tools": ("settings-dialog-2.png", "settings-dialog-3.png"),
+    "Tool Reranking": ("settings-dialog-2.png", "settings-dialog-3.png"),
+    "User Tools": ("settings-dialog-3.png",),
     "Skills": ("settings-dialog-3.png",),
-    "Hooks": ("settings-dialog-3.png",),
-    "Editor": ("settings-dialog-3.png",),
+    "Hooks": ("settings-dialog-3.png", "settings-dialog-4.png"),
+    "Editor": ("settings-dialog-3.png", "settings-dialog-4.png"),
     "MCP Servers": ("settings-dialog-3.png", "settings-dialog-4.png"),
-    "Built-in MCP Server": ("settings-dialog-3.png", "settings-dialog-4.png"),
+    "Built-in MCP Server": ("settings-dialog-4.png",),
     "Connect an external agent": ("settings-dialog-4.png",),
 }
 
@@ -91,6 +94,9 @@ RECORDED = {
         # own Limits group in #101's Task 6.
         "checkboxes": (), "combos": 0, "spins": 0, "fields": 0, "buttons": 3},
     "Limits": {
+        "checkboxes": (), "combos": 0, "spins": 4, "fields": 0, "buttons": 0},
+    "Saved Files": {
+        # Retention: conversations, session logs, backups, age in days.
         "checkboxes": (), "combos": 0, "spins": 4, "fields": 0, "buttons": 0},
     "System Prompt": {
         "checkboxes": (), "combos": 0, "spins": 0, "fields": 0, "buttons": 1},

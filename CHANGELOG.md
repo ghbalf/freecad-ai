@@ -87,6 +87,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   referral or tracking is involved. Tool calling with `synap-v1` was tested
   live through the add-on's own `LLMClient`, streaming and non-streaming.
 
+- **Retention limits in the Settings dialog.** A new *Saved Files* group
+  under Behavior (also on Edit → Preferences → FreeCAD AI → Behavior) sets how
+  many saved conversations, session logs and document backups to keep, and
+  an age limit in days for all three. Until now these were `config.json`
+  only. Every box defaults to **keep all**, so nothing changes until you set
+  a limit; older files go the next time one of that kind is saved.
+- **The Settings dialog remembers its size.** It reopens at the size you
+  last closed it at, whether with Save or Cancel (`settings_dialog_size`).
+  It never opens narrower than its layout needs (#78) or larger than the
+  screen.
+
 ### Changed
 
 - **The legacy-era `initialize` result now carries `instructions`.** All
