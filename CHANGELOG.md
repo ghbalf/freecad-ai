@@ -77,6 +77,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Contributed by @Felixkw12 (#138), who disclosed the affiliation; no revenue
   share, referral or tracking is involved.
 
+- **Synap provider preset.** An OpenAI-compatible API for open-weight
+  models at `https://synap402.com/v1`, listed after DemonRoute and
+  Runcrate in the Settings dialog. The default model is `synap-v1`
+  (an auto-routing alias). Keys and a free tier come from
+  https://synap402.com/account. Model catalog and live prices are public
+  at https://synap402.com/v1/models. Contributed by @weare-linkrra (#148), who
+  works on Synap/Linkrra and disclosed the affiliation; no revenue share,
+  referral or tracking is involved. Tool calling with `synap-v1` was tested
+  live through the add-on's own `LLMClient`, streaming and non-streaming.
+
 ### Changed
 
 - **The legacy-era `initialize` result now carries `instructions`.** All

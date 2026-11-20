@@ -192,6 +192,12 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "synap": {
+        "base_url": "https://synap402.com/v1",
+        "default_model": "synap-v1",
+        "api_style": "openai",
+        "supports_tools": True,
+    },
     "custom": {
         "base_url": "",
         "default_model": "",
