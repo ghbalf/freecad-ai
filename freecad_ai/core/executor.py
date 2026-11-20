@@ -777,18 +777,11 @@ def execute_code(code: str, timeout: int | None = None, sandbox: bool = True,
                 except OSError:
                     pass
 
+    # No active document is fine: the code may be what creates one (#149).
+    # It then runs without an undo transaction — there is nothing to undo
+    # into — and whatever document it leaves active becomes the GUI's.
     target_doc = get_synced_active_document()
-    if target_doc is None:
-        return ExecutionResult(
-            success=False,
-            stdout="",
-            stderr=(
-                "No active document — open a document in FreeCAD or click "
-                "its tab so it is the focused window."
-            ),
-            code=code,
-        )
-    doc_name = target_doc.Name
+    doc_name = target_doc.Name if target_doc is not None else None
 
     # Build execution namespace with FreeCAD modules
     namespace = _build_namespace()
@@ -838,12 +831,17 @@ def execute_code(code: str, timeout: int | None = None, sandbox: bool = True,
         if doc:
             doc.commitTransaction()
         import FreeCAD as App
-        d = App.getDocument(doc_name)
-        if d is None:
-            raise RuntimeError(
-                "Target document is no longer available after execution."
-            )
-        refresh_gui_for_document(d)
+        if doc_name is not None:
+            d = App.getDocument(doc_name)
+            if d is None:
+                raise RuntimeError(
+                    "Target document is no longer available after execution."
+                )
+        else:
+            from .active_document import resolve_active_document
+            d = resolve_active_document()
+        if d is not None:
+            refresh_gui_for_document(d)
     except Exception:
         success = False
         traceback.print_exc(file=captured_err)

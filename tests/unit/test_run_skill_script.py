@@ -229,7 +229,7 @@ def test_path_containing_subprocess_is_not_a_false_positive(tmp_path, monkeypatc
     monkeypatch.setattr(ad, "get_synced_active_document", lambda: None)
     result = ft._handle_run_skill_script("subprocess-helpers", "scripts/a.py")
     assert "validation failed" not in (result.error or "")
-    assert "No active document" in result.error  # got past Layer 1
+    assert result.output == "ok\n"  # got past Layer 1: the script ran
 
 
 def test_internal_symlinked_dir_is_validated(skill, calls, monkeypatch):

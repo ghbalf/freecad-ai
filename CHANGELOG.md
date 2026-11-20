@@ -9,15 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Opper provider preset.** A European AI gateway with an OpenAI-compatible
-  API, listed next to Requesty. Base URL `https://api.opper.ai/v3/compat`,
-  default model `anthropic/claude-sonnet-5-5`. Opper stores no prompts or
-  responses by default; requests go to the model provider that serves them;
-  each model's provider, region and retention are listed at
-  https://opper.ai/models. Keys come from
-  https://platform.opper.ai.
-  Contributed by @Felixkw12 (#138), who disclosed the affiliation; no revenue
-  share, referral or tracking is involved.
+- **Use FreeCAD AI from an external agent (#139).** Claude Code, Gemini
+  CLI, Qwen Code or any other MCP client can drive FreeCAD through the
+  built-in MCP server, signed in to that agent's own subscription, free
+  tier or local model. AI Settings → MCP Servers has a new box, "Connect
+  an external agent". It shows the endpoint URL, the
+  `Authorization: Bearer …` header (only when a token is set) and a
+  generic JSON config block, each with a Copy button. A dropdown gives a
+  ready-made command per agent. Values follow the host, port and token
+  fields as you edit them. Only the Claude Code command was tested by
+  the maintainer; the others are copied from each tool's docs and say so.
+
+- **The agent commands live in `config.json` (`mcp_agent_recipes`).**
+  They are added once and never overwritten by a release, so you can fix
+  an entry when an agent CLI changes its syntax. Edit the file while
+  FreeCAD is closed; it writes its in-memory copy back on the next save.
+  An empty list stays empty. "Reset to defaults" restores the shipped
+  entries after writing the old list to
+  `mcp_agent_recipes.<YYYYMMDD-HHMMSS>.json` in the config directory; if
+  that backup can't be written, nothing changes. When a default command
+  changes in a later release, this CHANGELOG will say so; click Reset to
+  pick it up.
+
+- **Start the MCP server when FreeCAD starts.** A new checkbox under
+  Built-in MCP Server, off by default. A failed start (port taken, a
+  token with non-ASCII characters) goes to the Report view as a warning,
+  never a dialog. The toolbar button reflects the running server.
+
+- **FreeCAD tool guidance as MCP server instructions.** Every client now
+  receives, in its `initialize` result, the same tool-strategy rules our
+  own chat gives the model: which tool for what, keep the parametric
+  history, first-class tools before `execute_code`, `create_body` before
+  sketch workflows. Both share one source, so they can't drift apart.
 
 - **The MCP server token can come from a keyring or a file.** Like
   provider API keys, the Settings field and `MCP_AUTH_TOKEN` now accept
@@ -30,35 +53,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   prompt is open. The "Connect an external agent" box still copies the
   real token into the agent's config (#141; agent-side helpers: #146).
 
-- **Use FreeCAD AI from an external agent (#139).** Claude Code, Gemini
-  CLI, Qwen Code or any other MCP client can drive FreeCAD through the
-  built-in MCP server, signed in to that agent's own subscription, free
-  tier or local model. AI Settings → MCP Servers has a new box, "Connect
-  an external agent". It shows the endpoint URL, the
-  `Authorization: Bearer …` header (only when a token is set) and a
-  generic JSON config block, each with a Copy button. A dropdown gives a
-  ready-made command per agent. Values follow the host, port and token
-  fields as you edit them. Only the Claude Code command was tested by
-  the maintainer; the others are copied from each tool's docs and say so.
-- **The agent commands live in `config.json` (`mcp_agent_recipes`).**
-  They are added once and never overwritten by a release, so you can fix
-  an entry when an agent CLI changes its syntax. Edit the file while
-  FreeCAD is closed; it writes its in-memory copy back on the next save.
-  An empty list stays empty. "Reset to defaults" restores the shipped
-  entries after writing the old list to
-  `mcp_agent_recipes.<YYYYMMDD-HHMMSS>.json` in the config directory; if
-  that backup can't be written, nothing changes. When a default command
-  changes in a later release, this CHANGELOG will say so; click Reset to
-  pick it up.
-- **Start the MCP server when FreeCAD starts.** A new checkbox under
-  Built-in MCP Server, off by default. A failed start (port taken, a
-  token with non-ASCII characters) goes to the Report view as a warning,
-  never a dialog. The toolbar button reflects the running server.
-- **FreeCAD tool guidance as MCP server instructions.** Every client now
-  receives, in its `initialize` result, the same tool-strategy rules our
-  own chat gives the model: which tool for what, keep the parametric
-  history, first-class tools before `execute_code`, `create_body` before
-  sketch workflows. Both share one source, so they can't drift apart.
+- **`create_document` and `open_document` tools.** An agent can now
+  start a new document or open a saved `.FCStd` itself. When the file is
+  already open, `open_document` switches to it. Modelling tools that need a
+  document now name these two in their error (#149).
+
+- **Opper provider preset.** A European AI gateway with an OpenAI-compatible
+  API, listed next to Requesty. Base URL `https://api.opper.ai/v3/compat`,
+  default model `anthropic/claude-sonnet-5-5`. Opper stores no prompts or
+  responses by default; requests go to the model provider that serves them;
+  each model's provider, region and retention are listed at
+  https://opper.ai/models. Keys come from
+  https://platform.opper.ai.
+  Contributed by @Felixkw12 (#138), who disclosed the affiliation; no revenue
+  share, referral or tracking is involved.
 
 ### Changed
 
@@ -75,12 +83,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   umask: mode 664 on a typical Linux desktop, which every local user can
   read. An existing file is tightened the next time settings are saved.
   On Windows the mode has no effect (#140).
+
 - **External agents now get the key tool rules even when they cap the
   server instructions.** Claude Code cuts them at about 4 KB, which lost
   the "first-class tools over raw code" rule and the enclosure pattern
   from our 5.3 KB text. The MCP server now sends the four **Important**
   rules first, then the tool list and the enclosure pattern; nothing is
   dropped, and the chat prompt is unchanged (#144).
+
+- **An external agent can now work in an empty FreeCAD.** With the MCP
+  server started at FreeCAD startup and no file open, every tool refused
+  with "No active document", including `execute_code` running
+  `App.newDocument()`, which our own prompt recommends. `execute_code` now
+  runs without an active document (no undo step is recorded, since there
+  is no document to record it in), and a document the code creates becomes
+  the active one (#149).
 
 ## [0.34.0-alpha] - 2026-11-15
 

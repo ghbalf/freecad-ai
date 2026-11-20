@@ -40,7 +40,8 @@ def _with_undo(label: str, func):
         return ToolResult(
             success=False,
             output="",
-            error="No active document — open a document in FreeCAD or select its tab.",
+            error=("No active document — call `create_document` (or `open_document`), "
+                   "or open a document in FreeCAD and select its tab."),
         )
     doc.openTransaction(label)
     try:
@@ -3183,6 +3184,71 @@ SWITCH_DOCUMENT = ToolDefinition(
 )
 
 
+# ── create_document / open_document (#149) ──────────────────
+# Without these, an empty FreeCAD (e.g. the MCP server autostarted with no
+# file) left an agent no tool to get its first document from.
+
+def _activate_document(doc, verb: str) -> ToolResult:
+    from ..core.active_document import sync_app_active_document, refresh_gui_for_document
+    sync_app_active_document(doc)
+    refresh_gui_for_document(doc)
+    return ToolResult(
+        success=True,
+        output=f"{verb} document '{doc.Name}' (label '{doc.Label}'); it is now the active document.",
+        data={"name": doc.Name, "label": doc.Label, "file": doc.FileName},
+    )
+
+
+def _handle_create_document(name: str = "Unnamed", label: str = "") -> ToolResult:
+    """Create a new empty document and make it active."""
+    import FreeCAD as App
+    # FreeCAD makes a taken or invalid Name unique (Part -> Part001); report
+    # the name it chose, since that is what switch_document needs.
+    doc = App.newDocument(name or "Unnamed")
+    if label:
+        doc.Label = label
+    return _activate_document(doc, "Created")
+
+
+CREATE_DOCUMENT = ToolDefinition(
+    name="create_document",
+    description="Create a new, empty FreeCAD document and make it the active one. Use this when no document is open, or when the user asks for a new file. The result gives the document's actual name (FreeCAD renames a name already in use).",
+    category="file",
+    parameters=[
+        ToolParam("name", "string", "Internal document name (letters, digits, underscore)",
+                  required=False, default="Unnamed"),
+        ToolParam("label", "string", "Display label, if it should differ from the name",
+                  required=False, default=""),
+    ],
+    handler=_handle_create_document,
+)
+
+
+def _handle_open_document(path: str) -> ToolResult:
+    """Open a document file and make it active."""
+    import FreeCAD as App
+    full = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(full):
+        return ToolResult(success=False, output="", error=f"No such file: {full}")
+    # FreeCAD will not open the same file twice — switch to the open copy.
+    for doc in App.listDocuments().values():
+        fn = getattr(doc, "FileName", "")
+        if fn and os.path.realpath(fn) == os.path.realpath(full):
+            return _activate_document(doc, "Already open; switched to")
+    return _activate_document(App.openDocument(full), "Opened")
+
+
+OPEN_DOCUMENT = ToolDefinition(
+    name="open_document",
+    description="Open a FreeCAD document (.FCStd) from disk and make it the active one. If the file is already open, switches to it instead.",
+    category="file",
+    parameters=[
+        ToolParam("path", "string", "Path to the .FCStd file (absolute, or ~ for home)"),
+    ],
+    handler=_handle_open_document,
+)
+
+
 # ── get_document_state ──────────────────────────────────────
 
 def _handle_get_document_state() -> ToolResult:
@@ -5989,6 +6055,8 @@ ALL_TOOLS = [
     LIST_EDGES,
     LIST_DOCUMENTS,
     SWITCH_DOCUMENT,
+    CREATE_DOCUMENT,
+    OPEN_DOCUMENT,
     GET_DOCUMENT_STATE,
     CREATE_VARIABLE_SET,
     CREATE_SPREADSHEET,
