@@ -6,10 +6,12 @@ system prompt.
 """
 
 
-def get_document_context() -> str:
-    """Return a text summary of the active FreeCAD document.
+def get_document_context(doc=None) -> str:
+    """Return a text summary of *doc*, or of the active FreeCAD document.
 
-    Returns an empty string if no document is open.
+    A *doc* other than the active one is described without switching to
+    it (#152), and without the active Body and the selection, which belong
+    to the active document.
     """
     try:
         import FreeCAD as App
@@ -18,10 +20,13 @@ def get_document_context() -> str:
 
     from .active_document import resolve_active_document, sync_app_active_document
 
-    doc = resolve_active_document()
+    active = resolve_active_document()
+    is_active = doc is None or (active is not None and doc.Name == active.Name)
     if doc is None:
-        return "No document is currently open."
-    sync_app_active_document(doc)
+        doc = active
+        if doc is None:
+            return "No document is currently open."
+        sync_app_active_document(doc)
 
     lines = []
 
@@ -32,14 +37,16 @@ def get_document_context() -> str:
     lines.append(f"File: {path}")
 
     # Active body / sketch
-    try:
-        import FreeCADGui as Gui
-        active_view = Gui.ActiveDocument.ActiveView if Gui.ActiveDocument else None
-        active_body = _get_active_body()
-        if active_body:
-            lines.append(f"Active Body: {active_body.Label}")
-    except Exception:
-        active_body = None
+    active_body = None
+    if is_active:
+        try:
+            import FreeCADGui as Gui
+            active_view = Gui.ActiveDocument.ActiveView if Gui.ActiveDocument else None
+            active_body = _get_active_body()
+            if active_body:
+                lines.append(f"Active Body: {active_body.Label}")
+        except Exception:
+            active_body = None
 
     # Objects
     objects = doc.Objects
@@ -65,6 +72,8 @@ def get_document_context() -> str:
 
     # Selection
     try:
+        if not is_active:
+            raise LookupError  # the selection belongs to the active document
         import FreeCADGui as Gui
         sel = Gui.Selection.getSelectionEx()
         if sel:

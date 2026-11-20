@@ -58,6 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   already open, `open_document` switches to it. Modelling tools that need a
   document now name these two in their error (#149).
 
+- **`save_document` and `close_document` tools; `get_document_state` takes
+  a `document`.** `save_document` saves in place or to a new `.FCStd` path.
+  It won't replace another existing file unless `overwrite` is true, and it
+  never writes over a file another open document has loaded. `close_document`
+  refuses to drop unsaved changes unless `discard_changes` is true. FreeCAD's
+  own close would discard them without asking. Without a GUI there is no way
+  to tell, so it refuses there too. `get_document_state` can inspect another
+  open document without switching to it (#152).
+
 - **Opper provider preset.** A European AI gateway with an OpenAI-compatible
   API, listed next to Requesty. Base URL `https://api.opper.ai/v3/compat`,
   default model `anthropic/claude-sonnet-5-5`. Opper stores no prompts or
