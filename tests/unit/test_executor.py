@@ -212,17 +212,17 @@ class TestSkipSafety:
         assert "validation failed" in res.stderr.lower()
 
     def test_skip_safety_bypasses_static_validation(self):
-        # With skip_safety=True the static deny-list is skipped, so execution does
-        # NOT short-circuit at static validation. With no active document it falls
-        # through to the active-document guard — proving validation did not block.
-        code = "import subprocess\nsubprocess.run(['ls'])"
-        with patch(
+        # With skip_safety=True the static deny-list is skipped, so the code
+        # runs. Deny-listed but side-effect free: the import alone is refused.
+        code = "import subprocess\nprint(subprocess.__name__)"
+        assert not executor.validate_code(code).success
+        with patch.dict(sys.modules, {"FreeCAD": MagicMock(), "FreeCADGui": None}), patch(
             "freecad_ai.core.active_document.get_synced_active_document",
             return_value=None,
         ):
             res = executor.execute_code(code, sandbox=False, skip_safety=True)
-        assert res.success is False
-        assert "no active document" in res.stderr.lower()
+        assert res.success is True, res.stderr
+        assert res.stdout == "subprocess\n"
 
     def test_validate_code_skip_safety_returns_pass(self):
         code = "import subprocess\nsubprocess.run(['ls'])"

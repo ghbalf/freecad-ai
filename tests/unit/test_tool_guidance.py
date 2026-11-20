@@ -6,10 +6,11 @@ from freecad_ai.core import system_prompt, tool_guidance
 
 
 def test_act_mode_tools_unchanged():
-    # Recorded 2026-11-16 before the split. Prompt caching (#47) needs the
-    # chat prompt byte-identical, so moving the text must not change it.
+    # Prompt caching (#47) needs the chat prompt byte-identical across
+    # unrelated changes. Re-record only on a deliberate rule change (each one
+    # costs every user one cache miss) — last: create/open_document (#149).
     h = hashlib.sha256(system_prompt.ACT_MODE_TOOLS.encode()).hexdigest()
-    assert h == "b2c8f885d26391c25c98a6ebf9d81bd75f96101188320def0bb05556d10f3b95"
+    assert h == "8128b4f51256e615f7cf02f3332b3fae0024ef5a053026314cd45b8af313aa37"
 
 
 def test_act_mode_tools_ends_with_the_shared_guidance():
