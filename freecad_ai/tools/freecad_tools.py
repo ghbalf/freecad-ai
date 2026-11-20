@@ -3228,6 +3228,9 @@ def _handle_open_document(path: str) -> ToolResult:
     """Open a document file and make it active."""
     import FreeCAD as App
     full = os.path.abspath(os.path.expanduser(path))
+    if os.path.splitext(full)[1].lower() not in (".fcstd", ".fcbak"):
+        return ToolResult(success=False, output="",
+                          error=f"Not a FreeCAD document (.FCStd or .FCBak): {full}")
     if not os.path.isfile(full):
         return ToolResult(success=False, output="", error=f"No such file: {full}")
     # FreeCAD will not open the same file twice — switch to the open copy.
