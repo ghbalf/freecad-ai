@@ -206,3 +206,17 @@ def test_modelling_tools_point_an_agent_at_create_document(app):
     r = ft._with_undo("x", lambda doc: None)
     assert not r.success
     assert "create_document" in r.error
+
+
+def test_open_document_only_opens_freecad_documents(app, tmp_path):
+    """Security review of #150: the tool opens documents, nothing else."""
+    from freecad_ai.tools import freecad_tools as ft
+    f = tmp_path / "notes.txt"
+    f.write_text("hi")
+    r = ft._handle_open_document(path=str(f))
+    assert not r.success
+    assert ".FCStd" in r.error
+    assert app.opened == []
+    ok = tmp_path / "Backup.FCBak"
+    ok.write_bytes(b"PK")
+    assert ft._handle_open_document(path=str(ok)).success
