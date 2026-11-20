@@ -29,7 +29,7 @@ TOOL_GUIDANCE = """\
 - For measuring dimensions, distances, or volumes: use `measure`
 - For listing all faces with names and labels (top, bottom, front, etc.): use `list_faces` — helps choose the right face for `shell_object` or assembly constraints
 - For listing all edges with names and labels (top-front horizontal, front-left vertical, etc.): use `list_edges` — helps choose the right edge for `fillet_edges` or `chamfer_edges`
-- When no document is open, or for a new file: use `create_document`; to open a saved .FCStd: use `open_document`
+- When no document is open, or for a new file: use `create_document`; to open a saved .FCStd: use `open_document`; to save or close one: `save_document` / `close_document`
 - For inspecting the current document and its objects: use `get_document_state`
 - For changing object properties (length, width, label, visibility, etc.): use `modify_property`
 - For reading or changing parameters in a VarSet or Spreadsheet: use `read_variable_set`/`edit_variable_set` or `read_spreadsheet`/`edit_spreadsheet` — never `modify_property` on a spreadsheet cell (the change is lost on reload)

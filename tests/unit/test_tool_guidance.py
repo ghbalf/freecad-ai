@@ -8,9 +8,9 @@ from freecad_ai.core import system_prompt, tool_guidance
 def test_act_mode_tools_unchanged():
     # Prompt caching (#47) needs the chat prompt byte-identical across
     # unrelated changes. Re-record only on a deliberate rule change (each one
-    # costs every user one cache miss) — last: create/open_document (#149).
+    # costs every user one cache miss) — last: save/close_document (#152).
     h = hashlib.sha256(system_prompt.ACT_MODE_TOOLS.encode()).hexdigest()
-    assert h == "8128b4f51256e615f7cf02f3332b3fae0024ef5a053026314cd45b8af313aa37"
+    assert h == "3eea4bac65622677a5211273237549ba1b3d97ffcc34929ca5cfe9cfec263102"
 
 
 def test_act_mode_tools_ends_with_the_shared_guidance():

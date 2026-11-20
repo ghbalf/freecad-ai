@@ -3082,6 +3082,38 @@ LIST_EDGES = ToolDefinition(
 
 # ── list_documents ─────────────────────────────────────────
 
+def _find_document(name):
+    """Open document by Name, then by Label. Returns (doc, None) or (None, ToolResult)."""
+    import FreeCAD as App
+    docs = App.listDocuments()
+    doc = docs.get(name)
+    if not doc:
+        doc = next((d for d in docs.values() if d.Label == name), None)
+    if not doc:
+        available = ", ".join(docs.keys()) or "(none)"
+        return None, ToolResult(success=False, output="",
+                                error=f"Document '{name}' not found. Available: {available}")
+    return doc, None
+
+
+def _gui_modified(doc):
+    """The GUI's unsaved-changes flag: True/False, or None without a GUI.
+
+    Headless FreeCAD has no such signal at all (probed on 1.1.1: isTouched()
+    is False after a recompute, and there are no undo entries without
+    transactions), so None means "unknown", not "clean".
+    """
+    try:
+        import FreeCADGui as Gui
+    except ImportError:
+        return None
+    try:
+        gdoc = Gui.getDocument(doc.Name)
+        return bool(gdoc.Modified) if gdoc else None
+    except Exception:
+        return None
+
+
 def _handle_list_documents() -> ToolResult:
     """List all open FreeCAD documents."""
     import FreeCAD as App
@@ -3095,19 +3127,8 @@ def _handle_list_documents() -> ToolResult:
     active = resolve_active_document()
     active_name = active.Name if active else ""
 
-    try:
-        import FreeCADGui as Gui
-    except ImportError:
-        Gui = None
-
     def _is_modified(doc) -> bool:
-        if Gui is None:
-            return False
-        try:
-            gdoc = Gui.getDocument(doc.Name)
-            return bool(gdoc.Modified) if gdoc else False
-        except Exception:
-            return False
+        return bool(_gui_modified(doc))
 
     lines = [f"## Open Documents ({len(docs)})"]
     doc_data = []
@@ -3147,21 +3168,11 @@ LIST_DOCUMENTS = ToolDefinition(
 
 def _handle_switch_document(document_name: str) -> ToolResult:
     """Switch the active document."""
-    import FreeCAD as App
     from ..core.active_document import sync_app_active_document, refresh_gui_for_document
 
-    docs = App.listDocuments()
-    doc = docs.get(document_name)
-    if not doc:
-        # Try matching by label
-        for d in docs.values():
-            if d.Label == document_name:
-                doc = d
-                break
-    if not doc:
-        available = ", ".join(docs.keys())
-        return ToolResult(success=False, output="",
-                          error=f"Document '{document_name}' not found. Available: {available}")
+    doc, err = _find_document(document_name)
+    if err:
+        return err
 
     sync_app_active_document(doc)
     refresh_gui_for_document(doc)
@@ -3252,13 +3263,134 @@ OPEN_DOCUMENT = ToolDefinition(
 )
 
 
+def _handle_save_document(document: str = "", path: str = "",
+                          overwrite: bool = False) -> ToolResult:
+    """Save a document in place, or to *path* (Save As)."""
+    from ..core.active_document import resolve_active_document
+    if document:
+        doc, err = _find_document(document)
+        if err:
+            return err
+    else:
+        doc = resolve_active_document()
+        if doc is None:
+            return ToolResult(success=False, output="", error="No document is open.")
+
+    if not path:
+        if not doc.FileName:
+            return ToolResult(success=False, output="", error=(
+                f"Document '{doc.Name}' has never been saved; give a path "
+                "(e.g. ~/cad/part.FCStd)."))
+        doc.save()
+    else:
+        full = os.path.abspath(os.path.expanduser(path))
+        ext = os.path.splitext(full)[1].lower()
+        if not ext:
+            full += ".FCStd"
+        elif ext != ".fcstd":
+            return ToolResult(success=False, output="", error=(
+                f"save_document writes FreeCAD documents (.FCStd), not '{ext}'. "
+                "To write STEP, STL or other formats, use export_model."))
+        if not os.path.isdir(os.path.dirname(full)):
+            return ToolResult(success=False, output="",
+                              error=f"No such folder: {os.path.dirname(full)}")
+        import FreeCAD as App
+        holder = next((d for d in App.listDocuments().values()
+                       if d.FileName and os.path.realpath(d.FileName) == os.path.realpath(full)),
+                      None)
+        if holder is not None and holder.Name != doc.Name:
+            return ToolResult(success=False, output="", error=(
+                f"{full} is open as document '{holder.Name}'. Choose another path, "
+                "or close_document that one first."))
+        own = holder is not None
+        if os.path.exists(full) and not own and not overwrite:
+            return ToolResult(success=False, output="", error=(
+                f"{full} already exists. Pass overwrite=true to replace it, "
+                "or choose another path."))
+        doc.saveAs(full)
+
+    # App-level save leaves the GUI's Modified flag set (probed on 1.1.1):
+    # the tab would keep its * and close_document would refuse a saved doc.
+    if _gui_modified(doc) is not None:
+        import FreeCADGui as Gui
+        Gui.getDocument(doc.Name).Modified = False
+    return ToolResult(
+        success=True,
+        output=f"Saved document '{doc.Name}' to {doc.FileName} (label '{doc.Label}').",
+        data={"name": doc.Name, "label": doc.Label, "file": doc.FileName},
+    )
+
+
+SAVE_DOCUMENT = ToolDefinition(
+    name="save_document",
+    description="Save a FreeCAD document (.FCStd): in place, or to a new path (Save As). A document that was never saved needs a path. Will not replace a different existing file unless overwrite is true. Save As renames the document's label to the file name. For STEP/STL/other formats use export_model.",
+    category="file",
+    parameters=[
+        ToolParam("document", "string", "Name or label of the document (default: the active one)",
+                  required=False, default=""),
+        ToolParam("path", "string", "Where to save (.FCStd added if no extension); omit to save in place",
+                  required=False, default=""),
+        ToolParam("overwrite", "boolean", "Replace a different existing file at path",
+                  required=False, default=False),
+    ],
+    handler=_handle_save_document,
+)
+
+
+def _handle_close_document(document: str, discard_changes: bool = False) -> ToolResult:
+    """Close a document, refusing to drop unsaved changes unless told to."""
+    import FreeCAD as App
+    from ..core.active_document import resolve_active_document
+    doc, err = _find_document(document)
+    if err:
+        return err
+    if not discard_changes:
+        # App.closeDocument discards changes without asking, so the guard
+        # is ours. Without a GUI there is no way to tell, so assume changes.
+        modified = _gui_modified(doc)
+        if modified is None:
+            return ToolResult(success=False, output="", error=(
+                f"Can't tell whether '{doc.Name}' has unsaved changes here (no GUI). "
+                "Call save_document first, or pass discard_changes=true to close anyway."))
+        if modified:
+            return ToolResult(success=False, output="", error=(
+                f"'{doc.Name}' has unsaved changes. Call save_document first, "
+                "or pass discard_changes=true to close it and lose them."))
+    name = doc.Name
+    App.closeDocument(name)
+    now = resolve_active_document()
+    after = (f"Active document is now '{now.Name}'." if now is not None
+             else "No document is open; use create_document or open_document.")
+    return ToolResult(success=True, output=f"Closed document '{name}'. {after}",
+                      data={"closed": name, "active": now.Name if now is not None else None})
+
+
+CLOSE_DOCUMENT = ToolDefinition(
+    name="close_document",
+    description="Close an open FreeCAD document. Refuses if it has unsaved changes (or if that can't be determined) unless discard_changes is true; save it with save_document first to keep them.",
+    category="file",
+    parameters=[
+        ToolParam("document", "string", "Name or label of the document to close"),
+        ToolParam("discard_changes", "boolean", "Close even if unsaved changes would be lost",
+                  required=False, default=False),
+    ],
+    handler=_handle_close_document,
+)
+
+
 # ── get_document_state ──────────────────────────────────────
 
-def _handle_get_document_state() -> ToolResult:
-    """Get the current document state — all objects and their properties."""
+def _handle_get_document_state(document: str = "") -> ToolResult:
+    """Get a document's state — all objects and their properties."""
     import FreeCAD as App
     from ..core.context import get_document_context
 
+    if document:
+        doc, err = _find_document(document)
+        if err:
+            return err
+        ctx = get_document_context(doc)
+        return ToolResult(success=True, output=ctx, data={"context": ctx})
     if not App.ActiveDocument:
         return ToolResult(
             success=False,
@@ -3276,9 +3408,12 @@ def _handle_get_document_state() -> ToolResult:
 
 GET_DOCUMENT_STATE = ToolDefinition(
     name="get_document_state",
-    description="Get the current document state including all objects, their types, labels, and key properties.",
+    description="Get a document's state including all objects, their types, labels, and key properties. Defaults to the active document; name another open document to inspect it without switching to it.",
     category="query",
-    parameters=[],
+    parameters=[
+        ToolParam("document", "string", "Name or label of an open document (default: the active one)",
+                  required=False, default=""),
+    ],
     handler=_handle_get_document_state,
 )
 
@@ -6060,6 +6195,8 @@ ALL_TOOLS = [
     SWITCH_DOCUMENT,
     CREATE_DOCUMENT,
     OPEN_DOCUMENT,
+    SAVE_DOCUMENT,
+    CLOSE_DOCUMENT,
     GET_DOCUMENT_STATE,
     CREATE_VARIABLE_SET,
     CREATE_SPREADSHEET,
