@@ -1,4 +1,4 @@
-"""Behavior page: Limits, Behavior, and System Prompt."""
+"""Behavior page: Limits, Behavior, Saved Files, and System Prompt."""
 
 from ..compat import QtWidgets, QtCore
 from ...i18n import translate
@@ -25,7 +25,7 @@ def _index(values, value, default=0):
 
 
 class BehaviorPage(SettingsPage):
-    """Limits, Behavior, and System Prompt groups."""
+    """Limits, Behavior, Saved Files, and System Prompt groups."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -250,6 +250,67 @@ class BehaviorPage(SettingsPage):
         behavior_group.setLayout(behavior_layout)
         layout.addWidget(behavior_group)
 
+        # Saved files: retention rules applied on the next save of each kind
+        # (config.prune_oldest_files). 0 disables a rule, which is the
+        # default, so nothing is deleted unless the user asks for it.
+        files_group = QGroupBox(translate("SettingsDialog", "Saved Files"))
+        files_layout = QFormLayout()
+        files_note = QLabel(translate(
+            "SettingsDialog",
+            "Older files are deleted the next time one of that kind is "
+            "saved. A file is kept only if it passes both the count and "
+            "the age limit."))
+        files_note.setWordWrap(True)
+        files_layout.addRow(files_note)
+
+        def _keep_spin(max_value, suffix=""):
+            spin = QSpinBox()
+            spin.setRange(0, max_value)
+            spin.setSpecialValueText(translate("SettingsDialog", "keep all"))
+            if suffix:
+                spin.setSuffix(suffix)
+            return spin
+
+        self.conversations_keep_spin = _keep_spin(100000)
+        self.conversations_keep_spin.setToolTip(translate(
+            "SettingsDialog",
+            "Saved chat conversations (the ones Load lists): keep only\n"
+            "the newest this many."))
+        files_layout.addRow(
+            translate("SettingsDialog", "Conversations to keep:"),
+            self.conversations_keep_spin)
+
+        self.session_logs_keep_spin = _keep_spin(100000)
+        self.session_logs_keep_spin.setToolTip(translate(
+            "SettingsDialog",
+            "Session logs written by Save Log: keep only the newest\n"
+            "this many."))
+        files_layout.addRow(
+            translate("SettingsDialog", "Session logs to keep:"),
+            self.session_logs_keep_spin)
+
+        self.backups_keep_spin = _keep_spin(100000)
+        self.backups_keep_spin.setToolTip(translate(
+            "SettingsDialog",
+            "Recovery snapshots taken before code runs on a document\n"
+            "(Restore from Backup): keep only the newest this many.\n"
+            "Each document reuses one snapshot file."))
+        files_layout.addRow(
+            translate("SettingsDialog", "Document backups to keep:"),
+            self.backups_keep_spin)
+
+        self.retention_days_spin = _keep_spin(36500, translate("SettingsDialog", " days"))
+        self.retention_days_spin.setToolTip(translate(
+            "SettingsDialog",
+            "Delete conversations, session logs and backups older than\n"
+            "this many days, whatever the counts above say."))
+        files_layout.addRow(
+            translate("SettingsDialog", "Delete files older than:"),
+            self.retention_days_spin)
+
+        files_group.setLayout(files_layout)
+        layout.addWidget(files_group)
+
         # System prompt
         prompt_group = QGroupBox(translate("SettingsDialog", "System Prompt"))
         prompt_layout = QVBoxLayout()
@@ -291,6 +352,10 @@ class BehaviorPage(SettingsPage):
             _index(_CAPTURE, cfg.viewport_capture))
         self.viewport_resolution_combo.setCurrentIndex(
             _index(_RESOLUTION, cfg.viewport_resolution, 1))
+        self.conversations_keep_spin.setValue(cfg.max_saved_conversations)
+        self.session_logs_keep_spin.setValue(cfg.max_session_logs)
+        self.backups_keep_spin.setValue(cfg.max_backups)
+        self.retention_days_spin.setValue(cfg.max_retention_age_days)
         default_prompt = self._get_default_prompt_text()
         self._last_default_prompt = default_prompt
         self.system_prompt_edit.setPlainText(
@@ -320,6 +385,10 @@ class BehaviorPage(SettingsPage):
                 _CAPTURE[self.viewport_capture_combo.currentIndex()],
             "viewport_resolution":
                 _RESOLUTION[self.viewport_resolution_combo.currentIndex()],
+            "max_saved_conversations": self.conversations_keep_spin.value(),
+            "max_session_logs": self.session_logs_keep_spin.value(),
+            "max_backups": self.backups_keep_spin.value(),
+            "max_retention_age_days": self.retention_days_spin.value(),
             "system_prompt_override": "" if text == default else text,
         }
 

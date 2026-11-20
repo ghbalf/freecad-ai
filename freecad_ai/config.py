@@ -750,6 +750,9 @@ class AppConfig:
     # (surgical tabified_with list can miss tabify-by-drag because no Qt signal
     # fires in that case).
     chat_dock_mw_state: str = ""
+    # [width, height] the Settings dialog was last closed at; empty = the
+    # layout's own default. Written on close, OK or Cancel alike.
+    settings_dialog_size: list = field(default_factory=list)
 
     # Retention applied lazily on save. Both dimensions are checked: a file is
     # kept only if it's both within the newest-N AND younger than max_age_days.
