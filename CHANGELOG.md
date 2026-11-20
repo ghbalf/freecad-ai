@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Opper provider preset.** A European AI gateway with an OpenAI-compatible
+  API, listed next to Requesty. Base URL `https://api.opper.ai/v3/compat`,
+  default model `anthropic/claude-sonnet-5-5`. Opper stores no prompts or
+  responses by default; requests go to the model provider that serves them;
+  each model's provider, region and retention are listed at
+  https://opper.ai/models. Keys come from
+  https://platform.opper.ai.
+  Contributed by @Felixkw12 (#138), who disclosed the affiliation; no revenue
+  share, referral or tracking is involved.
+
 - **The MCP server token can come from a keyring or a file.** Like
   provider API keys, the Settings field and `MCP_AUTH_TOKEN` now accept
   `file:/path` and `cmd:command`, for example
