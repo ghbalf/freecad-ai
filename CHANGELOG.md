@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.35.0-alpha] - 2026-11-22
+
 ### Added
 
 - **Use FreeCAD AI from an external agent (#139).** Claude Code, Gemini
