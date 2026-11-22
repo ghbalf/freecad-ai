@@ -129,6 +129,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   is no document to record it in), and a document the code creates becomes
   the active one (#149).
 
+- **`create_primitive` and `create_wedge` no longer name the feature
+  `…001`.** When they auto-created a Body, both objects got the same label,
+  and FreeCAD's label uniqueness renamed the feature: "a box labelled
+  Plate" came out as Body `Plate` with feature `Plate001`, and even an
+  unlabelled box was `Box001`. `label` now names only the feature, as its
+  description always said. A new `body_label` parameter names the Body,
+  which otherwise gets the default `Body`. Behaviour change: an
+  auto-created Body is no longer labelled after the shape (`Box`, `Wedge`)
+  or after `label` (#154).
+
 ## [0.34.0-alpha] - 2026-11-15
 
 ### Added
