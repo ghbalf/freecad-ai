@@ -29,7 +29,7 @@ results["data"] = {
         assert d["body_type"] == "PartDesign::Body"
         assert d["feat_type"] == "PartDesign::AdditiveLoft"
         assert d["volume"] > 0
-        assert d["body_label"] == "Wedge"
+        assert d["body_label"] == "Body"  # #154: label names the feature
 
     def test_wedge_dimensions(self, run_freecad_script):
         """Wedge with specific dimensions has reasonable volume."""
@@ -70,7 +70,7 @@ results["data"] = {
         assert 0 < d["volume"] < d["full_box"]
 
     def test_wedge_with_label(self, run_freecad_script):
-        """Custom label is applied to body (feature may get suffixed by FreeCAD)."""
+        """Custom label names the wedge feature; the Body keeps its default (#154)."""
         result = run_freecad_script("""
 from freecad_ai.tools.freecad_tools import _handle_create_wedge
 
@@ -87,9 +87,8 @@ results["data"] = {
         assert result["ok"], result.get("error")
         d = result["data"]
         assert d["success"]
-        assert d["body_label"] == "Ramp"
-        # FreeCAD may rename the feature since body already has the label
-        assert d["feat_label"].startswith("Ramp")
+        assert d["feat_label"] == "Ramp"
+        assert d["body_label"] == "Body"
 
     def test_wedge_with_position(self, run_freecad_script):
         """Position offsets are applied to body placement."""
@@ -220,3 +219,34 @@ results["data"] = {
         assert d["wedge_ok"]
         assert d["fillet_ok"]
         assert d["tip_type"] == "PartDesign::Fillet"
+
+
+class TestCreateWedgeLabels:
+    """#154 applied to create_wedge: same rule as create_primitive."""
+
+    _SCRIPT = """
+from freecad_ai.tools.freecad_tools import _handle_create_wedge
+
+r = _handle_create_wedge({kwargs})
+results["data"] = {{
+    "success": r.success,
+    "feat_label": doc.getObject(r.data["name"]).Label,
+    "body_label": doc.getObject(r.data["body_name"]).Label,
+}}
+"""
+
+    def _run(self, run_freecad_script, kwargs):
+        result = run_freecad_script(self._SCRIPT.format(kwargs=kwargs))
+        assert result["ok"], result.get("error")
+        assert result["data"]["success"]
+        return result["data"]
+
+    def test_default_labels_do_not_collide(self, run_freecad_script):
+        d = self._run(run_freecad_script, "")
+        assert d["feat_label"] == "Wedge"
+        assert d["body_label"] == "Body"
+
+    def test_label_and_body_label(self, run_freecad_script):
+        d = self._run(run_freecad_script, 'label="Ramp", body_label="Stand"')
+        assert d["feat_label"] == "Ramp"
+        assert d["body_label"] == "Stand"

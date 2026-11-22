@@ -112,10 +112,23 @@ def _get_body_axis(body, axis_name: str):
 
 # ── create_primitive ────────────────────────────────────────
 
+def _new_body(doc, body_label: str = ""):
+    """Auto-create the Body for a shape tool (#154).
+
+    The Body gets its own label (default "Body"), never the feature's:
+    FreeCAD keeps labels unique, so sharing one gave the feature 'X001'.
+    """
+    label = body_label or "Body"
+    body = doc.addObject("PartDesign::Body", label)
+    body.Label = label
+    return body
+
+
 def _handle_create_primitive(
     shape_type: str,
     label: str = "",
     body_name: str = "",
+    body_label: str = "",
     operation: str = "additive",
     length: float = 10.0,
     width: float = 10.0,
@@ -170,9 +183,7 @@ def _handle_create_primitive(
                     error=f"Body '{body_name}' not found.{hint}"
                 )
         else:
-            body_label = label or st.capitalize()
-            body = doc.addObject("PartDesign::Body", body_label)
-            body.Label = body_label
+            body = _new_body(doc, body_label)
 
         name = label or st.capitalize()
         obj = body.newObject(pd_type, name)
@@ -215,8 +226,9 @@ CREATE_PRIMITIVE = ToolDefinition(
     parameters=[
         ToolParam("shape_type", "string", "Type of primitive to create",
                   enum=["box", "cylinder", "sphere", "cone", "torus"]),
-        ToolParam("label", "string", "Display label for the object", required=False, default=""),
+        ToolParam("label", "string", "Display label for the primitive feature (not the Body)", required=False, default=""),
         ToolParam("body_name", "string", "Name of existing Body to add primitive to (auto-creates if empty)", required=False, default=""),
+        ToolParam("body_label", "string", "Display label for the auto-created Body (default 'Body'; ignored when body_name is given)", required=False, default=""),
         ToolParam("operation", "string", "Additive (add material) or subtractive (cut material)",
                   required=False, default="additive", enum=["additive", "subtractive"]),
         ToolParam("length", "number", "Length (box)", required=False, default=10.0),
@@ -4540,6 +4552,7 @@ def _handle_create_wedge(
     top_width: float | None = None,
     label: str = "",
     body_name: str = "",
+    body_label: str = "",
     operation: str = "additive",
     x: float = 0.0,
     y: float = 0.0,
@@ -4584,9 +4597,7 @@ def _handle_create_wedge(
                     error=f"Body '{body_name}' not found",
                 )
         else:
-            body_label = label or "Wedge"
-            body = doc.addObject("PartDesign::Body", body_label)
-            body.Label = body_label
+            body = _new_body(doc, body_label)
 
         # Attach sketches to XY plane
         xy_plane = _get_body_plane(body, "XY")
@@ -4624,6 +4635,7 @@ def _handle_create_wedge(
             type_name = "PartDesign::AdditiveLoft"
         feat_label = label or "Wedge"
         feat = body.newObject(type_name, feat_label)
+        feat.Label = feat_label
         feat.Profile = bot
         feat.Sections = [top]
         feat.Ruled = True
@@ -4665,8 +4677,9 @@ CREATE_WEDGE = ToolDefinition(
         ToolParam("height", "number", "Height (Z dimension)", required=False, default=10.0),
         ToolParam("top_length", "number", "Top face length (defaults to base length = no taper in X)", required=False),
         ToolParam("top_width", "number", "Top face width (defaults to 0 = tapers to ridge)", required=False),
-        ToolParam("label", "string", "Display label", required=False, default=""),
+        ToolParam("label", "string", "Display label for the wedge feature (not the Body)", required=False, default=""),
         ToolParam("body_name", "string", "Name of existing Body to add wedge to (auto-creates if empty)", required=False, default=""),
+        ToolParam("body_label", "string", "Display label for the auto-created Body (default 'Body'; ignored when body_name is given)", required=False, default=""),
         ToolParam("operation", "string", "Additive (add material) or subtractive (cut material)",
                   required=False, default="additive", enum=["additive", "subtractive"]),
         ToolParam("x", "number", "X position", required=False, default=0.0),

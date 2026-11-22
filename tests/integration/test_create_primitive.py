@@ -310,3 +310,43 @@ results["data"] = {
         assert d["cut_type"] == "PartDesign::SubtractiveCylinder"
         assert d["tip_type"] == "PartDesign::SubtractiveCylinder"
         assert d["vol_after_cut"] <= d["vol_after_shell"] + 1.0  # tolerance for float rounding
+
+
+class TestCreatePrimitiveLabels:
+    """#154: `label` names the feature, `body_label` the auto-created Body.
+
+    Before the fix both objects got the same label, so FreeCAD's label
+    uniqueness turned the feature into 'Plate001' (or 'Box001' by default).
+    """
+
+    _SCRIPT = """
+from freecad_ai.tools.freecad_tools import _handle_create_primitive
+
+r = _handle_create_primitive(shape_type="box", {kwargs})
+results["data"] = {{
+    "success": r.success,
+    "feat_label": doc.getObject(r.data["name"]).Label,
+    "body_label": doc.getObject(r.data["body_name"]).Label,
+}}
+"""
+
+    def _run(self, run_freecad_script, kwargs):
+        result = run_freecad_script(self._SCRIPT.format(kwargs=kwargs))
+        assert result["ok"], result.get("error")
+        assert result["data"]["success"]
+        return result["data"]
+
+    def test_default_labels_do_not_collide(self, run_freecad_script):
+        d = self._run(run_freecad_script, "")
+        assert d["feat_label"] == "Box"
+        assert d["body_label"] == "Body"
+
+    def test_label_names_the_feature(self, run_freecad_script):
+        d = self._run(run_freecad_script, 'label="Plate"')
+        assert d["feat_label"] == "Plate"
+        assert d["body_label"] == "Body"
+
+    def test_body_label_names_the_body(self, run_freecad_script):
+        d = self._run(run_freecad_script, 'label="PlateBox", body_label="Plate"')
+        assert d["feat_label"] == "PlateBox"
+        assert d["body_label"] == "Plate"
