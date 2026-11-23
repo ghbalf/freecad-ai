@@ -122,9 +122,17 @@ See [Creating Custom Tools](https://github.com/ghbalf/freecad-ai/wiki/Creating-C
 
 # Integration tests (needs FreeCAD AppImage)
 .venv/bin/pytest tests/integration/ -v -m integration
+
+# ...against one specific FreeCAD
+FREECAD_APPIMAGE=~/bin/FreeCAD_26.3rc2-Linux-x86_64.AppImage .venv/bin/pytest tests/integration/ -m integration
+
+# ...against several versions (run this before a release)
+.venv/bin/python -m tests.integration.freecad_matrix          # add --list to only show the picks
 ```
 
 Unit tests should pass without FreeCAD installed. Integration tests require a FreeCAD AppImage and run actual FreeCAD operations.
+
+Integration tests look for `FreeCAD_<version>…AppImage` files in `~/bin` (or `FREECAD_APPIMAGE_DIR`) and compare versions by number. A plain run uses the **newest stable** one; the pytest header line `freecad: …` shows which. The matrix runs the oldest supported stable (at or above `<freecadmin>` in `package.xml`), the newest stable, and every pre-release (`rc`, `beta`, …) newer than that. A failing pre-release prints a warning but does not fail the run, since it may be a FreeCAD bug that is fixed before the final release; a failing stable version does. These tests run FreeCAD without a GUI, so a new version's Qt/PySide changes still need a manual check.
 
 **Add tests** for new features when possible. Test files go in `tests/unit/` and should start with `test_`.
 

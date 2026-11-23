@@ -7,18 +7,31 @@ import textwrap
 
 import pytest
 
-# Find FreeCAD AppImage
+from tests.integration.freecad_matrix import APPIMAGE_DIR, default_appimage, discover
+
+# Find FreeCAD AppImage: the newest stable one in ~/bin (FREECAD_APPIMAGE_DIR),
+# compared by version number. FREECAD_APPIMAGE picks one explicitly, e.g.
+#   FREECAD_APPIMAGE=~/bin/FreeCAD_26.3rc2-Linux-x86_64.AppImage pytest -m integration
+# Several versions at once: python -m tests.integration.freecad_matrix
 FREECAD_CMD = None
-_candidates = [
-    os.path.expanduser("~/bin/FreeCAD_1.0.2-conda-Linux-x86_64-py311.AppImage"),
-]
-# Also check for any AppImage in ~/bin
-import glob
-_candidates += sorted(glob.glob(os.path.expanduser("~/bin/FreeCAD*.AppImage")), reverse=True)
-for _c in _candidates:
+_explicit = os.environ.get("FREECAD_APPIMAGE", "")
+if _explicit:
+    _c = os.path.expanduser(_explicit)
     if os.path.isfile(_c) and os.access(_c, os.X_OK):
         FREECAD_CMD = _c
-        break
+else:
+    _default = default_appimage(discover(os.environ.get("FREECAD_APPIMAGE_DIR", APPIMAGE_DIR)))
+    FREECAD_CMD = _default.path if _default else None
+
+
+def pytest_configure(config):
+    # A mistyped FREECAD_APPIMAGE must not turn into "all integration tests skipped".
+    if _explicit and FREECAD_CMD is None:
+        raise pytest.UsageError(f"FREECAD_APPIMAGE={_explicit!r} is not an executable file")
+
+
+def pytest_report_header(config):
+    return f"freecad: {FREECAD_CMD or 'not found (integration tests skip)'}"
 
 
 def pytest_collection_modifyitems(config, items):

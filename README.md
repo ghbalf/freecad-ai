@@ -31,7 +31,7 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 
 ## Requirements
 
-- FreeCAD 1.0+ (tested with 1.0.2 and 1.1.0)
+- FreeCAD 1.0+ (integration tests pass on 1.0.1, 1.0.2, 1.1.1, 1.1.4 and the 26.3 release candidate; day-to-day GUI use on 1.1.x, Linux)
 - An LLM provider (local Ollama, or an API key for a cloud provider)
 
 ## Installation
