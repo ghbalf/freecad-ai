@@ -3174,6 +3174,11 @@ def _handle_list_documents() -> ToolResult:
         path = doc.FileName or "(unsaved)"
         owners = linked_from.get(doc.Name, [])
         linked = f" — linked from {', '.join(owners)}" if owners else ""
+        # FreeCAD can load a linked document partially: only the objects the
+        # link needs, so Objects/getObject() miss everything else in the file.
+        partial = bool(getattr(doc, "Partial", False))
+        if partial:
+            linked += " — PARTIALLY LOADED (only linked objects present)"
         lines.append(
             f"- **{doc.Name}**{marker}{modified} — "
             f"{obj_count} objects — {path}{linked}"
@@ -3186,6 +3191,7 @@ def _handle_list_documents() -> ToolResult:
             "modified": is_modified,
             "path": doc.FileName,
             "linked_from": owners,
+            "partial": partial,
         })
 
     return ToolResult(success=True, output="\n".join(lines),

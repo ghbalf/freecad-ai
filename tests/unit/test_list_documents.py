@@ -177,5 +177,32 @@ class TestListDocumentsLinkedFrom(unittest.TestCase):
         self.assertTrue(result.success)
 
 
+class TestListDocumentsPartial(unittest.TestCase):
+    def test_partially_loaded_document_is_flagged(self):
+        doc = _AppDocument("ALKIS", obj_count=2)
+        doc.Partial = True
+
+        result = _run([doc], gui=None, active=doc)
+
+        self.assertTrue(result.data["documents"][0]["partial"])
+        self.assertIn("PARTIALLY LOADED", result.output)
+
+    def test_fully_loaded_document_is_not_flagged(self):
+        doc = _AppDocument("Full", obj_count=2)
+        doc.Partial = False
+
+        result = _run([doc], gui=None, active=doc)
+
+        self.assertFalse(result.data["documents"][0]["partial"])
+        self.assertNotIn("PARTIALLY", result.output)
+
+    def test_document_without_partial_attribute_is_not_flagged(self):
+        doc = _AppDocument("Old", obj_count=1)
+
+        result = _run([doc], gui=None, active=doc)
+
+        self.assertFalse(result.data["documents"][0]["partial"])
+
+
 if __name__ == "__main__":
     unittest.main()
