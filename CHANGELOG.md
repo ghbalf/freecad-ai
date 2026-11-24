@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Warning when the prompt and tools alone don't fit (#158).** The system
+  prompt and tool definitions go out with every request (about 16,600
+  tokens in Act mode with all built-in tools). When they exceed the
+  profile's "Compact above" value, the chat shows their sizes and what to
+  change, once per chat and model. Compaction itself is unchanged, and the
+  model's real limit is not detected: the check only knows the setting.
+
 ## [0.35.0-alpha] - 2026-11-22
 
 ### Added

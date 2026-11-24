@@ -245,7 +245,7 @@ class LLMClient:
                  model: str, max_tokens: int = 4096, temperature: float = 0.3,
                  thinking: str = "off", model_params: dict | None = None,
                  prompt_caching: bool = False, log_usage: bool = False,
-                 cache_key: str = ""):
+                 cache_key: str = "", context_window: int = 0):
         self.provider_name = provider_name
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -268,6 +268,9 @@ class LLMClient:
         # Opaque per-conversation id for the sticky-routing hint below.
         # Empty for every call site that has no conversation to be sticky to.
         self.cache_key = cache_key
+        # The profile's "Compact above" value; 0 = unknown. Never sent: the
+        # chat worker checks the fixed part of a request against it (#158).
+        self.context_window = context_window
         # Token counts from the most recent response, normalised across both
         # API styles, or None if nothing reported any. Same ownership as
         # response_truncated above: the client records, the UI reads.
@@ -1335,7 +1338,7 @@ def create_client(cfg=None, utility: str | None = None, *,
     fallback walker uses it (#104). An unknown label means the same as
     None, so a profile deleted mid-turn never breaks the chat.
     """
-    from ..config import get_config
+    from ..config import context_window_for, get_config
     if cfg is None:
         cfg = get_config()
     chosen = (cfg.profiles[profile] if profile in cfg.profiles
@@ -1365,6 +1368,7 @@ def create_client(cfg=None, utility: str | None = None, *,
         prompt_caching=cfg.optimize_prompt_caching and utility is None,
         log_usage=cfg.log_token_usage,
         cache_key=cache_key,
+        context_window=context_window_for(cfg, chosen),
     )
 
 

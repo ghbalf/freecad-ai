@@ -239,6 +239,7 @@ class _LLMWorker(QThread):
     tool_exec_requested = Signal(str, str) # (tool_name, arguments_json) — dispatches to main thread
     vision_note = Signal(str)              # Vision description status note
     fallback_note = Signal(str)  # a fallback profile answered (#104)
+    context_note = Signal(str, str)  # (once-per-chat key, warning) (#158)
 
     def __init__(self, conversation, system_prompt, *, registry=None,
                  filter_names=None, describe_fn=None, strip_images=False,
@@ -260,6 +261,7 @@ class _LLMWorker(QThread):
         self._detached = False
         self.fallback_attempts = []
         self._describe_cache = {}
+        self._context_keys = set()  # context warnings already emitted (#158)
         self._full_response = ""
         self._thinking_text = ""
         self._tool_results = []
@@ -344,8 +346,25 @@ class _LLMWorker(QThread):
             tools = (self.registry.to_anthropic_schema(self.filter_names)
                      if client.api_style == "anthropic"
                      else self.registry.to_openai_schema(self.filter_names))
+        self._check_context(client, tools)
         return client.stream_with_tools(messages, system=self.system_prompt,
                                         tools=tools)
+
+    def _check_context(self, client, tools):
+        """Warn when prompt + tools alone exceed the profile's window (#158).
+
+        Here rather than on the GUI thread: the schemas are final only now,
+        and building them may fetch deferred MCP parameters. Before the
+        request, so the note is there when the server rejects it."""
+        from ..core.context_budget import fixed_part_warning
+        window = getattr(client, "context_window", 0)
+        key = f"{client.model}/{window}"
+        if not window or key in self._context_keys:
+            return
+        msg = fixed_part_warning(self.system_prompt, tools, window)
+        if msg:
+            self._context_keys.add(key)
+            self._emit(self.context_note, key, msg)
 
     def _memo_describe(self, data_url):
         """describe_fn, once per image per turn, with one status note.
@@ -970,6 +989,7 @@ class ChatDockWidget(QDockWidget):
         ("tool_exec_requested", "_execute_tool_call"),
         ("vision_note", "_on_vision_note"),
         ("fallback_note", "_on_fallback_note"),
+        ("context_note", "_on_context_note"),
     )
 
     def __init__(self, parent=None):
@@ -983,7 +1003,8 @@ class ChatDockWidget(QDockWidget):
         self._last_worker = None     # Save Log after a detach (#104)
         self._detach_pending = {}    # detach timer -> the worker it is for
         self._turn_open = False      # a worker's turn is in flight
-        self._turn_notes = []        # this turn's fallback notes
+        self._turn_notes = []        # this turn's fallback/context notes
+        self._context_warned = set()  # (conversation id, key) shown (#158)
         self._turn_start = None      # first message index of this turn
         self._input_history = InputHistory()
         self._suppress_history_reset = False  # set True around programmatic
@@ -2794,6 +2815,17 @@ class ChatDockWidget(QDockWidget):
         model."""
         if not self._from_current_worker():
             return
+        self._turn_notes.append(text)
+        self._append_html(_render_note(text))
+
+    def _on_context_note(self, key: str, text: str):
+        """Show a context warning, once per chat and model/window (#158)."""
+        if not self._from_current_worker():
+            return
+        shown = (self.conversation.conversation_id, key)
+        if shown in self._context_warned:
+            return
+        self._context_warned.add(shown)
         self._turn_notes.append(text)
         self._append_html(_render_note(text))
 
