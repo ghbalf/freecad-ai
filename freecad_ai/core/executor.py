@@ -741,19 +741,16 @@ def execute_code(code: str, timeout: int | None = None, sandbox: bool = True,
     sandbox_copy_path = None
     if sandbox and not skip_safety:
         pre_doc = get_synced_active_document()
-        fn = getattr(pre_doc, "FileName", "") if pre_doc else ""
-        if fn and os.path.isfile(fn):
-            try:
-                fd, sandbox_copy_path = tempfile.mkstemp(suffix=".FCStd")
-                os.close(fd)
-                shutil.copy2(fn, sandbox_copy_path)
-            except OSError as e:
-                return ExecutionResult(
-                    success=False,
-                    stdout="",
-                    stderr=f"Sandbox: could not copy document for validation: {e}",
-                    code=code,
-                )
+        sandbox_dir = None
+        try:
+            sandbox_copy_path, sandbox_dir = _make_sandbox_copy(pre_doc)
+        except OSError as e:
+            return ExecutionResult(
+                success=False,
+                stdout="",
+                stderr=f"Sandbox: could not copy document for validation: {e}",
+                code=code,
+            )
         try:
             # The dry-run must get the same budget as the live execution
             # (which arms a SIGALRM for the full `timeout`). Capping it lower
@@ -771,11 +768,8 @@ def execute_code(code: str, timeout: int | None = None, sandbox: bool = True,
                     code=code,
                 )
         finally:
-            if sandbox_copy_path:
-                try:
-                    os.unlink(sandbox_copy_path)
-                except OSError:
-                    pass
+            if sandbox_dir:
+                shutil.rmtree(sandbox_dir, ignore_errors=True)
 
     # No active document is fine: the code may be what creates one (#149).
     # It then runs without an undo transaction — there is nothing to undo
@@ -890,31 +884,73 @@ def validate_code(code: str, timeout: int = 15, skip_safety: bool = False) -> Ex
 
     from .active_document import get_synced_active_document
     pre_doc = get_synced_active_document()
-    fn = getattr(pre_doc, "FileName", "") if pre_doc else ""
-    sandbox_copy_path = None
-    if fn and os.path.isfile(fn):
-        try:
-            fd, sandbox_copy_path = tempfile.mkstemp(suffix=".FCStd")
-            os.close(fd)
-            shutil.copy2(fn, sandbox_copy_path)
-        except OSError as e:
-            return ExecutionResult(
-                success=False,
-                stdout="",
-                stderr=f"Sandbox: could not copy document for validation: {e}",
-                code=code,
-            )
+    try:
+        sandbox_copy_path, sandbox_dir = _make_sandbox_copy(pre_doc)
+    except OSError as e:
+        return ExecutionResult(
+            success=False,
+            stdout="",
+            stderr=f"Sandbox: could not copy document for validation: {e}",
+            code=code,
+        )
     try:
         safe, err = _sandbox_test(code, timeout=timeout, document_path=sandbox_copy_path)
     finally:
-        if sandbox_copy_path:
-            try:
-                os.unlink(sandbox_copy_path)
-            except OSError:
-                pass
+        if sandbox_dir:
+            shutil.rmtree(sandbox_dir, ignore_errors=True)
     if safe:
         return ExecutionResult(success=True, stdout="", stderr="", code=code)
     return ExecutionResult(success=False, stdout="", stderr=err, code=code)
+
+
+def _linked_document_files(doc) -> list[str]:
+    """Saved files of every document *doc* links to, directly or transitively."""
+    try:
+        deps = doc.getDependentDocuments(True)
+    except Exception:
+        return []
+    files = []
+    for dep in deps:
+        fn = getattr(dep, "FileName", "")
+        if fn and os.path.isfile(fn) and fn not in files:
+            files.append(fn)
+    return files
+
+
+def _make_sandbox_copy(doc):
+    """Copy *doc*'s file plus the files it links to into a temp directory.
+
+    Link paths inside an .FCStd are stored relative to the document, so a
+    lone copy in a temp dir loses every linked document (``getDocument``
+    fails, ``listDocuments`` is incomplete). The files are copied with their
+    relative layout intact so the links still resolve.
+
+    Returns ``(sandbox_path, cleanup_dir)``; ``(None, None)`` when *doc* has
+    no saved file. Raises OSError when copying fails.
+    """
+    fn = getattr(doc, "FileName", "") if doc else ""
+    if not (fn and os.path.isfile(fn)):
+        return None, None
+    fn = os.path.abspath(fn)
+    sources = [fn] + [
+        os.path.abspath(f) for f in _linked_document_files(doc)
+        if os.path.abspath(f) != fn
+    ]
+    try:
+        root = os.path.commonpath([os.path.dirname(f) for f in sources])
+    except ValueError:  # different drives (Windows): no shared layout possible
+        root = os.path.dirname(fn)
+        sources = [fn]
+    tmp_dir = tempfile.mkdtemp(prefix="freecad_ai_sandbox_")
+    try:
+        for src in sources:
+            dst = os.path.join(tmp_dir, os.path.relpath(src, root))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+    except OSError:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    return os.path.join(tmp_dir, os.path.relpath(fn, root)), tmp_dir
 
 
 def _validate_code(code: str) -> list[str]:
