@@ -221,7 +221,7 @@ def _handle_create_primitive(
 
 CREATE_PRIMITIVE = ToolDefinition(
     name="create_primitive",
-    description="Create a PartDesign primitive (Box, Cylinder, Sphere, Cone, Torus) inside a Body. Auto-creates a Body if body_name is not given. Use operation='subtractive' to cut material from an existing body.",
+    description="Create a PartDesign primitive (Box, Cylinder, Sphere, Cone, Torus) inside a Body. Auto-creates a Body if body_name is not given. Use operation='subtractive' to cut material from an existing body. IMPORTANT: a PartDesign Body must end up as ONE continuous (non-disjoint) solid — every primitive added to the same body_name must touch/overlap the shape already in that body. Adding primitives that never touch (e.g. two limbs of a figure, two unrelated stand legs) silently produces an invalid-for-display Body: Shape.isValid() still reports True and Visibility stays True, but the body will not render (may show as empty, or 'through' features leak individually). If a piece does not naturally touch the rest, give it its own Body via a fresh body_name instead of reusing an existing one.",
     category="modeling",
     parameters=[
         ToolParam("shape_type", "string", "Type of primitive to create",
@@ -267,7 +267,7 @@ def _handle_create_body(
 
 CREATE_BODY = ToolDefinition(
     name="create_body",
-    description="Create a PartDesign Body. Bodies are containers for parametric features (sketches, pads, pockets, fillets, etc). Create a body first, then add sketches to it using body_name parameter.",
+    description="Create a PartDesign Body. Bodies are containers for parametric features (sketches, pads, pockets, fillets, etc). Create a body first, then add sketches to it using body_name parameter. A Body must remain ONE continuous solid — features that don't touch what's already in the body (e.g. a second, disconnected part of an assembly) belong in a separate Body, not this one; see create_primitive's description for what goes wrong otherwise.",
     category="modeling",
     parameters=[
         ToolParam("label", "string", "Display label for the body", required=False, default="Body"),
