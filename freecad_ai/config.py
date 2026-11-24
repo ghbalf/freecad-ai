@@ -454,6 +454,11 @@ def _profile_from_dict(raw) -> "ProviderConfig":
     return ProviderConfig(**kept)
 
 
+def context_window_for(cfg, profile) -> int:
+    """The profile's own "Compact above" value, or the global one."""
+    return profile.context_window or cfg.context_window
+
+
 def compaction_threshold(cfg) -> int:
     """Token count above which the conversation is compacted.
 
@@ -462,8 +467,7 @@ def compaction_threshold(cfg) -> int:
     big for the model being talked to. Who writes the summary is a
     separate setting (#103).
     """
-    own = cfg.provider.context_window
-    return own if own else cfg.context_window
+    return context_window_for(cfg, cfg.provider)
 
 
 _OMIT = object()          # "this value cannot go in the file"

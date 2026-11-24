@@ -381,6 +381,7 @@ def test_a_signal_from_an_old_worker_changes_nothing(signal, slot, current):
         _worker=None if current is None else object()), old)
     args = {"tool_call_finished": ("t", "c", True, "o"),
             "tool_call_started": ("t", "c"),
+            "context_note": ("k", "t"),
             "tool_exec_requested": ("t", "{}")}.get(signal, ("x",))
     assert getattr(W, slot)(fake, *args) is None
 
