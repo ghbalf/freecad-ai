@@ -282,6 +282,10 @@ Ein: Standard-Denkmodus
 Erweitert: Erweitertes Denken mit höherem Budget</translation>
     </message>
     <message>
+        <source>Sent unchanged in Act mode with tools. In Plan mode, and in Act mode without tools, the "Mode" section is replaced to match, and missing reference sections are added.</source>
+        <translation>Wird im Ausführungsmodus mit Werkzeugen unverändert gesendet. Im Planungsmodus und im Ausführungsmodus ohne Werkzeuge wird der Abschnitt „Mode“ passend ersetzt, und fehlende Referenzabschnitte werden ergänzt.</translation>
+    </message>
+    <message>
         <source>MCP Servers</source>
         <translation>MCP-Server</translation>
     </message>
