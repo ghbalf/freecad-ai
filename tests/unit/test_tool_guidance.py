@@ -8,9 +8,9 @@ from freecad_ai.core import system_prompt, tool_guidance
 def test_act_mode_tools_unchanged():
     # Prompt caching (#47) needs the chat prompt byte-identical across
     # unrelated changes. Re-record only on a deliberate rule change (each one
-    # costs every user one cache miss) — last: save/close_document (#152).
+    # costs every user one cache miss) — last: shorter prompt (#159).
     h = hashlib.sha256(system_prompt.ACT_MODE_TOOLS.encode()).hexdigest()
-    assert h == "3eea4bac65622677a5211273237549ba1b3d97ffcc34929ca5cfe9cfec263102"
+    assert h == "b7b1c507181533b80c725e7a0743898f40b88b2e6bdda0a1c94f34944b3c28ef"
 
 
 def test_act_mode_tools_ends_with_the_shared_guidance():
@@ -59,3 +59,51 @@ def test_enclosure_pattern_comes_last_for_agents():
     from freecad_ai.mcp.server import SERVER_INSTRUCTIONS
     assert SERVER_INSTRUCTIONS.split("\n\n")[-1].startswith(
         "**Enclosure construction pattern**")
+
+
+# --- shorter Act prompt (#159) ------------------------------------------------
+
+# Tools whose task→tool line was dropped: the tool description must carry it.
+DROPPED = (
+    "loft_sketches", "sweep_sketch", "transform_object", "fillet_edges",
+    "chamfer_edges", "create_wedge", "scale_object", "section_object",
+    "linear_pattern", "polar_pattern", "mirror_feature", "shell_object",
+    "measure", "list_faces", "list_edges", "create_document", "open_document",
+    "save_document", "close_document", "get_document_state",
+    "modify_property", "delete_object", "undo", "select_geometry",
+    "capture_viewport", "set_view", "zoom_object", "execute_code",
+)
+
+KEPT_BULLETS = (
+    "- For solid shapes (box, cylinder, sphere, cone, torus): use `create_primitive` (auto-creates a Body; pass body_name to add to an existing Body, operation=\"subtractive\" to cut)",
+    "- For complex profiles or swept shapes: `create_body` → `create_sketch` → `pad_sketch` / `pocket_sketch` / `revolve_sketch`",
+    "- To sketch on a SELECTED or named planar face of an existing solid (e.g. \"sketch on the selected face\"): use `create_sketch` with `support` + `face` (get the face name from `list_faces`). It handles the attachment, planar-face validation, and offset — do NOT hand-write a macro that sets `AttachmentSupport`/`MapMode`.",
+    "- To drill a hole / cut a feature into a SINGLE existing solid: add a subtractive feature INSIDE that Body — `create_primitive(operation=\"subtractive\", body_name=...)` or `pocket_sketch`. Do NOT use `boolean_operation` for this; a Part boolean buries the original sketch/pad and makes the model history uneditable.",
+    "- For booleans between two SEPARATE objects: use `boolean_operation` (it auto-uses a parametric PartDesign::Boolean when both are Bodies, preserving history)",
+    "- For chaining multiple transformations (e.g. linear pattern + mirror) into one feature: use `multi_transform` — accepts multiple features to transform as a group (order matters: last feature = tip)",
+    "- For reading or changing parameters in a VarSet or Spreadsheet: use `read_variable_set`/`edit_variable_set` or `read_spreadsheet`/`edit_spreadsheet` — never `modify_property` on a spreadsheet cell (the change is lost on reload)",
+    "- For exporting to STEP, STL, or other formats: use `export_model`",
+)
+
+
+def test_every_tool_dropped_from_the_guidance_is_described():
+    from freecad_ai.tools.setup import create_default_registry
+    tools = {t.name: t for t in
+             create_default_registry(include_mcp=False).list_tools()}
+    for name in DROPPED:
+        assert name in tools, name
+        assert len(tools[name].description.strip()) > 20, name
+
+
+def test_kept_rules_are_present():
+    """Word for word, and nothing else in the strategy list."""
+    strategy, rest = tool_guidance.TOOL_GUIDANCE.split("\n\n", 1)
+    assert strategy.split("\n")[1:] == list(KEPT_BULLETS)
+    for rule in KEY_RULES:
+        assert rule in rest
+    assert rest.split("\n\n")[-1].startswith("**Enclosure construction pattern**")
+
+
+def test_default_act_prompt_is_short():
+    # 6777 characters before #159.
+    assert len(system_prompt.get_default_system_prompt()) < 4900

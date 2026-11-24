@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   change, once per chat and model. Compaction itself is unchanged, and the
   model's real limit is not detected: the check only knows the setting.
 
+### Changed
+
+- **Shorter Act prompt (#159).** 27 lines that only repeated what a tool's
+  own description says are gone; the rules and the enclosure recipe are
+  unchanged. The instructions sent to external MCP agents share the text.
+  Saved custom prompts are not touched.
+
 ## [0.35.0-alpha] - 2026-11-22
 
 ### Added
