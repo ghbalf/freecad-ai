@@ -3126,6 +3126,27 @@ def _gui_modified(doc):
         return None
 
 
+def _linked_from(docs) -> dict:
+    """Map document name -> names of the open documents that link to it.
+
+    A linked document (e.g. a shared survey file) is a document in its own
+    right, but it only exists because another one pulls it in. Knowing that
+    explains why it is there, and why a sandboxed copy of the *linking*
+    document can lack it.
+    """
+    result = {d.Name: [] for d in docs}
+    for owner in docs:
+        try:
+            deps = owner.getDependentDocuments(False)
+        except Exception:
+            continue
+        for dep in deps:
+            name = getattr(dep, "Name", None)
+            if name in result and name != owner.Name:
+                result[name].append(owner.Name)
+    return result
+
+
 def _handle_list_documents() -> ToolResult:
     """List all open FreeCAD documents."""
     import FreeCAD as App
@@ -3142,6 +3163,7 @@ def _handle_list_documents() -> ToolResult:
     def _is_modified(doc) -> bool:
         return bool(_gui_modified(doc))
 
+    linked_from = _linked_from(docs)
     lines = [f"## Open Documents ({len(docs)})"]
     doc_data = []
     for doc in docs:
@@ -3150,9 +3172,11 @@ def _handle_list_documents() -> ToolResult:
         is_modified = _is_modified(doc)
         modified = " *" if is_modified else ""
         path = doc.FileName or "(unsaved)"
+        owners = linked_from.get(doc.Name, [])
+        linked = f" — linked from {', '.join(owners)}" if owners else ""
         lines.append(
             f"- **{doc.Name}**{marker}{modified} — "
-            f"{obj_count} objects — {path}"
+            f"{obj_count} objects — {path}{linked}"
         )
         doc_data.append({
             "name": doc.Name,
@@ -3161,6 +3185,7 @@ def _handle_list_documents() -> ToolResult:
             "object_count": obj_count,
             "modified": is_modified,
             "path": doc.FileName,
+            "linked_from": owners,
         })
 
     return ToolResult(success=True, output="\n".join(lines),

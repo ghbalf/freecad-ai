@@ -289,7 +289,7 @@ Tool calling is enabled by default. Disable it by setting `enable_tools: false` 
 | `describe_model` | Comprehensive geometry summary: dimensions, wall thickness, hollow/solid detection |
 | `list_faces` | List all faces with names, labels, normals, areas (optional filter) |
 | `list_edges` | List all edges with names, labels, lengths (optional filter) |
-| `list_documents` | List all open documents with object counts and active indicator |
+| `list_documents` | List all open documents with object counts, active indicator and which document links to which |
 | `switch_document` | Switch the active FreeCAD document by name or label |
 | `get_document_state` | Inspect current objects and properties |
 | `create_variable_set` | Create a VarSet with named variables for parametric modeling |

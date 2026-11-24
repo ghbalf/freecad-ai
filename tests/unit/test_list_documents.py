@@ -135,5 +135,47 @@ class TestListDocumentsModifiedFlag(unittest.TestCase):
         self.assertTrue(by_name["B"]["active"])
 
 
+class _LinkingDocument(_AppDocument):
+    def __init__(self, name, deps=()):
+        super().__init__(name, obj_count=1)
+        self._deps = list(deps)
+
+    def getDependentDocuments(self, sort=True):
+        return [self] + self._deps
+
+
+class TestListDocumentsLinkedFrom(unittest.TestCase):
+    def test_linked_document_names_its_owner(self):
+        alkis = _AppDocument("ALKIS", obj_count=3)
+        main = _LinkingDocument("Main", deps=[alkis])
+
+        result = _run([main, alkis], gui=None, active=main)
+
+        by_name = {d["name"]: d for d in result.data["documents"]}
+        self.assertEqual(by_name["ALKIS"]["linked_from"], ["Main"])
+        self.assertEqual(by_name["Main"]["linked_from"], [])
+        self.assertIn("linked from Main", result.output)
+
+    def test_unlinked_documents_have_no_marker(self):
+        a = _AppDocument("A", obj_count=1)
+        b = _AppDocument("B", obj_count=1)
+
+        result = _run([a, b], gui=None, active=a)
+
+        self.assertNotIn("linked from", result.output)
+        self.assertTrue(all(d["linked_from"] == [] for d in result.data["documents"]))
+
+    def test_failing_dependency_lookup_is_swallowed(self):
+        class _Broken(_AppDocument):
+            def getDependentDocuments(self, sort=True):
+                raise RuntimeError("boom")
+
+        doc = _Broken("Broken", obj_count=1)
+
+        result = _run([doc], gui=None, active=doc)
+
+        self.assertTrue(result.success)
+
+
 if __name__ == "__main__":
     unittest.main()
