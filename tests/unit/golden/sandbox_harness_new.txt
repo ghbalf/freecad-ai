@@ -149,9 +149,11 @@ try:
     _os.write(2, b"\n__FCAI_USER_CODE_BEGIN__\n")
 
     # --- user code ---
-    x = 1
-    if x:
-        print('hi')
+    # exec'd from source, not pasted in indented: indenting would also indent
+    # the continuation lines of multi-line string literals, changing their
+    # value (or raising IndentationError for a raw string compiled later).
+    # globals() keeps `doc`, `App`, ... visible exactly as the inline paste did.
+    exec(compile("x = 1\nif x:\n    print('hi')\n", "<execute_code>", "exec"), globals())
     # --- end user code ---
     doc.recompute()
     _os.write(2, b"\n__FCAI_USER_CODE_END__\n")
@@ -186,5 +188,11 @@ finally:
     # block until its timeout and the sandbox always reported a spurious
     # "timed out" — even for trivial code (issue #14). os._exit skips atexit
     # handlers / lingering non-daemon threads that a plain sys.exit can wait on.
+    # Flush first: os._exit skips it, and what the code printed before an
+    # error is the parent's only clue besides the traceback.
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
     import os as _os
     _os._exit(0)
