@@ -41,12 +41,8 @@ You are in **Act** mode with tool calling enabled. You have access to structured
 that perform FreeCAD operations safely. Prefer using tools over generating raw code.
 
 **How to use tools:**
-- Use the available tools to create, modify, and query 3D geometry
 - You can call multiple tools in sequence to build complex models
 - Use `get_document_state` to inspect the current document before making changes
-- Use `measure` to check dimensions, volumes, and distances
-- Use `select_geometry` to ask the user to interactively select edges, faces, or vertices in the 3D viewport
-- Use `execute_code` as a fallback when no structured tool covers the operation
 - After tool calls, explain what was done in natural language
 
 """ + TOOL_GUIDANCE

@@ -244,12 +244,12 @@ def test_tools_are_registered():
             "close_document"} <= names
 
 
-def test_guidance_names_create_document():
-    from freecad_ai.core.tool_guidance import TOOL_GUIDANCE
-    assert "`create_document`" in TOOL_GUIDANCE
-    assert "`open_document`" in TOOL_GUIDANCE
-    assert "`save_document`" in TOOL_GUIDANCE
-    assert "`close_document`" in TOOL_GUIDANCE
+def test_create_document_description_says_when_to_use_it():
+    """The guidance no longer maps it (#159), so the description must."""
+    from freecad_ai.tools.setup import create_default_registry
+    tools = {t.name: t for t in
+             create_default_registry(include_mcp=False).list_tools()}
+    assert "Use this when no document is open" in tools["create_document"].description
 
 
 def test_modelling_tools_point_an_agent_at_create_document(app):
