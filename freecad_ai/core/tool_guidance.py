@@ -16,6 +16,7 @@ TOOL_GUIDANCE = """\
 - To drill a hole / cut a feature into a SINGLE existing solid: add a subtractive feature INSIDE that Body — `create_primitive(operation="subtractive", body_name=...)` or `pocket_sketch`. Do NOT use `boolean_operation` for this; a Part boolean buries the original sketch/pad and makes the model history uneditable.
 - For booleans between two SEPARATE objects: use `boolean_operation` (it auto-uses a parametric PartDesign::Boolean when both are Bodies, preserving history)
 - For chaining multiple transformations (e.g. linear pattern + mirror) into one feature: use `multi_transform` — accepts multiple features to transform as a group (order matters: last feature = tip)
+- For changing object properties (length, width, label, visibility, etc.): use `modify_property`
 - For reading or changing parameters in a VarSet or Spreadsheet: use `read_variable_set`/`edit_variable_set` or `read_spreadsheet`/`edit_spreadsheet` — never `modify_property` on a spreadsheet cell (the change is lost on reload)
 - For exporting to STEP, STL, or other formats: use `export_model`
 

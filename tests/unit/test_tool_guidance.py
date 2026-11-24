@@ -10,7 +10,7 @@ def test_act_mode_tools_unchanged():
     # unrelated changes. Re-record only on a deliberate rule change (each one
     # costs every user one cache miss) — last: shorter prompt (#159).
     h = hashlib.sha256(system_prompt.ACT_MODE_TOOLS.encode()).hexdigest()
-    assert h == "b7b1c507181533b80c725e7a0743898f40b88b2e6bdda0a1c94f34944b3c28ef"
+    assert h == "da12d188946a16139f0644ceb5c1f460d63fc022cddf360026be9383807224f8"
 
 
 def test_act_mode_tools_ends_with_the_shared_guidance():
@@ -70,7 +70,7 @@ DROPPED = (
     "linear_pattern", "polar_pattern", "mirror_feature", "shell_object",
     "measure", "list_faces", "list_edges", "create_document", "open_document",
     "save_document", "close_document", "get_document_state",
-    "modify_property", "delete_object", "undo", "select_geometry",
+    "delete_object", "undo", "select_geometry",
     "capture_viewport", "set_view", "zoom_object", "execute_code",
 )
 
@@ -81,6 +81,7 @@ KEPT_BULLETS = (
     "- To drill a hole / cut a feature into a SINGLE existing solid: add a subtractive feature INSIDE that Body — `create_primitive(operation=\"subtractive\", body_name=...)` or `pocket_sketch`. Do NOT use `boolean_operation` for this; a Part boolean buries the original sketch/pad and makes the model history uneditable.",
     "- For booleans between two SEPARATE objects: use `boolean_operation` (it auto-uses a parametric PartDesign::Boolean when both are Bodies, preserving history)",
     "- For chaining multiple transformations (e.g. linear pattern + mirror) into one feature: use `multi_transform` — accepts multiple features to transform as a group (order matters: last feature = tip)",
+    "- For changing object properties (length, width, label, visibility, etc.): use `modify_property`",
     "- For reading or changing parameters in a VarSet or Spreadsheet: use `read_variable_set`/`edit_variable_set` or `read_spreadsheet`/`edit_spreadsheet` — never `modify_property` on a spreadsheet cell (the change is lost on reload)",
     "- For exporting to STEP, STL, or other formats: use `export_model`",
 )

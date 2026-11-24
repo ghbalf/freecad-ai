@@ -7,9 +7,9 @@
 - B: also rewrite the rules tersely. Rejected: changes rules that fix known failures.
 - C: move the enclosure recipe to the skill. Rejected: only helps models that load the skill.
 
-**Kept verbatim:** the four **Important** rules; the bullets for `create_primitive`, the sketch workflow, sketch on a selected face, cutting a single solid, booleans, VarSet/Spreadsheet, `export_model`; the enclosure pattern; "call multiple tools", "`get_document_state` before making changes" and "explain what was done".
+**Kept verbatim:** the four **Important** rules; the bullets for `create_primitive`, the sketch workflow, sketch on a selected face, cutting a single solid, booleans, VarSet/Spreadsheet, `export_model`, `modify_property` (only place naming label and visibility; found in review); the enclosure pattern; "call multiple tools", "`get_document_state` before making changes" and "explain what was done".
 
-**Removed:** 23 mapping bullets in `TOOL_GUIDANCE` and four lines in `ACT_MODE_TOOLS` ("Use the available tools", `measure`, `select_geometry`, `execute_code` fallback).
+**Removed:** 22 mapping bullets in `TOOL_GUIDANCE` and four lines in `ACT_MODE_TOOLS` ("Use the available tools", `measure`, `select_geometry`, `execute_code` fallback).
 
 **Goal:** tool choice no worse on a small local model. **Non-goals:** tool schemas, Plan mode (own issue), saved custom prompts (left as they are).
 

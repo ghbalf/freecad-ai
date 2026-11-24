@@ -18,8 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **Shorter Act prompt (#159).** 27 lines that only repeated what a tool's
-  own description says are gone; the rules and the enclosure recipe are
+- **Shorter Act prompt (#159).** 26 lines that added nothing to the tools' own
+  descriptions are gone; the rules and the enclosure recipe are
   unchanged. The instructions sent to external MCP agents share the text.
   Saved custom prompts are not touched.
 
