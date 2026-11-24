@@ -294,35 +294,78 @@ RESPONSE_FORMAT = """\
 - If you need more information to proceed, ask the user"""
 
 
+def _mode_section(mode: str, tools_enabled: bool) -> str:
+    if tools_enabled and mode == "act":
+        return ACT_MODE_TOOLS
+    return PLAN_MODE if mode == "plan" else ACT_MODE
+
+
+def _reference_sections(tools_enabled: bool) -> list[str]:
+    if tools_enabled:
+        return [CODE_CONVENTIONS_TOOLS]
+    return [FREECAD_API_REFERENCE, CODE_CONVENTIONS, RESPONSE_FORMAT]
+
+
 def _build_static_prompt(mode: str, tools_enabled: bool) -> str:
     """Build the static (instruction) part of the system prompt.
 
     This is the part the user can customize in Settings.
     """
-    sections = [IDENTITY, ""]
-
-    # Mode instructions
-    if tools_enabled and mode == "act":
-        sections.append(ACT_MODE_TOOLS)
-    elif mode == "plan":
-        sections.append(PLAN_MODE)
-    else:
-        sections.append(ACT_MODE)
-    sections.append("")
-
-    if tools_enabled:
-        sections.append(CODE_CONVENTIONS_TOOLS)
-    else:
-        sections.append(FREECAD_API_REFERENCE)
-        sections.append("")
-        sections.append(CODE_CONVENTIONS)
-    sections.append("")
-
-    if not tools_enabled:
-        sections.append(RESPONSE_FORMAT)
-        sections.append("")
-
+    sections = []
+    for section in (IDENTITY, _mode_section(mode, tools_enabled),
+                    *_reference_sections(tools_enabled)):
+        sections += [section, ""]
     return "\n".join(sections)
+
+
+def _split_sections(text: str) -> list[str]:
+    """Split at ``## `` headings, ignoring those inside code fences."""
+    parts = [[]]
+    in_fence = False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+        elif line.startswith("## ") and not in_fence:
+            parts.append([])
+        parts[-1].append(line)
+    return ["\n".join(part) for part in parts]
+
+
+def _heading(section: str) -> str:
+    return section.split("\n", 1)[0].strip()
+
+
+def _adapt_override(override: str, mode: str, tools_enabled: bool) -> str:
+    """Fit a custom prompt to the current mode (#161).
+
+    Settings offers the Act-with-tools prompt for editing, so that mode gets
+    the text unchanged. Elsewhere its mode section would tell the model to
+    call tools it doesn't have: swap it for the current mode's, and add the
+    reference sections the text lacks. A section the user wrote for the
+    current mode wins over ours.
+    """
+    if tools_enabled and mode == "act":
+        return override
+
+    wanted = _mode_section(mode, tools_enabled)
+    parts = _split_sections(override)
+    headings = [_heading(part) for part in parts]
+    have_own = _heading(wanted) in headings
+    kept = []
+    placed = have_own
+    for part, heading in zip(parts, headings):
+        if heading.startswith("## Mode:") and heading != _heading(wanted):
+            if not placed:
+                kept.append(wanted + "\n")
+                placed = True
+            continue
+        kept.append(part)
+    missing = [] if placed else [wanted]
+    missing += [section for section in _reference_sections(tools_enabled)
+                if _heading(section) not in headings]
+    for section in missing:
+        kept.append("\n" + section)
+    return "\n".join(kept) + "\n"
 
 
 def get_default_system_prompt(mode: str = "act",
@@ -345,7 +388,8 @@ def build_system_prompt(mode: str = "plan", agents_md: str = "",
         agents_md: Contents of AGENTS.md / FREECAD_AI.md file, if any
         tools_enabled: Whether tool calling is active (shorter prompt, no API ref)
         override: If non-empty, replaces the static instruction portion of the
-                  prompt. Dynamic sections (document context, skills, AGENTS.md)
+                  prompt; outside Act mode with tools, _adapt_override() fits
+                  it to the mode. Dynamic sections (document context, skills, AGENTS.md)
                   are still appended.
         include_document_context: When False, omit the live document state so
                   the prompt is byte-identical between turns and prompt caches
@@ -355,7 +399,7 @@ def build_system_prompt(mode: str = "plan", agents_md: str = "",
     """
     # Static instructions — either user override or generated default
     if override:
-        static = override
+        static = _adapt_override(override, mode, tools_enabled)
     else:
         static = _build_static_prompt(mode, tools_enabled)
 
