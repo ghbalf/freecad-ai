@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   section you already wrote is kept in Plan mode, and still sent in Act mode
   as well. Short custom prompts get about 10,000 characters longer outside
   Act mode with tools.
+- **The retry after a code error keeps your custom system prompt.** It was
+  sent with the default instructions instead.
 
 ## [0.35.0-alpha] - 2026-11-22
 
