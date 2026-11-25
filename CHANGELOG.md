@@ -18,9 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **Shorter Act prompt (#159).** 26 lines that added nothing to the tools' own
+- **Shorter Act prompt (#159).** 26 lines that largely repeated the tools' own
   descriptions are gone; the rules and the enclosure recipe are
-  unchanged. The instructions sent to external MCP agents share the text.
+  unchanged. In tests with kimi-k2.6 and a local qwen3.8 27B, tool choice
+  was about the same (qwen3.8: 106 vs 108 of 114 before); smaller models
+  were not tested. The instructions sent to external MCP agents share the text.
   Saved custom prompts are not touched.
 
 ### Fixed
