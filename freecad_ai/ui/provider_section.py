@@ -484,8 +484,9 @@ class ProviderSection(QWidget):
         try:
             self.profile_combo.clear()
             for label in self._profiles:
-                text = (f"{label} (active)" if label == self._active_profile
-                        else label)
+                text = label
+                if label == self._active_profile:
+                    text = translate("SettingsDialog", "{} (active)").format(label)
                 self.profile_combo.addItem(text, label)
             for candidate in (getattr(self, "_current_profile_label", None),
                               self._active_profile):

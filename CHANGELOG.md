@@ -15,9 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   profile's "Compact above" value, the chat shows their sizes and what to
   change, once per chat and model. Compaction itself is unchanged, and the
   model's real limit is not detected: the check only knows the setting.
-- **German strings for the Settings pages, chat and code review.** 257
-  strings, most of the Settings dialog among them, were still shown in English.
-  The skill optimizer and restore dialogs are not translated yet.
+- **German strings for the Settings pages, chat, code review, and the skill
+  optimizer and restore dialogs.** 307 strings, most of the Settings dialog
+  among them, were still shown in English.
 
 ### Changed
 
