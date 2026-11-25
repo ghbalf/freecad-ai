@@ -212,6 +212,31 @@ def test_the_retry_path_hands_over_the_conversation(monkeypatch, tmp_config_dir)
     assert "api_style" not in started
 
 
+@pytest.mark.parametrize("index, mode", [(0, "plan"), (1, "act")])
+def test_the_retry_path_keeps_the_custom_prompt(monkeypatch, tmp_config_dir,
+                                                index, mode):
+    """The retry sends no tools, so it gets what a send without tools gets."""
+    from freecad_ai.config import get_config
+    from freecad_ai.core.system_prompt import build_system_prompt
+    custom = "HOUSE RULE\n\n## Mode: Act (with Tools)\nCALL TOOLS\n"
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "system_prompt_override", custom)
+    monkeypatch.setattr(cfg, "optimize_prompt_caching", False)
+    started = {}
+    fake = SimpleNamespace(
+        _retry_count=0,
+        conversation=Conversation(messages=[{"role": "user", "content": "go"}]),
+        _capture_mode_override="off", _append_html=MagicMock(),
+        mode_combo=SimpleNamespace(currentIndex=lambda: index),
+        _needs_vision=W._needs_vision,
+        _start_worker=lambda c, s, **kw: started.update(kw, system=s))
+    W._handle_execution_error(fake, SimpleNamespace(stderr="boom"))
+    assert "HOUSE RULE" in started["system"]
+    assert "CALL TOOLS" not in started["system"]
+    assert started["system"] == build_system_prompt(mode=mode, override=custom)
+    assert not {"tools", "registry"} & started.keys()
+
+
 def test_needs_vision_comes_from_the_rendered_history():
     conv = Conversation()
     conv.add_user_message("look", images=[{"type": "image", "data": "AA",

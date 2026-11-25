@@ -2923,7 +2923,7 @@ class ChatDockWidget(QDockWidget):
         mode = "plan" if self.mode_combo.currentIndex() == 0 else "act"
         cfg = get_config()
         system_prompt = build_system_prompt(
-            mode=mode,
+            mode=mode, override=cfg.system_prompt_override,
             include_document_context=not cfg.optimize_prompt_caching)
         # Same tail delivery as the main send path (#47). The turn being
         # re-sent is the [System] error message added just above.
