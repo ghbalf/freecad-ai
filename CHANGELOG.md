@@ -31,9 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   section is swapped for the current mode's there, and the API reference
   and conventions are added if missing. In Act mode with tools the text is
   sent unchanged. Rules written inside the Act section don't apply in other
-  modes; put them before it or under another heading, or add your own
-  `## Mode: Plan` section, which is kept. Short custom prompts get about 10,000
-  characters longer in those modes.
+  modes; put them before it or under another heading. A `## Mode: Plan`
+  section you already wrote is kept in Plan mode, and still sent in Act mode
+  as well. Short custom prompts get about 10,000 characters longer outside
+  Act mode with tools.
 
 ## [0.35.0-alpha] - 2026-11-22
 

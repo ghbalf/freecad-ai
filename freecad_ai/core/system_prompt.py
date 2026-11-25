@@ -9,6 +9,8 @@ Assembles a dynamic system prompt that includes:
   6. AGENTS.md project-level instructions
 """
 
+import re
+
 from .context import get_document_context
 from .tool_guidance import TOOL_GUIDANCE
 from ..extensions.agents_md import load_agents_md
@@ -318,21 +320,44 @@ def _build_static_prompt(mode: str, tools_enabled: bool) -> str:
     return "\n".join(sections)
 
 
+_SECTION_RE = re.compile(r" {0,3}##[ \t]")
+# A backtick fence can't have backticks after it: ```x``` is inline code.
+_FENCE_RE = re.compile(r"[ \t]*(`{3,}(?=[^`]*$)|~{3,})")
+
+
+def _fence_end(lines: list[str], start: int) -> int:
+    """Index of the line closing the fence opened at *start*.
+
+    *start* itself if that line opens no fence, or one that is never closed:
+    treating it as open would swallow every section after it.
+    """
+    opener = _FENCE_RE.match(lines[start])
+    if not opener:
+        return start
+    fence = opener.group(1)
+    for i in range(start + 1, len(lines)):
+        line = lines[i].strip()
+        if len(line) >= len(fence) and set(line) == {fence[0]}:
+            return i
+    return start
+
+
 def _split_sections(text: str) -> list[str]:
     """Split at ``## `` headings, ignoring those inside code fences."""
+    lines = text.split("\n")
     parts = [[]]
-    in_fence = False
-    for line in text.split("\n"):
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
-        elif line.startswith("## ") and not in_fence:
+    i = 0
+    while i < len(lines):
+        end = _fence_end(lines, i)
+        if _SECTION_RE.match(lines[i]):
             parts.append([])
-        parts[-1].append(line)
+        parts[-1].extend(lines[i:end + 1])
+        i = end + 1
     return ["\n".join(part) for part in parts]
 
 
 def _heading(section: str) -> str:
-    return section.split("\n", 1)[0].strip()
+    return " ".join(section.split("\n", 1)[0].split())
 
 
 def _adapt_override(override: str, mode: str, tools_enabled: bool) -> str:
@@ -389,8 +414,8 @@ def build_system_prompt(mode: str = "plan", agents_md: str = "",
         tools_enabled: Whether tool calling is active (shorter prompt, no API ref)
         override: If non-empty, replaces the static instruction portion of the
                   prompt; outside Act mode with tools, _adapt_override() fits
-                  it to the mode. Dynamic sections (document context, skills, AGENTS.md)
-                  are still appended.
+                  it to the mode. Dynamic sections (document context, skills,
+                  AGENTS.md) are still appended.
         include_document_context: When False, omit the live document state so
                   the prompt is byte-identical between turns and prompt caches
                   keep hitting (#47). The caller must then deliver it at the
