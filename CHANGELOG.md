@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   profile's "Compact above" value, the chat shows their sizes and what to
   change, once per chat and model. Compaction itself is unchanged, and the
   model's real limit is not detected: the check only knows the setting.
+- **German strings for the Settings pages, chat and code review.** 257
+  strings, most of the Settings dialog among them, were still shown in English.
+  The skill optimizer and restore dialogs are not translated yet.
 
 ### Changed
 
@@ -27,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Skill reset prompt can be translated.** Its text was built before the
+  lookup, so no translation could match.
+- **`update_translations.sh` skipped the settings pages.** It now finds every
+  file with translatable strings.
 - **A custom system prompt no longer breaks Plan mode (#161).** It replaced
   the instructions of every mode, so Plan mode (and Act mode without tools)
   told the model to call tools it doesn't have. Now its `## Mode: …`

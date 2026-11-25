@@ -2,21 +2,19 @@
 # Re-extract translatable strings from Python sources into .ts files,
 # then compile .ts -> .qm for runtime use.
 #
-# Usage: cd translations && bash update_translations.sh
+# Usage: cd translations && bash update_translations.sh [--list-sources]
 
 set -e
 cd "$(dirname "$0")"
 
-SOURCES=(
-    ../InitGui.py
-    ../freecad_ai/i18n.py
-    ../freecad_ai/ui/chat_widget.py
-    ../freecad_ai/ui/settings_dialog.py
-    ../freecad_ai/ui/provider_section.py
-    ../freecad_ai/ui/prefs_page.py
-    ../freecad_ai/ui/code_review_dialog.py
-    ../freecad_ai/ui/message_view.py
-)
+# Every file with translatable strings, so a new one can't be forgotten.
+mapfile -t SOURCES < <(grep -rlE --include='*.py' \
+    '\b(translate|QT_TRANSLATE_NOOP)\(' ../InitGui.py ../freecad_ai | sort)
+
+if [ "$1" = "--list-sources" ]; then
+    printf '%s\n' "${SOURCES[@]}"
+    exit 0
+fi
 
 # Step 1: Extract strings (optional — requires pylupdate5)
 if command -v pylupdate5 &>/dev/null; then
