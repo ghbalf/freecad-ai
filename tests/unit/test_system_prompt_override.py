@@ -88,6 +88,10 @@ def test_code_comment_in_a_fence_is_not_a_heading():
 ])
 def test_override_is_used_unchanged_in_act_mode_with_tools(text):
     assert _adapt_override(text, "act", True) == text
+    prompt = _build("act", text, tools_enabled=True)
+    assert prompt.startswith(text)
+    for part in (ACT_MODE, *REFERENCE):
+        assert part not in prompt
 
 
 @pytest.mark.parametrize("before", [
@@ -122,7 +126,10 @@ def test_unclosed_fence_in_the_mode_section_keeps_later_rules():
     "~~~\n## Mode: Act (with Tools)\nUSER\n~~~",
     "  ```\n## Mode: Act (with Tools)\nUSER\n  ```",
     "````\n```\n## Mode: Act (with Tools)\nUSER\n````",
-], ids=["tilde", "indented", "longer"])
+    "~~~\n```\n## Mode: Act (with Tools)\nUSER\n~~~",
+    "```\n~~~\n## Mode: Act (with Tools)\nUSER\n```",
+], ids=["tilde", "indented", "longer", "backticks-in-tilde",
+        "tilde-in-backticks"])
 def test_mode_heading_inside_a_fence_is_text(text):
     assert _build("plan", text).startswith(text + "\n")
 
@@ -132,7 +139,7 @@ def test_mode_heading_inside_a_fence_is_text(text):
     "  ## Mode: Act (with Tools)  ", "## Mode: Act (with Tools)\r",
 ])
 def test_heading_whitespace_does_not_matter(heading):
-    prompt = _build("plan", heading + "\nUse tools.\n## Style\nTerse.")
+    prompt = _build("plan", "Intro.\n" + heading + "\nUse tools.\n## Style\nTerse.")
     assert "Use tools." not in prompt
     assert "Terse." in prompt
 
