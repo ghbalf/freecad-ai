@@ -43,6 +43,18 @@ def test_strings_are_not_built_before_they_are_looked_up():
             if isinstance(node.args[1], ast.JoinedStr)] == []
 
 
+def test_no_lookup_hides_its_text_behind_a_wrapper():
+    """Extractors read literal translate() calls, not ``_tr(text)`` helpers."""
+    found = []
+    for path in sorted((ROOT / "freecad_ai").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call)
+                    and getattr(node.func, "attr", "") == "translate"
+                    and len(node.args) >= 2):
+                found.append(f"{path.name}:{node.lineno}")
+    assert found == []
+
+
 @pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
 def test_the_update_script_reads_every_file_with_strings():
     out = subprocess.run(

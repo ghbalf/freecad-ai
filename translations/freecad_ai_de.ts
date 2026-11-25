@@ -1322,6 +1322,10 @@ Ihre ausstehenden Einstellungsänderungen zuerst speichern?</translation>
         <source>Compatibility: </source>
         <translation>Kompatibilität: </translation>
     </message>
+    <message>
+        <source>{} (active)</source>
+        <translation>{} (aktiv)</translation>
+    </message>
 </context>
 
 <context>
@@ -1667,6 +1671,212 @@ Change the address in FreeCAD AI → AI Settings → MCP Servers.</source>
 {error}
 
 Ändern Sie die Adresse unter FreeCAD KI → KI-Einstellungen → MCP-Server.</translation>
+    </message>
+</context>
+
+<context>
+    <name>OptimizeSkillDialog</name>
+    <message>
+        <source>Optimize Skill</source>
+        <translation>Skill optimieren</translation>
+    </message>
+    <message>
+        <source>Skill:</source>
+        <translation>Skill:</translation>
+    </message>
+    <message>
+        <source>Test Cases</source>
+        <translation>Testfälle</translation>
+    </message>
+    <message>
+        <source>Quick add: L=100, W=80, H=40, T=2</source>
+        <translation>Schnell hinzufügen: L=100, W=80, H=40, T=2</translation>
+    </message>
+    <message>
+        <source>Add</source>
+        <translation>Hinzufügen</translation>
+    </message>
+    <message>
+        <source>Enter test case arguments...</source>
+        <translation>Argumente des Testfalls eingeben...</translation>
+    </message>
+    <message>
+        <source>Remove</source>
+        <translation>Entfernen</translation>
+    </message>
+    <message>
+        <source>Add Test Case</source>
+        <translation>Testfall hinzufügen</translation>
+    </message>
+    <message>
+        <source>Settings</source>
+        <translation>Einstellungen</translation>
+    </message>
+    <message>
+        <source>Iterations:</source>
+        <translation>Iterationen:</translation>
+    </message>
+    <message>
+        <source>Runs per test:</source>
+        <translation>Läufe pro Test:</translation>
+    </message>
+    <message>
+        <source>Conservative</source>
+        <translation>Konservativ</translation>
+    </message>
+    <message>
+        <source>Balanced</source>
+        <translation>Ausgewogen</translation>
+    </message>
+    <message>
+        <source>Aggressive</source>
+        <translation>Aggressiv</translation>
+    </message>
+    <message>
+        <source>Strategy:</source>
+        <translation>Strategie:</translation>
+    </message>
+    <message>
+        <source>Metrics</source>
+        <translation>Metriken</translation>
+    </message>
+    <message>
+        <source>Completion</source>
+        <translation>Abschluss</translation>
+    </message>
+    <message>
+        <source>Error rate</source>
+        <translation>Fehlerrate</translation>
+    </message>
+    <message>
+        <source>Correctness (geometry validation)</source>
+        <translation>Korrektheit (Geometrieprüfung)</translation>
+    </message>
+    <message>
+        <source>Efficiency</source>
+        <translation>Effizienz</translation>
+    </message>
+    <message>
+        <source>Visual similarity</source>
+        <translation>Visuelle Ähnlichkeit</translation>
+    </message>
+    <message>
+        <source>Reference image path...</source>
+        <translation>Pfad zum Referenzbild...</translation>
+    </message>
+    <message>
+        <source>Browse...</source>
+        <translation>Durchsuchen...</translation>
+    </message>
+    <message>
+        <source>Advanced</source>
+        <translation>Erweitert</translation>
+    </message>
+    <message>
+        <source>Tool call budget:</source>
+        <translation>Budget für Werkzeugaufrufe:</translation>
+    </message>
+    <message>
+        <source>Run timeout:</source>
+        <translation>Zeitlimit pro Lauf:</translation>
+    </message>
+    <message>
+        <source>Keep tolerance:</source>
+        <translation>Toleranz beim Beibehalten:</translation>
+    </message>
+    <message>
+        <source>Extra retry attempts per test case on network/timeout errors</source>
+        <translation>Zusätzliche Versuche pro Testfall bei Netzwerkfehlern oder Zeitüberschreitungen</translation>
+    </message>
+    <message>
+        <source>Network retries:</source>
+        <translation>Netzwerk-Wiederholungen:</translation>
+    </message>
+    <message>
+        <source>Start Optimization</source>
+        <translation>Optimierung starten</translation>
+    </message>
+    <message>
+        <source>Close</source>
+        <translation>Schließen</translation>
+    </message>
+    <message>
+        <source>Select Reference Image</source>
+        <translation>Referenzbild auswählen</translation>
+    </message>
+    <message>
+        <source>Images (*.png *.jpg *.jpeg *.bmp)</source>
+        <translation>Bilder (*.png *.jpg *.jpeg *.bmp)</translation>
+    </message>
+    <message>
+        <source>Validation Error</source>
+        <translation>Ungültige Eingabe</translation>
+    </message>
+    <message>
+        <source>Please add at least one test case.</source>
+        <translation>Bitte fügen Sie mindestens einen Testfall hinzu.</translation>
+    </message>
+    <message>
+        <source>Please enable at least two metrics.</source>
+        <translation>Bitte aktivieren Sie mindestens zwei Metriken.</translation>
+    </message>
+    <message>
+        <source>High Iteration Count</source>
+        <translation>Hohe Anzahl an Iterationen</translation>
+    </message>
+    <message>
+        <source>Running more than 20 iterations may take a very long time. Continue?</source>
+        <translation>Mehr als 20 Iterationen können sehr lange dauern. Fortfahren?</translation>
+    </message>
+</context>
+
+<context>
+    <name>RestoreBackupDialog</name>
+    <message>
+        <source>original unknown</source>
+        <translation>Original unbekannt</translation>
+    </message>
+    <message>
+        <source>{0} (missing)</source>
+        <translation>{0} (fehlt)</translation>
+    </message>
+    <message>
+        <source>Restore from Backup</source>
+        <translation>Aus Sicherung wiederherstellen</translation>
+    </message>
+    <message>
+        <source>Snapshots taken automatically before the AI ran code.
+Restoring opens a copy — your current document is not changed.</source>
+        <translation>Automatisch erstellte Schnappschüsse, bevor die KI Code ausgeführt hat.
+Beim Wiederherstellen wird eine Kopie geöffnet — Ihr aktuelles Dokument wird nicht verändert.</translation>
+    </message>
+    <message>
+        <source>No snapshots yet. One is taken each time the AI executes code on a saved document.</source>
+        <translation>Noch keine Schnappschüsse. Jedes Mal, wenn die KI Code an einem gespeicherten Dokument ausführt, wird einer erstellt.</translation>
+    </message>
+    <message>
+        <source>Open Backups Folder</source>
+        <translation>Sicherungsordner öffnen</translation>
+    </message>
+    <message>
+        <source>Restore a Copy...</source>
+        <translation>Kopie wiederherstellen...</translation>
+    </message>
+    <message>
+        <source>Close</source>
+        <translation>Schließen</translation>
+    </message>
+    <message>
+        <source>Save Restored Copy As</source>
+        <translation>Wiederhergestellte Kopie speichern unter</translation>
+    </message>
+    <message>
+        <source>FreeCAD Document (*.FCStd)</source>
+        <translation>FreeCAD-Dokument (*.FCStd)</translation>
+    </message>
+    <message>
+        <source>Restore Failed</source>
+        <translation>Wiederherstellung fehlgeschlagen</translation>
     </message>
 </context>
 
