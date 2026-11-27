@@ -666,7 +666,8 @@ class ToolsPage(SettingsPage):
             self,
             translate("SettingsDialog", "Reset Skill"),
             translate("SettingsDialog",
-                      f"Delete user copy of '{name}' and revert to the built-in version?"),
+                      "Delete user copy of '{name}' and revert to the built-in version?"
+                      ).format(name=name),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )

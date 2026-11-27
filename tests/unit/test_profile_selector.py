@@ -849,6 +849,16 @@ class TestProfileComboRendering:
 
         assert fake.profile_combo.texts() == ["cloud (active)", "local"]
 
+    def test_the_active_marker_is_translated(self, monkeypatch):
+        import freecad_ai.ui.provider_section as ps
+        monkeypatch.setattr(ps, "translate", lambda c, t: {
+            ("SettingsDialog", "{} (active)"): "{} (aktiv)"}.get((c, t), t))
+        fake = _selector_fake(_cfg())
+
+        ProviderSection._refresh_profile_combo(fake)
+
+        assert fake.profile_combo.texts() == ["cloud (aktiv)", "local"]
+
     def test_item_data_stays_the_bare_label(self):
         """_on_profile_changed and findData both key off it."""
         cfg = _cfg()

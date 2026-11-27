@@ -673,7 +673,7 @@ class AppConfig:
     # requires closing the modal Settings dialog first since the editor is
     # an MDI sub-window of the main window.
     use_external_editor: bool = False
-    system_prompt_override: str = ""  # empty = use default; non-empty = use as-is
+    system_prompt_override: str = ""  # empty = use default; see _adapt_override()
     # AGENTS.md scoping (#94). False (default, and the behaviour since the
     # loader was written) = the first instruction file found wins, so a
     # project AGENTS.md next to the .FCStd silently replaces the global one

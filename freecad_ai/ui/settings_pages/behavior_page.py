@@ -331,6 +331,13 @@ class BehaviorPage(SettingsPage):
                       "Dynamic sections (document state, skills, AGENTS.md) "
                       "are always appended automatically."))
         prompt_layout.addWidget(self.system_prompt_edit)
+        prompt_note = QLabel(translate(
+            "SettingsDialog",
+            "Sent unchanged in Act mode with tools. In Plan mode, and in Act "
+            "mode without tools, the \"Mode\" section is replaced to match, "
+            "and missing reference sections are added."))
+        prompt_note.setWordWrap(True)
+        prompt_layout.addWidget(prompt_note)
 
         prompt_group.setLayout(prompt_layout)
         layout.addWidget(prompt_group)

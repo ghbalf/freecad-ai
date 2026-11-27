@@ -16,6 +16,7 @@ import os
 from datetime import datetime
 
 from ..core import backups
+from ..i18n import translate
 from .compat import QtCore, QtGui, QtWidgets
 
 QDialog = QtWidgets.QDialog
@@ -27,8 +28,6 @@ QPushButton = QtWidgets.QPushButton
 QMessageBox = QtWidgets.QMessageBox
 QFileDialog = QtWidgets.QFileDialog
 
-_tr = lambda text: QtCore.QCoreApplication.translate("RestoreBackupDialog", text)
-
 
 def _describe(snapshot) -> str:
     """The one line the user picks a snapshot by.
@@ -39,11 +38,11 @@ def _describe(snapshot) -> str:
     """
     when = datetime.fromtimestamp(snapshot.saved_at).strftime("%Y-%m-%d %H:%M")
     if not snapshot.original_path:
-        origin = _tr("original unknown")
+        origin = translate("RestoreBackupDialog", "original unknown")
     elif snapshot.original_exists:
         origin = snapshot.original_path
     else:
-        origin = _tr("{0} (missing)").format(snapshot.original_path)
+        origin = translate("RestoreBackupDialog", "{0} (missing)").format(snapshot.original_path)
     return f"{snapshot.label}  —  {when}  —  {origin}"
 
 
@@ -65,13 +64,13 @@ class RestoreBackupDialog(QDialog):
 
     def __init__(self, snapshots, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(_tr("Restore from Backup"))
+        self.setWindowTitle(translate("RestoreBackupDialog", "Restore from Backup"))
         self._snapshots = list(snapshots)
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(_tr(
+        layout.addWidget(QLabel(translate("RestoreBackupDialog",
             "Snapshots taken automatically before the AI ran code.\n"
             "Restoring opens a copy — your current document is not changed.")))
 
@@ -90,23 +89,23 @@ class RestoreBackupDialog(QDialog):
         layout.addWidget(self._list)
 
         if not self._snapshots:
-            layout.addWidget(QLabel(_tr(
+            layout.addWidget(QLabel(translate("RestoreBackupDialog",
                 "No snapshots yet. One is taken each time the AI executes "
                 "code on a saved document.")))
 
         buttons = QHBoxLayout()
-        folder_btn = QPushButton(_tr("Open Backups Folder"))
+        folder_btn = QPushButton(translate("RestoreBackupDialog", "Open Backups Folder"))
         folder_btn.clicked.connect(self._on_open_folder)
         buttons.addWidget(folder_btn)
         buttons.addStretch()
 
-        self._restore_btn = QPushButton(_tr("Restore a Copy..."))
+        self._restore_btn = QPushButton(translate("RestoreBackupDialog", "Restore a Copy..."))
         self._restore_btn.setDefault(True)
         self._restore_btn.setEnabled(bool(self._snapshots))
         self._restore_btn.clicked.connect(self._on_restore)
         buttons.addWidget(self._restore_btn)
 
-        close_btn = QPushButton(_tr("Close"))
+        close_btn = QPushButton(translate("RestoreBackupDialog", "Close"))
         close_btn.clicked.connect(self.reject)
         buttons.addWidget(close_btn)
         layout.addLayout(buttons)
@@ -120,9 +119,9 @@ class RestoreBackupDialog(QDialog):
         if snapshot is None:
             return
         destination, _ = QFileDialog.getSaveFileName(
-            self, _tr("Save Restored Copy As"),
+            self, translate("RestoreBackupDialog", "Save Restored Copy As"),
             backups.default_copy_path(snapshot),
-            _tr("FreeCAD Document (*.FCStd)"))
+            translate("RestoreBackupDialog", "FreeCAD Document (*.FCStd)"))
         if not destination:
             return
         try:
@@ -130,7 +129,7 @@ class RestoreBackupDialog(QDialog):
         except Exception as exc:
             # Includes the deliberate refusal to overwrite the source
             # document. The user stays in the dialog and can pick again.
-            QMessageBox.warning(self, _tr("Restore Failed"), str(exc))
+            QMessageBox.warning(self, translate("RestoreBackupDialog", "Restore Failed"), str(exc))
             return
         self.accept()
 

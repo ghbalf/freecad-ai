@@ -15,13 +15,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   profile's "Compact above" value, the chat shows their sizes and what to
   change, once per chat and model. Compaction itself is unchanged, and the
   model's real limit is not detected: the check only knows the setting.
+- **German strings for the Settings pages, chat, code review, and the skill
+  optimizer and restore dialogs.** 307 strings, most of the Settings dialog
+  among them, were still shown in English.
 
 ### Changed
 
-- **Shorter Act prompt (#159).** 26 lines that added nothing to the tools' own
+- **Shorter Act prompt (#159).** 26 lines that largely repeated the tools' own
   descriptions are gone; the rules and the enclosure recipe are
-  unchanged. The instructions sent to external MCP agents share the text.
+  unchanged. In tests with kimi-k2.6 and a local qwen3.8 27B, tool choice
+  was about the same (qwen3.8: 106 vs 108 of 114 before); smaller models
+  were not tested. The instructions sent to external MCP agents share the text.
   Saved custom prompts are not touched.
+
+### Fixed
+
+- **Skill reset prompt can be translated.** Its text was built before the
+  lookup, so no translation could match.
+- **`update_translations.sh` skipped the settings pages.** It now finds every
+  file with translatable strings.
+- **A custom system prompt no longer breaks Plan mode (#161).** It replaced
+  the instructions of every mode, so Plan mode (and Act mode without tools)
+  told the model to call tools it doesn't have. Now its `## Mode: …`
+  section is swapped for the current mode's there, and the API reference
+  and conventions are added if missing. In Act mode with tools the text is
+  sent unchanged. Rules written inside the Act section don't apply in other
+  modes; put them before it or under another heading. A `## Mode: Plan`
+  section you already wrote is kept in Plan mode, and still sent in Act mode
+  as well. Short custom prompts get about 10,000 characters longer outside
+  Act mode with tools.
+- **The retry after a code error keeps your custom system prompt.** It was
+  sent with the default instructions instead.
 
 ## [0.35.0-alpha] - 2026-11-22
 
