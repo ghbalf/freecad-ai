@@ -116,12 +116,13 @@ See [Creating Custom Tools](https://github.com/ghbalf/freecad-ai/wiki/Creating-C
 
 ## PartDesign Modeling Gotchas
 
-Worth understanding before writing a skill, a `create_primitive`/`create_body` sequence, or a `VALIDATION.md` rule that checks `solid_count`:
+Worth knowing before writing a skill, a `create_primitive`/`create_body` sequence, or a `VALIDATION.md` rule that checks `solid_count`:
 
-- **A `PartDesign::Body` must resolve to one continuous (non-disjoint) solid.** That's the actual definition of a Body in FreeCAD — the feature chain (additive/subtractive primitives, pads, pockets, ...) is meant to build a single connected shape, not an arbitrary bag of parts.
-- **Reusing one `body_name` for primitives that never touch is invalid, not just messy.** `create_primitive` will happily add a disconnected primitive to an existing body, `Shape.isValid()` will still report `True`, and `Visibility` stays `True` — but the body silently fails to display correctly (empty render, or only the "through"-visible sub-feature leaks through). This is not a rendering bug to work around; it's FreeCAD correctly refusing to treat disjoint geometry as one Body.
-- **Fix:** every primitive added to a given `body_name` must overlap/touch the shape already accumulated in that body. If a piece is genuinely separate (a second limb of a figure, an unrelated stand leg, a disconnected accessory), give it its own `Body` (a fresh `body_name`) instead — this is also how existing skills correctly model multi-leg stands, etc.
-- **`Shape.isValid()` is not sufficient evidence a Body will render.** A `VALIDATION.md` (see `docs/specs/2026-03-17-geometry-validation-design.md`) that only checks `valid_solid: true` can pass on a body that's actually broken this way; checking `solid_count: 1` (or equivalent connectivity) catches it.
+- **Keep one connected solid per `PartDesign::Body`.** `create_primitive` happily adds a primitive that doesn't touch the body's existing shape, and every check still passes: the feature is `Up-to-date`, `isValid()` is `True`, `Shape.isValid()` is `True`. What happens next depends on the FreeCAD version (measured with two separate boxes, then a pad on top of the first):
+  - **1.0.x** (`AllowCompound` doesn't exist / is off): the next feature silently drops the disconnected solid. The body goes from 2 solids to 1 without an error.
+  - **1.1+** (`AllowCompound=True` by default): the body keeps both solids, and features build on the compound. Display problems with such bodies have been reported (#163); they weren't checked here.
+- **Fix:** a piece that doesn't touch the rest (a second leg, a separate accessory) gets its own Body (a new `body_name`).
+- **`Shape.isValid()` doesn't catch this.** A `VALIDATION.md` (see `docs/specs/2026-03-17-geometry-validation-design.md`) that only checks `valid_solid: true` passes on a split body; `solid_count: 1` catches it.
 
 ## Testing
 
