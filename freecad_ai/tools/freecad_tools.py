@@ -456,6 +456,23 @@ def _classify_support(obj):
     return "other"
 
 
+def _body_support_to_tip(obj, warnings):
+    """Use a Body's Tip as the attachment support instead of the Body itself.
+
+    A sketch or datum created inside a Body and attached to that Body makes the
+    Body depend on its own child: FreeCAD reports "The graph must be a DAG" and
+    features built on it fail (#168). A Body's shape is its Tip's shape, so the
+    face and edge names are the same on the Tip.
+    """
+    tip = getattr(obj, "Tip", None)
+    if getattr(obj, "TypeId", "") != "PartDesign::Body" or tip is None:
+        return obj
+    warnings.append(
+        f"support '{obj.Name}' is a Body — attached to its Tip '{tip.Name}' "
+        "instead (an object inside a Body can't attach to the Body itself).")
+    return tip
+
+
 def _owning_body_name(obj, objects):
     """Return the Name of the PartDesign::Body that contains ``obj``, or None.
 
@@ -604,6 +621,7 @@ def _handle_create_sketch(
             if sup_obj is None:
                 sup_kind = "missing"
             else:
+                sup_obj = _body_support_to_tip(sup_obj, warnings)
                 sup = sup_obj.Name
                 sup_kind = _classify_support(sup_obj)
                 in_body = _owning_body_name(sup_obj, doc.Objects)
@@ -972,6 +990,7 @@ def _handle_create_datum_plane(
             if sup_obj is None:
                 sup_kind = "missing"
             else:
+                sup_obj = _body_support_to_tip(sup_obj, warnings)
                 sup = sup_obj.Name
                 sup_kind = _classify_support(sup_obj)
                 in_body = _owning_body_name(sup_obj, doc.Objects)
@@ -1135,6 +1154,7 @@ def _handle_create_datum_line(
             if sup_obj is None:
                 sup_kind = "missing"
             else:
+                sup_obj = _body_support_to_tip(sup_obj, warnings)
                 sup = sup_obj.Name
                 sup_kind = _classify_support(sup_obj)
                 in_body = _owning_body_name(sup_obj, doc.Objects)

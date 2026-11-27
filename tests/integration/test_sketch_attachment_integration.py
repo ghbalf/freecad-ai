@@ -195,3 +195,72 @@ results["data"] = {"success": r.success, "error": r.error, "output": r.output}
         d = result["data"]
         assert d["success"], d["error"]
         assert "ignored" in d["output"].lower()
+
+
+class TestSketchOnBodyFace:
+    """#168: support=<the Body itself> attached the sketch to its own container.
+
+    The Body then depended on a sketch that depended on the Body ("The graph
+    must be a DAG.") and the pocket built on it failed. A Body's shape is its
+    Tip's shape, so the face names are the Tip's: attach there instead.
+    """
+
+    def test_body_support_attaches_to_the_tip_and_the_pocket_cuts(self, run_freecad_script):
+        result = run_freecad_script("""
+from freecad_ai.tools.freecad_tools import (
+    _handle_create_body, _handle_create_sketch, _handle_pad_sketch, _handle_pocket_sketch)
+
+_handle_create_body(label="Body")
+r = _handle_create_sketch(body_name="Body", geometries=[
+    {"type": "rectangle", "x": -15, "y": -10, "width": 30, "height": 20}])
+_handle_pad_sketch(sketch_name=r.data["name"], length=8)
+r = _handle_create_sketch(support="Body", face="Face6", label="Hole_Sketch",
+                          geometries=[{"type": "circle", "cx": 0, "cy": 0, "radius": 3}])
+sk = doc.getObject(r.data["name"]) if r.success else None
+p = _handle_pocket_sketch(sketch_name=sk.Name, through_all=True) if sk else None
+doc.recompute()
+body = doc.getObject("Body")
+results["data"] = {
+    "success": r.success, "error": r.error, "output": r.output,
+    "attached_to": [s[0].Name for s in sk.AttachmentSupport] if sk else None,
+    "pocket_ok": bool(p and p.success),
+    "volume": body.Shape.Volume,
+    "body_valid": body.isValid(),
+}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert d["success"], d["error"]
+        assert d["attached_to"] == ["Pad"]
+        assert "Tip" in d["output"]  # the redirect is reported, not silent
+        assert d["pocket_ok"]
+        assert d["body_valid"]
+        assert abs(d["volume"] - (30 * 20 * 8 - 3.141592653589793 * 9 * 8)) < 0.01
+
+    @pytest.mark.parametrize("tool, kwargs", [
+        ("_handle_create_datum_plane", {"support": "Body", "face": "Face6"}),
+        ("_handle_create_datum_line", {"support": "Body", "edge": "Edge1"}),
+    ])
+    def test_datum_on_body_attaches_to_the_tip(self, run_freecad_script, tool, kwargs):
+        result = run_freecad_script(f"""
+from freecad_ai.tools import freecad_tools as T
+
+T._handle_create_body(label="Body")
+r = T._handle_create_sketch(body_name="Body", geometries=[
+    {{"type": "rectangle", "x": 0, "y": 0, "width": 30, "height": 20}}])
+T._handle_pad_sketch(sketch_name=r.data["name"], length=8)
+r = T.{tool}(**{kwargs!r})
+doc.recompute()
+o = doc.getObject(r.data["name"]) if r.success else None
+results["data"] = {{
+    "success": r.success, "error": r.error, "output": r.output,
+    "attached_to": [s[0].Name for s in o.AttachmentSupport] if o else None,
+    "body_valid": doc.getObject("Body").isValid(),
+}}
+""")
+        assert result["ok"], result.get("error")
+        d = result["data"]
+        assert d["success"], d["error"]
+        assert d["attached_to"] == ["Pad"]
+        assert "Tip" in d["output"]
+        assert d["body_valid"]
