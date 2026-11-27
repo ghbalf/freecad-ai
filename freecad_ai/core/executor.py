@@ -420,7 +420,11 @@ try:
     _os.write(2, b"\\n{begin_marker}\\n")
 
     # --- user code ---
-{indented_code}
+    # exec'd from source, not pasted in indented: indenting would also indent
+    # the continuation lines of multi-line string literals, changing their
+    # value (or raising IndentationError for a raw string compiled later).
+    # globals() keeps `doc`, `App`, ... visible exactly as the inline paste did.
+    exec(compile({code!r}, "<execute_code>", "exec"), globals())
     # --- end user code ---
     doc.recompute()
     _os.write(2, b"\\n{end_marker}\\n")
@@ -455,6 +459,12 @@ finally:
     # block until its timeout and the sandbox always reported a spurious
     # "timed out" — even for trivial code (issue #14). os._exit skips atexit
     # handlers / lingering non-daemon threads that a plain sys.exit can wait on.
+    # Flush first: os._exit skips it, and what the code printed before an
+    # error is the parent's only clue besides the traceback.
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
     import os as _os
     _os._exit(0)
 '''
@@ -528,7 +538,7 @@ def _build_child_script(code, *, document_path, result_path, mode="sandbox"):
             end_marker=_USER_CODE_END,
             gui_stub=_GUI_STUB,
             open_block=_open_block(document_path, "Sandbox", "SandboxTest"),
-            indented_code="\n".join("    " + line for line in code.splitlines()),
+            code=code,
             result_path=result_path,
         )
     if mode == "headless":
@@ -609,6 +619,11 @@ def _sandbox_test(code: str, timeout: int = 15, document_path: str | None = None
                 problems.append(
                     "FreeCAD logged errors while running this code:\n"
                     + "\n".join(console_errors))
+            # What the code printed before it failed would otherwise be lost,
+            # leaving the traceback as the only clue.
+            printed = (getattr(proc, "stdout", None) or b"").decode(errors="replace").strip()
+            if printed and not result["ok"]:
+                problems.append("Output before the error:\n" + printed[-1000:])
             return False, "Sandbox: " + "\n".join(problems)
 
         return True, ""  # No result file but process exited OK
@@ -741,19 +756,16 @@ def execute_code(code: str, timeout: int | None = None, sandbox: bool = True,
     sandbox_copy_path = None
     if sandbox and not skip_safety:
         pre_doc = get_synced_active_document()
-        fn = getattr(pre_doc, "FileName", "") if pre_doc else ""
-        if fn and os.path.isfile(fn):
-            try:
-                fd, sandbox_copy_path = tempfile.mkstemp(suffix=".FCStd")
-                os.close(fd)
-                shutil.copy2(fn, sandbox_copy_path)
-            except OSError as e:
-                return ExecutionResult(
-                    success=False,
-                    stdout="",
-                    stderr=f"Sandbox: could not copy document for validation: {e}",
-                    code=code,
-                )
+        sandbox_dir = None
+        try:
+            sandbox_copy_path, sandbox_dir = _make_sandbox_copy(pre_doc)
+        except OSError as e:
+            return ExecutionResult(
+                success=False,
+                stdout="",
+                stderr=f"Sandbox: could not copy document for validation: {e}",
+                code=code,
+            )
         try:
             # The dry-run must get the same budget as the live execution
             # (which arms a SIGALRM for the full `timeout`). Capping it lower
@@ -771,11 +783,8 @@ def execute_code(code: str, timeout: int | None = None, sandbox: bool = True,
                     code=code,
                 )
         finally:
-            if sandbox_copy_path:
-                try:
-                    os.unlink(sandbox_copy_path)
-                except OSError:
-                    pass
+            if sandbox_dir:
+                shutil.rmtree(sandbox_dir, ignore_errors=True)
 
     # No active document is fine: the code may be what creates one (#149).
     # It then runs without an undo transaction — there is nothing to undo
@@ -890,31 +899,90 @@ def validate_code(code: str, timeout: int = 15, skip_safety: bool = False) -> Ex
 
     from .active_document import get_synced_active_document
     pre_doc = get_synced_active_document()
-    fn = getattr(pre_doc, "FileName", "") if pre_doc else ""
-    sandbox_copy_path = None
-    if fn and os.path.isfile(fn):
-        try:
-            fd, sandbox_copy_path = tempfile.mkstemp(suffix=".FCStd")
-            os.close(fd)
-            shutil.copy2(fn, sandbox_copy_path)
-        except OSError as e:
-            return ExecutionResult(
-                success=False,
-                stdout="",
-                stderr=f"Sandbox: could not copy document for validation: {e}",
-                code=code,
-            )
+    try:
+        sandbox_copy_path, sandbox_dir = _make_sandbox_copy(pre_doc)
+    except OSError as e:
+        return ExecutionResult(
+            success=False,
+            stdout="",
+            stderr=f"Sandbox: could not copy document for validation: {e}",
+            code=code,
+        )
     try:
         safe, err = _sandbox_test(code, timeout=timeout, document_path=sandbox_copy_path)
     finally:
-        if sandbox_copy_path:
-            try:
-                os.unlink(sandbox_copy_path)
-            except OSError:
-                pass
+        if sandbox_dir:
+            shutil.rmtree(sandbox_dir, ignore_errors=True)
     if safe:
         return ExecutionResult(success=True, stdout="", stderr="", code=code)
     return ExecutionResult(success=False, stdout="", stderr=err, code=code)
+
+
+def _linked_documents(doc) -> list:
+    """Documents *doc* links to, directly or transitively, with a saved file."""
+    try:
+        deps = doc.getDependentDocuments(True)
+    except Exception:
+        return []
+    return [d for d in deps
+            if d is not doc
+            and getattr(d, "FileName", "")
+            and os.path.isfile(d.FileName)]
+
+
+def _snapshot_document(doc, dst) -> None:
+    """Write *doc* to *dst* as it is in memory right now.
+
+    Copying the file on disk would hand the dry-run the last *saved* state:
+    objects created since then would be missing (``getObject`` -> None) and
+    the dry-run would fail on code that works live. ``saveCopy`` writes the
+    live state without touching the document's FileName or modified flag.
+    Partially loaded documents cannot be saved faithfully (the objects that
+    were never loaded would be dropped), so they fall back to the file.
+    """
+    try:
+        if getattr(doc, "Partial", False):
+            raise RuntimeError("partially loaded")
+        doc.saveCopy(dst)
+    except Exception:
+        shutil.copy2(doc.FileName, dst)
+
+
+def _make_sandbox_copy(doc):
+    """Snapshot *doc* plus the documents it links to into a temp directory.
+
+    Link paths inside an .FCStd are stored relative to the document, so a
+    lone copy in a temp dir loses every linked document (``getDocument``
+    fails, ``listDocuments`` is incomplete). The files are written with their
+    relative layout intact so the links still resolve.
+
+    Returns ``(sandbox_path, cleanup_dir)``; ``(None, None)`` when *doc* has
+    no saved file. Raises OSError when copying fails.
+    """
+    fn = getattr(doc, "FileName", "") if doc else ""
+    if not (fn and os.path.isfile(fn)):
+        return None, None
+    fn = os.path.abspath(fn)
+    docs = [(fn, doc)]
+    for linked in _linked_documents(doc):
+        path = os.path.abspath(linked.FileName)
+        if path != fn:
+            docs.append((path, linked))
+    try:
+        root = os.path.commonpath([os.path.dirname(f) for f, _ in docs])
+    except ValueError:  # different drives (Windows): no shared layout possible
+        root = os.path.dirname(fn)
+        docs = docs[:1]
+    tmp_dir = tempfile.mkdtemp(prefix="freecad_ai_sandbox_")
+    try:
+        for src, d in docs:
+            dst = os.path.join(tmp_dir, os.path.relpath(src, root))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            _snapshot_document(d, dst)
+    except OSError:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    return os.path.join(tmp_dir, os.path.relpath(fn, root)), tmp_dir
 
 
 def _validate_code(code: str) -> list[str]:
