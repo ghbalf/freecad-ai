@@ -135,19 +135,28 @@ class TestListDocumentsModifiedFlag(unittest.TestCase):
         self.assertTrue(by_name["B"]["active"])
 
 
-class _LinkingDocument(_AppDocument):
-    def __init__(self, name, deps=()):
-        super().__init__(name, obj_count=1)
-        self._deps = list(deps)
+class _Obj:
+    def __init__(self, doc, out=()):
+        self.Document = doc
+        self.OutList = list(out)
 
-    def getDependentDocuments(self, sort=True):
-        return [self] + self._deps
+
+class _LinkingDocument(_AppDocument):
+    """A document whose one object links to an object in each of *links*.
+
+    Like FreeCAD: the cross-document link shows up in the object's OutList.
+    (getDependentDocuments() is transitive, so it can't say who links whom.)
+    """
+
+    def __init__(self, name, links=()):
+        super().__init__(name)
+        self.Objects = [_Obj(self, [_Obj(t) for t in links] + [_Obj(self)])]
 
 
 class TestListDocumentsLinkedFrom(unittest.TestCase):
     def test_linked_document_names_its_owner(self):
         alkis = _AppDocument("ALKIS", obj_count=3)
-        main = _LinkingDocument("Main", deps=[alkis])
+        main = _LinkingDocument("Main", links=[alkis])
 
         result = _run([main, alkis], gui=None, active=main)
 
@@ -155,6 +164,26 @@ class TestListDocumentsLinkedFrom(unittest.TestCase):
         self.assertEqual(by_name["ALKIS"]["linked_from"], ["Main"])
         self.assertEqual(by_name["Main"]["linked_from"], [])
         self.assertIn("linked from Main", result.output)
+
+    def test_chain_names_only_the_direct_owner(self):
+        # A links B, B links C: C is linked from B, not from A.
+        c = _AppDocument("C", obj_count=1)
+        b = _LinkingDocument("B", links=[c])
+        a = _LinkingDocument("A", links=[b])
+
+        result = _run([a, b, c], gui=None, active=a)
+
+        by_name = {d["name"]: d["linked_from"] for d in result.data["documents"]}
+        self.assertEqual(by_name, {"A": [], "B": ["A"], "C": ["B"]})
+
+    def test_owner_named_once_for_several_links(self):
+        alkis = _AppDocument("ALKIS", obj_count=1)
+        main = _LinkingDocument("Main", links=[alkis, alkis])
+
+        result = _run([main, alkis], gui=None, active=main)
+
+        by_name = {d["name"]: d["linked_from"] for d in result.data["documents"]}
+        self.assertEqual(by_name["ALKIS"], ["Main"])
 
     def test_unlinked_documents_have_no_marker(self):
         a = _AppDocument("A", obj_count=1)
@@ -166,11 +195,13 @@ class TestListDocumentsLinkedFrom(unittest.TestCase):
         self.assertTrue(all(d["linked_from"] == [] for d in result.data["documents"]))
 
     def test_failing_dependency_lookup_is_swallowed(self):
-        class _Broken(_AppDocument):
-            def getDependentDocuments(self, sort=True):
+        class _BrokenObj:
+            @property
+            def OutList(self):
                 raise RuntimeError("boom")
 
-        doc = _Broken("Broken", obj_count=1)
+        doc = _AppDocument("Broken")
+        doc.Objects = [_BrokenObj()]
 
         result = _run([doc], gui=None, active=doc)
 

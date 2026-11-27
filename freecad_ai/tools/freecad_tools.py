@@ -3131,18 +3131,23 @@ def _linked_from(docs) -> dict:
 
     A linked document (e.g. a shared survey file) is a document in its own
     right, but it only exists because another one pulls it in. Knowing that
-    explains why it is there, and why a sandboxed copy of the *linking*
-    document can lack it.
+    explains why it is there.
+
+    Only direct links count: getDependentDocuments() is transitive (A -> B -> C
+    lists C for A), so the links are read from each object's OutList instead.
     """
     result = {d.Name: [] for d in docs}
     for owner in docs:
         try:
-            deps = owner.getDependentDocuments(False)
+            targets = {
+                o.Document.Name
+                for obj in owner.Objects for o in obj.OutList
+                if o.Document is not owner
+            }
         except Exception:
             continue
-        for dep in deps:
-            name = getattr(dep, "Name", None)
-            if name in result and name != owner.Name:
+        for name in sorted(targets):
+            if name in result:
                 result[name].append(owner.Name)
     return result
 
