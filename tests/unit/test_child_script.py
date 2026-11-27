@@ -137,3 +137,47 @@ def test_headless_script_never_imports_the_real_gui():
                                        result_path="/tmp/run/result.json", mode="headless")
     assert "import FreeCADGui" not in src and 'sys.modules["FreeCADGui"]' in src
     assert "_os._exit(0)" in src
+
+
+# ── sandbox mode ────────────────────────────────────────────
+
+_SANDBOX_STUB = _FREECAD_STUB.replace(
+    'self.FileName = ""',
+    'self.FileName = ""\n        self.Objects = []\n\n    def recompute(self):\n        pass',
+).replace(
+    'def openDocument(path):\n    global ActiveDocument\n',
+    'opened = []\n\ndef openDocument(path):\n    global ActiveDocument\n    opened.append(path)\n',
+)
+
+
+def _run_sandbox_child(tmp_path, code, document_path=None, **kw):
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    (stub / "FreeCAD.py").write_text(_SANDBOX_STUB)
+    result = tmp_path / "result.json"
+    script = tmp_path / "script.py"
+    script.write_text(executor._build_child_script(
+        code, document_path=document_path, result_path=str(result),
+        mode="sandbox", **kw), encoding="utf-8")
+    subprocess.run([sys.executable, str(script)], cwd=tmp_path, timeout=60,
+                   capture_output=True, env={**os.environ, "PYTHONPATH": str(stub)})
+    return json.loads(result.read_text(encoding="utf-8"))
+
+
+def test_sandbox_error_names_the_failing_line_without_echoing_the_script(tmp_path):
+    # The error goes back to the model: a long script must not be repeated in it.
+    code = "".join("x%d = %d  # padding\n" % (i, i) for i in range(150))
+    code += "raise ValueError('at the end')\n"
+    res = _run_sandbox_child(tmp_path, code)
+    assert not res["ok"]
+    assert "raise ValueError('at the end')" in res["error"]
+    assert "padding" not in res["error"]
+    assert len(res["error"]) < 1000
+
+
+def test_sandbox_opens_linked_copies_before_the_document(tmp_path):
+    # Opened after the document, FreeCAD loads a linked file only partially.
+    code = "assert App.opened == ['/s/data/ALKIS.FCStd', '/s/sub/main.FCStd'], App.opened\n"
+    res = _run_sandbox_child(tmp_path, code, document_path="/s/sub/main.FCStd",
+                             linked_paths=["/s/data/ALKIS.FCStd"])
+    assert res["ok"], res["error"]

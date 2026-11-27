@@ -243,7 +243,7 @@ class TestSandboxTimeout:
     def test_sandbox_receives_full_configured_timeout(self, configured):
         seen = {}
 
-        def _capture(code, timeout=15, document_path=None):
+        def _capture(code, timeout=15, document_path=None, **_kw):
             seen["timeout"] = timeout
             return True, ""
 
@@ -322,7 +322,7 @@ class TestConfigurableExecutionTimeout:
 
         seen = {}
 
-        def _capture(code, timeout=15, document_path=None):
+        def _capture(code, timeout=15, document_path=None, **_kw):
             seen["timeout"] = timeout
             return True, ""
 

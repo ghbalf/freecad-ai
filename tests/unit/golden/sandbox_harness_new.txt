@@ -153,7 +153,14 @@ try:
     # the continuation lines of multi-line string literals, changing their
     # value (or raising IndentationError for a raw string compiled later).
     # globals() keeps `doc`, `App`, ... visible exactly as the inline paste did.
-    exec(compile("x = 1\nif x:\n    print('hi')\n", "<execute_code>", "exec"), globals())
+    # The source sits in a variable, not in the exec line: that line is what a
+    # traceback prints, and the error goes back to the model. linecache gives
+    # the traceback the failing line of the user's code instead.
+    _fcai_src = "x = 1\nif x:\n    print('hi')\n"
+    import linecache as _linecache
+    _linecache.cache["<execute_code>"] = (
+        len(_fcai_src), None, _fcai_src.splitlines(True), "<execute_code>")
+    exec(compile(_fcai_src, "<execute_code>", "exec"), globals())
     # --- end user code ---
     doc.recompute()
     _os.write(2, b"\n__FCAI_USER_CODE_END__\n")

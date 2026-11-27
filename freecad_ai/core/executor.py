@@ -313,10 +313,16 @@ _GUI_STUB = '''    import types
     sys.modules["FreeCADGui"] = _fake_gui'''
 
 
-def _open_block(document_path, who, new_name):
-    """Harness lines that leave the document to work on in ``doc``."""
+def _open_block(document_path, who, new_name, linked_paths=()):
+    """Harness lines that leave the document to work on in ``doc``.
+
+    ``linked_paths`` are opened first, dependencies before the documents that
+    link to them: a file FreeCAD only reaches through a link is loaded
+    partially, with just the linked objects in it.
+    """
     if document_path:
-        return (
+        return "".join(
+            "    App.openDocument({!r})\n".format(p) for p in linked_paths) + (
             "    App.openDocument({path!r})\n"
             "    doc = App.ActiveDocument\n"
             "    if doc is None:\n"
@@ -424,7 +430,14 @@ try:
     # the continuation lines of multi-line string literals, changing their
     # value (or raising IndentationError for a raw string compiled later).
     # globals() keeps `doc`, `App`, ... visible exactly as the inline paste did.
-    exec(compile({code!r}, "<execute_code>", "exec"), globals())
+    # The source sits in a variable, not in the exec line: that line is what a
+    # traceback prints, and the error goes back to the model. linecache gives
+    # the traceback the failing line of the user's code instead.
+    _fcai_src = {code!r}
+    import linecache as _linecache
+    _linecache.cache["<execute_code>"] = (
+        len(_fcai_src), None, _fcai_src.splitlines(True), "<execute_code>")
+    exec(compile(_fcai_src, "<execute_code>", "exec"), globals())
     # --- end user code ---
     doc.recompute()
     _os.write(2, b"\\n{end_marker}\\n")
@@ -525,7 +538,8 @@ finally:
 
 
 
-def _build_child_script(code, *, document_path, result_path, mode="sandbox"):
+def _build_child_script(code, *, document_path, result_path, mode="sandbox",
+                        linked_paths=()):
     """Source of the script a FreeCAD console child runs.
 
     ``sandbox``: the pass/fail pre-check used by execute_code.
@@ -537,7 +551,8 @@ def _build_child_script(code, *, document_path, result_path, mode="sandbox"):
             begin_marker=_USER_CODE_BEGIN,
             end_marker=_USER_CODE_END,
             gui_stub=_GUI_STUB,
-            open_block=_open_block(document_path, "Sandbox", "SandboxTest"),
+            open_block=_open_block(
+                document_path, "Sandbox", "SandboxTest", linked_paths),
             code=code,
             result_path=result_path,
         )
@@ -552,7 +567,8 @@ def _build_child_script(code, *, document_path, result_path, mode="sandbox"):
     raise ValueError("unknown child-script mode: {!r}".format(mode))
 
 
-def _sandbox_test(code: str, timeout: int = 15, document_path: str | None = None) -> tuple:
+def _sandbox_test(code: str, timeout: int = 15, document_path: str | None = None,
+                  linked_paths=()) -> tuple:
     """Test code in a headless FreeCAD subprocess.
 
     Returns (safe: bool, error_message: str).
@@ -566,7 +582,8 @@ def _sandbox_test(code: str, timeout: int = 15, document_path: str | None = None
     script_file = tempfile.mktemp(suffix=".py")
 
     harness = _build_child_script(
-        code, document_path=document_path, result_path=result_file, mode="sandbox")
+        code, document_path=document_path, result_path=result_file, mode="sandbox",
+        linked_paths=linked_paths)
 
     try:
         with open(script_file, "w") as f:
@@ -758,7 +775,7 @@ def execute_code(code: str, timeout: int | None = None, sandbox: bool = True,
         pre_doc = get_synced_active_document()
         sandbox_dir = None
         try:
-            sandbox_copy_path, sandbox_dir = _make_sandbox_copy(pre_doc)
+            sandbox_copy_path, sandbox_dir, linked_paths = _make_sandbox_copy(pre_doc)
         except OSError as e:
             return ExecutionResult(
                 success=False,
@@ -773,7 +790,8 @@ def execute_code(code: str, timeout: int | None = None, sandbox: bool = True,
             # Shape.transformGeometry — fail the pre-check with a spurious
             # "timed out after 15 seconds" and never run (issue #14).
             safe, sandbox_err = _sandbox_test(
-                code, timeout=timeout, document_path=sandbox_copy_path
+                code, timeout=timeout, document_path=sandbox_copy_path,
+                linked_paths=linked_paths,
             )
             if not safe:
                 return ExecutionResult(
@@ -900,7 +918,7 @@ def validate_code(code: str, timeout: int = 15, skip_safety: bool = False) -> Ex
     from .active_document import get_synced_active_document
     pre_doc = get_synced_active_document()
     try:
-        sandbox_copy_path, sandbox_dir = _make_sandbox_copy(pre_doc)
+        sandbox_copy_path, sandbox_dir, linked_paths = _make_sandbox_copy(pre_doc)
     except OSError as e:
         return ExecutionResult(
             success=False,
@@ -909,7 +927,8 @@ def validate_code(code: str, timeout: int = 15, skip_safety: bool = False) -> Ex
             code=code,
         )
     try:
-        safe, err = _sandbox_test(code, timeout=timeout, document_path=sandbox_copy_path)
+        safe, err = _sandbox_test(code, timeout=timeout, document_path=sandbox_copy_path,
+                                  linked_paths=linked_paths)
     finally:
         if sandbox_dir:
             shutil.rmtree(sandbox_dir, ignore_errors=True)
@@ -956,12 +975,14 @@ def _make_sandbox_copy(doc):
     fails, ``listDocuments`` is incomplete). The files are written with their
     relative layout intact so the links still resolve.
 
-    Returns ``(sandbox_path, cleanup_dir)``; ``(None, None)`` when *doc* has
-    no saved file. Raises OSError when copying fails.
+    Returns ``(sandbox_path, cleanup_dir, linked_paths)``, the linked copies
+    dependencies first (the order the sandbox must open them in);
+    ``(None, None, [])`` when *doc* has no saved file. Raises OSError when
+    copying fails.
     """
     fn = getattr(doc, "FileName", "") if doc else ""
     if not (fn and os.path.isfile(fn)):
-        return None, None
+        return None, None, []
     fn = os.path.abspath(fn)
     docs = [(fn, doc)]
     for linked in _linked_documents(doc):
@@ -974,15 +995,17 @@ def _make_sandbox_copy(doc):
         root = os.path.dirname(fn)
         docs = docs[:1]
     tmp_dir = tempfile.mkdtemp(prefix="freecad_ai_sandbox_")
+    copies = []
     try:
         for src, d in docs:
             dst = os.path.join(tmp_dir, os.path.relpath(src, root))
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             _snapshot_document(d, dst)
+            copies.append(dst)
     except OSError:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
-    return os.path.join(tmp_dir, os.path.relpath(fn, root)), tmp_dir
+    return copies[0], tmp_dir, copies[1:]
 
 
 def _validate_code(code: str) -> list[str]:

@@ -36,14 +36,14 @@ def _touch(path, text="x"):
 
 
 def test_no_saved_file_returns_none(tmp_path):
-    assert _make_sandbox_copy(_Doc("")) == (None, None)
-    assert _make_sandbox_copy(None) == (None, None)
-    assert _make_sandbox_copy(_Doc(str(tmp_path / "missing.FCStd"))) == (None, None)
+    assert _make_sandbox_copy(_Doc("")) == (None, None, [])
+    assert _make_sandbox_copy(None) == (None, None, [])
+    assert _make_sandbox_copy(_Doc(str(tmp_path / "missing.FCStd"))) == (None, None, [])
 
 
 def test_copies_main_file_alone(tmp_path):
     main = _touch(tmp_path / "proj" / "main.FCStd", "main")
-    path, tmp_dir = _make_sandbox_copy(_Doc(main))
+    path, tmp_dir, _ = _make_sandbox_copy(_Doc(main))
     try:
         assert os.path.basename(path) == "main.FCStd"
         assert open(path).read() == "main"
@@ -56,7 +56,7 @@ def test_copies_main_file_alone(tmp_path):
 def test_linked_sibling_keeps_relative_layout(tmp_path):
     main = _touch(tmp_path / "proj" / "main.FCStd", "main")
     link = _touch(tmp_path / "proj" / "ALKIS.FCStd", "alkis")
-    path, tmp_dir = _make_sandbox_copy(_Doc(main, [_Doc(link)]))
+    path, tmp_dir, _ = _make_sandbox_copy(_Doc(main, [_Doc(link)]))
     try:
         assert open(os.path.join(os.path.dirname(path), "ALKIS.FCStd")).read() == "alkis"
     finally:
@@ -67,7 +67,7 @@ def test_linked_sibling_keeps_relative_layout(tmp_path):
 def test_linked_file_outside_main_dir_keeps_dotdot_relation(tmp_path):
     main = _touch(tmp_path / "proj" / "sub" / "main.FCStd", "main")
     link = _touch(tmp_path / "proj" / "data" / "ALKIS.FCStd", "alkis")
-    path, tmp_dir = _make_sandbox_copy(_Doc(main, [_Doc(link)]))
+    path, tmp_dir, _ = _make_sandbox_copy(_Doc(main, [_Doc(link)]))
     try:
         rel = os.path.relpath(os.path.join(os.path.dirname(path), "..", "data", "ALKIS.FCStd"))
         assert open(rel).read() == "alkis"
@@ -80,7 +80,7 @@ def test_linked_file_outside_main_dir_keeps_dotdot_relation(tmp_path):
 
 def test_unsaved_linked_doc_is_skipped(tmp_path):
     main = _touch(tmp_path / "main.FCStd")
-    path, tmp_dir = _make_sandbox_copy(_Doc(main, [_Doc("")]))
+    path, tmp_dir, _ = _make_sandbox_copy(_Doc(main, [_Doc("")]))
     try:
         assert os.listdir(os.path.dirname(path)) == ["main.FCStd"]
     finally:
@@ -96,7 +96,7 @@ def _cleanup(tmp_dir):
 def test_copy_holds_the_live_state_not_the_saved_file(tmp_path):
     """Objects created since the last save must exist in the dry-run copy."""
     main = _touch(tmp_path / "main.FCStd", "stale file on disk")
-    path, tmp_dir = _make_sandbox_copy(_Doc(main, live="live in memory"))
+    path, tmp_dir, _ = _make_sandbox_copy(_Doc(main, live="live in memory"))
     try:
         assert open(path).read() == "live in memory"
         assert open(main).read() == "stale file on disk"
@@ -107,7 +107,7 @@ def test_copy_holds_the_live_state_not_the_saved_file(tmp_path):
 def test_linked_document_is_snapshotted_live_too(tmp_path):
     main = _touch(tmp_path / "main.FCStd", "old")
     link = _touch(tmp_path / "ALKIS.FCStd", "old")
-    path, tmp_dir = _make_sandbox_copy(
+    path, tmp_dir, _ = _make_sandbox_copy(
         _Doc(main, [_Doc(link, live="alkis live")], live="main live"))
     try:
         assert open(os.path.join(os.path.dirname(path), "ALKIS.FCStd")).read() == "alkis live"
@@ -120,7 +120,7 @@ def test_partial_document_falls_back_to_the_file(tmp_path):
     main = _touch(tmp_path / "main.FCStd", "main live")
     link = _touch(tmp_path / "ALKIS.FCStd", "full file")
     partial = _Doc(link, live="partial state", partial=True)
-    path, tmp_dir = _make_sandbox_copy(_Doc(main, [partial], live="main live"))
+    path, tmp_dir, _ = _make_sandbox_copy(_Doc(main, [partial], live="main live"))
     try:
         assert partial.saved_copies == []
         assert open(os.path.join(os.path.dirname(path), "ALKIS.FCStd")).read() == "full file"
@@ -134,7 +134,7 @@ def test_failing_savecopy_falls_back_to_the_file(tmp_path):
             raise RuntimeError("cannot save")
 
     main = _touch(tmp_path / "main.FCStd", "from file")
-    path, tmp_dir = _make_sandbox_copy(_Broken(main))
+    path, tmp_dir, _ = _make_sandbox_copy(_Broken(main))
     try:
         assert open(path).read() == "from file"
     finally:
@@ -149,3 +149,20 @@ def test_multiline_string_survives_the_child_script():
                                  result_path="/tmp/r.json", mode="sandbox")
     assert repr(code) in script
     compile(script, "<child>", "exec")  # the harness itself must stay valid
+
+
+def test_linked_copies_are_returned_dependencies_first(tmp_path):
+    """The sandbox opens them in this order.
+
+    A file FreeCAD reaches only through a link is loaded partially.
+    """
+    main = _touch(tmp_path / "main.FCStd")
+    c = _touch(tmp_path / "lib" / "C.FCStd")
+    b = _touch(tmp_path / "ALKIS.FCStd")
+    # getDependentDocuments(True) lists dependencies first: C before ALKIS
+    path, tmp_dir, linked = _make_sandbox_copy(_Doc(main, [_Doc(c), _Doc(b)]))
+    try:
+        rel = [os.path.relpath(p, tmp_dir) for p in linked]
+        assert rel == [os.path.join("lib", "C.FCStd"), "ALKIS.FCStd"]
+    finally:
+        _cleanup(tmp_dir)
