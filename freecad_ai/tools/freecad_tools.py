@@ -221,7 +221,7 @@ def _handle_create_primitive(
 
 CREATE_PRIMITIVE = ToolDefinition(
     name="create_primitive",
-    description="Create a PartDesign primitive (Box, Cylinder, Sphere, Cone, Torus) inside a Body. Auto-creates a Body if body_name is not given. Use operation='subtractive' to cut material from an existing body.",
+    description="Create a PartDesign primitive (Box, Cylinder, Sphere, Cone, Torus) inside a Body. Auto-creates a Body if body_name is not given. Use operation='subtractive' to cut material from an existing body. Every primitive added to an existing body must touch or overlap what is already in it; put a separate piece in its own Body (a new body_name). A disconnected solid is either dropped by the next feature or leaves a multi-solid Body, depending on the FreeCAD version.",
     category="modeling",
     parameters=[
         ToolParam("shape_type", "string", "Type of primitive to create",
@@ -267,7 +267,7 @@ def _handle_create_body(
 
 CREATE_BODY = ToolDefinition(
     name="create_body",
-    description="Create a PartDesign Body. Bodies are containers for parametric features (sketches, pads, pockets, fillets, etc). Create a body first, then add sketches to it using body_name parameter.",
+    description="Create a PartDesign Body. Bodies are containers for parametric features (sketches, pads, pockets, fillets, etc). Create a body first, then add sketches to it using body_name parameter. Keep one connected solid per Body: separate pieces go in separate Bodies.",
     category="modeling",
     parameters=[
         ToolParam("label", "string", "Display label for the body", required=False, default="Body"),

@@ -114,6 +114,16 @@ Tools are Python functions registered in `freecad_ai/tools/freecad_tools.py`. Ea
 
 See [Creating Custom Tools](https://github.com/ghbalf/freecad-ai/wiki/Creating-Custom-Tools) for the user-tool convention, which also applies to built-in tools.
 
+## PartDesign Modeling Gotchas
+
+Worth knowing before writing a skill, a `create_primitive`/`create_body` sequence, or a `VALIDATION.md` rule that checks `solid_count`:
+
+- **Keep one connected solid per `PartDesign::Body`.** `create_primitive` happily adds a primitive that doesn't touch the body's existing shape, and every check still passes: the feature is `Up-to-date`, `isValid()` is `True`, `Shape.isValid()` is `True`. What happens next depends on the FreeCAD version (measured with two separate boxes, then a pad on top of the first):
+  - **1.0.x** (`AllowCompound` doesn't exist / is off): the next feature silently drops the disconnected solid. The body goes from 2 solids to 1 without an error.
+  - **1.1+** (`AllowCompound=True` by default): the body keeps both solids, and features build on the compound. Display problems with such bodies have been reported (#163); they weren't checked here.
+- **Fix:** a piece that doesn't touch the rest (a second leg, a separate accessory) gets its own Body (a new `body_name`).
+- **`Shape.isValid()` doesn't catch this.** A `VALIDATION.md` (see `docs/specs/2026-03-17-geometry-validation-design.md`) that only checks `valid_solid: true` passes on a split body; `solid_count: 1` catches it.
+
 ## Testing
 
 ```bash
