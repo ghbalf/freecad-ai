@@ -1,5 +1,7 @@
 """Unit tests for the pure create_sketch attachment resolver (no FreeCAD)."""
 
+import types
+import unittest
 from freecad_ai.tools.freecad_tools import _resolve_sketch_attachment, _classify_support, _owning_body_name
 
 
@@ -161,3 +163,31 @@ class TestOwningBodyName:
     def test_standalone_object_returns_none(self):
         feat = _FakeObj("Part::Feature", name="Imported")
         assert _owning_body_name(feat, [feat]) is None
+
+
+class TestBodySupportToTip(unittest.TestCase):
+    """#168: attaching inside a Body to the Body itself is a dependency cycle."""
+
+    def _obj(self, type_id, name, tip=None):
+        o = types.SimpleNamespace(TypeId=type_id, Name=name)
+        if tip is not None:
+            o.Tip = tip
+        return o
+
+    def test_body_is_replaced_by_its_tip_with_a_warning(self):
+        from freecad_ai.tools.freecad_tools import _body_support_to_tip
+        pad = self._obj("PartDesign::Pad", "Pad")
+        warnings = []
+        self.assertIs(_body_support_to_tip(self._obj("PartDesign::Body", "Body", pad), warnings), pad)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Tip 'Pad'", warnings[0])
+
+    def test_other_supports_and_empty_bodies_are_kept(self):
+        from freecad_ai.tools.freecad_tools import _body_support_to_tip
+        warnings = []
+        pad = self._obj("PartDesign::Pad", "Pad")
+        empty = self._obj("PartDesign::Body", "Body")  # no Tip yet
+        empty.Tip = None
+        self.assertIs(_body_support_to_tip(pad, warnings), pad)
+        self.assertIs(_body_support_to_tip(empty, warnings), empty)
+        self.assertEqual(warnings, [])
