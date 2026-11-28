@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **LLMTR provider preset.** A prepaid OpenAI-compatible gateway at
+  `https://llmtr.com/v1`, listed after Synap in the Settings dialog. The
+  default model is `qwen/qwen3.8-flash`; model ids use the `vendor/model`
+  form and the full list is public at https://llmtr.com/v1/models. Keys come
+  from https://llmtr.com/dashboard/keys. Proposed by someone who works on
+  LLMTR, who discloses the affiliation; no revenue share, referral or
+  tracking is involved. Tool calling was not re-tested against the add-on's
+  own `LLMClient` in this PR; the default model lists `tools` among its
+  supported parameters in the public model listing.
+
 - **Warning when the prompt and tools alone don't fit (#158).** The system
   prompt and tool definitions go out with every request (about 16,600
   tokens in Act mode with all built-in tools). When they exceed the

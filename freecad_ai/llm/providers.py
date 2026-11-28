@@ -198,6 +198,12 @@ PROVIDERS = {
         "api_style": "openai",
         "supports_tools": True,
     },
+    "llmtr": {
+        "base_url": "https://llmtr.com/v1",
+        "default_model": "qwen/qwen3.8-flash",
+        "api_style": "openai",
+        "supports_tools": True,
+    },
     "custom": {
         "base_url": "",
         "default_model": "",
