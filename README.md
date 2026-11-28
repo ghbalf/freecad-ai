@@ -21,7 +21,7 @@ An AI-powered assistant workbench for FreeCAD that generates and executes Python
 - **Context compacting** — automatically summarizes older messages when approaching context limits
 - **Fallback profiles** — when the chat model can't be reached (Ollama box off, vendor 503, revoked key), the turn is tried once on each profile you list, in order, and a note says which one answered
 - **Session resume** — save and load chat sessions to continue work later
-- **27 LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Requesty, Opper, Cloudflare Workers AI, Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere, SambaNova, MiniMax, Llama, GitHub Models, HuggingFace, Zhipu, Perplexity, DemonRoute, Runcrate, Synap, plus any OpenAI-compatible endpoint via Custom
+- **28 LLM providers** — Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Requesty, Opper, Cloudflare Workers AI, Moonshot, DeepSeek, Qwen, Groq, Mistral, Together, Fireworks, xAI, Cohere, SambaNova, MiniMax, Llama, GitHub Models, HuggingFace, Zhipu, Perplexity, DemonRoute, Runcrate, Synap, LLMTR, plus any OpenAI-compatible endpoint via Custom
 - **Context-aware** — automatically includes document state (objects, properties, selection) in prompts
 - **Error self-correction** — failed code is sent back to the LLM for automatic retry (up to 3 attempts)
 - **AGENTS.md support** — project-level instructions with include directives and variable substitution
@@ -181,6 +181,7 @@ To populate the stores once:
 | DemonRoute | Yes | Open-weight model gateway (OpenAI-compatible), prepaid. Prompts are forwarded to third-party upstream hosts (mainly Featherless, per the operator) with their own retention policies; see [DemonRoute's privacy page](https://demonroute.com/privacy) |
 | Runcrate | Yes (`rc_live_...`) | Open-weight models (DeepSeek, GLM, Qwen, Kimi and others) via an OpenAI-compatible API, prepaid. Keys from https://www.runcrate.ai/dashboard/api-keys, model ids at https://www.runcrate.ai/inference/pricing. Prompts are processed by third-party model providers under their own terms; see [Runcrate's privacy policy](https://www.runcrate.ai/privacy) |
 | Synap | Yes | Open-weight models via an OpenAI-compatible API (synap402.com), prepaid, free tier available. Model catalog and live prices at https://synap402.com/v1/models. Does not retain prompt or completion text for API requests or train on it. Per its catalogue entry, the default `synap-v1` runs on GPUs Synap operates; other Synap models may run on machines contributed by independent operators. See [Synap's privacy policy](https://synap402.com/privacy.html) |
+| LLMTR | Yes | Prepaid OpenAI-compatible gateway to models from many providers. Keys from https://llmtr.com/dashboard/keys, model ids (`vendor/model`) from the public https://llmtr.com/v1/models. See [LLMTR's privacy policy](https://llmtr.com/privacy) |
 | Custom | Varies | Any OpenAI-compatible endpoint |
 
 ### Connection profiles

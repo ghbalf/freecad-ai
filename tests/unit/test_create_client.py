@@ -114,6 +114,14 @@ class TestApiKeyFallback:
         assert supports_tools("synap") is True
         assert PROVIDERS["synap"]["base_url"] == "https://synap402.com/v1"
 
+    def test_llmtr_is_registered(self):
+        from freecad_ai.llm.providers import (
+            PROVIDERS, get_api_style, get_provider_names, supports_tools)
+        assert "llmtr" in get_provider_names()
+        assert get_api_style("llmtr") == "openai"
+        assert supports_tools("llmtr") is True
+        assert PROVIDERS["llmtr"]["base_url"] == "https://llmtr.com/v1"
+
     def test_both_empty_yields_empty(self):
         cfg = _cfg()
         cfg.active_profile = "local"
